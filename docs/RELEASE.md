@@ -1,0 +1,71 @@
+# Release and validation
+
+TinyTaskbar has no repository metadata, updater, login item, helper, analytics, or
+configuration migration. Version and build numbers live in
+`Resources/Info.plist`:
+
+* `CFBundleShortVersionString`: user-visible semantic version, currently `1.0.0`.
+* `CFBundleVersion`: monotonically increasing build number, currently `1`.
+
+## Local structural build
+
+```sh
+swift test
+swift build
+swift build -c release
+pre-commit run --all-files
+bash scripts/build-app.sh --adhoc
+codesign --verify --deep --strict --verbose=2 dist/TinyTaskbar.app
+plutil -lint dist/TinyTaskbar.app/Contents/Info.plist
+```
+
+The ad-hoc path is suitable for local bundle structure and launch experiments. It
+is not a distribution signature and cannot establish notarization or Gatekeeper
+acceptance.
+
+## Developer ID distribution
+
+1. Bump both plist values deliberately and record the change in the release note.
+2. Confirm the exact `Developer ID Application` identity with
+   `security find-identity -v -p codesigning`.
+3. Assemble with `bash scripts/build-app.sh --identity "<identity>"`. The script
+   enables Hardened Runtime, adds a secure timestamp, uses only the empty/minimal
+   entitlements file, and verifies the result.
+4. Create a DMG with `bash scripts/package-dmg.sh`. This performs no hidden network
+   work.
+5. Store notarization credentials in a named keychain profile using Apple’s
+   `notarytool` setup. Never put an Apple ID password, app-specific password, or
+   API private key in this workspace or command history.
+6. Submit, wait, staple, validate, and run Gatekeeper checks through:
+
+   ```sh
+   bash scripts/notarize.sh --profile "<keychain-profile>" --artifact dist/TinyTaskbar.dmg
+   ```
+
+7. On a clean macOS 26 machine, install from the DMG, launch, grant Accessibility,
+   exercise the manual matrix, inspect the crash-log location, and uninstall by
+   quitting and moving the app bundle to Trash.
+
+Apple’s notary service requires a valid Developer ID signature, Hardened Runtime,
+and a secure timestamp. The local ad-hoc verification does not establish any of
+those distribution claims.
+
+## Support and recovery notes
+
+* Crash reports: `~/Library/Logs/DiagnosticReports/`.
+* Uninstall: quit TinyTaskbar, move `TinyTaskbar.app` to Trash, and remove any
+  manually copied bundle.
+* Reset only this app’s Accessibility TCC decision when explicitly needed:
+
+  ```sh
+  tccutil reset Accessibility com.tinytaskbar.TinyTaskbar
+  ```
+
+  This is a destructive permission reset and is not part of automated validation.
+* Re-test launch behavior, permission denial, clean-machine installation, and all
+  multi-display/Space/fullscreen/Stage Manager cases after each release-signing
+  or macOS update.
+
+Developer ID identity availability, Apple notarization, stapling, Gatekeeper,
+clean-machine installation, and real-machine behavior remain pending until their
+respective evidence is collected.

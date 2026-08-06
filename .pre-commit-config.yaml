@@ -1,0 +1,24 @@
+repos:
+  - repo: local
+    hooks:
+      - id: swift-format-fix
+        name: swift-format (in place)
+        entry: xcrun swift-format format --in-place --configuration .swift-format
+        language: system
+        files: \.swift$
+        pass_filenames: true
+      - id: swift-format
+        name: swift-format
+        entry: xcrun swift-format lint --strict --configuration .swift-format
+        language: system
+        files: \.swift$
+      - id: shell-syntax
+        name: shell syntax
+        entry: bash -n
+        language: system
+        files: ^scripts/.*\.sh$
+      - id: plist-lint
+        name: Info.plist syntax
+        entry: plutil -lint
+        language: system
+        files: ^Resources/Info\.plist$

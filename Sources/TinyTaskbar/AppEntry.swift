@@ -4,6 +4,18 @@ import OSLog
 
 @main
 @MainActor
+struct TinyTaskbarMain {
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        withExtendedLifetime(delegate) {
+            application.run()
+        }
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "ui")
     private var provider: SystemWindowSnapshotProvider?
@@ -55,8 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.eventObserver = eventObserver
 
         let trusted = AXIsProcessTrusted()
+        let onboardingComplete = preferencesStore.values.onboardingComplete
+        logger.info(
+            "application did finish launching trusted=\(trusted, privacy: .public) onboarding_complete=\(onboardingComplete, privacy: .public)"
+        )
         store.start(accessibilityTrusted: trusted)
-        if !trusted || !preferencesStore.values.onboardingComplete {
+        if !trusted || !onboardingComplete {
             Task { @MainActor [weak self] in
                 await Task.yield()
                 self?.showSettingsWindow()

@@ -36,6 +36,17 @@ There is no repeating enumeration timer, polling loop, helper, database, or
 background daemon. Healthy steady state is quiet; a refresh occurs after relevant
 window, application, Space, display, or activation events.
 
+The executable uses an explicit `@main` `TinyTaskbarMain` entry point. Its main-actor
+`main()` creates `NSApplication.shared`, assigns an `AppDelegate`, and wraps
+`application.run()` in `withExtendedLifetime(delegate)`. That explicit owner is
+required because the local macOS 26 SDK declares `NSApplication.delegate` weak, and
+it keeps the delegate alive for the complete AppKit run. This avoids depending on
+Swift's `@main` AppDelegate synthesis or framework-driven principal-class startup in
+the manually assembled SwiftPM bundle. The local macOS 26 SDK exposes the
+`NSApplication.shared`, `delegate`, and `run()` APIs used here, so the bundle does not
+need an `NSPrincipalClass = NSApplication` Info.plist entry; `LSUIElement` remains the
+explicit bundle-level accessory setting.
+
 ## Accessibility onboarding and minimal settings
 
 `AppDelegate` owns one retained native `TinyTaskbarSettingsWindow`; it is a normal,
@@ -52,7 +63,8 @@ The initial launch show is deferred by one `Task.yield()` on the main actor beca
 `applicationDidFinishLaunching` runs before the first application event-loop turn;
 reopen handling remains synchronous. The UI logger records the requested show,
 activation-policy result/current policy, app active state, window visibility, and
-window number for real-machine diagnosis.
+window number for real-machine diagnosis. It also records the trusted Accessibility
+state and persisted onboarding-complete value when launch finishes.
 
 Because an `LSUIElement` accessory app can still be suppressed by WindowServer when
 bringing a normal window forward, the explicit Settings-show path temporarily sets

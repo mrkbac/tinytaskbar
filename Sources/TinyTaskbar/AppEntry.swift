@@ -67,24 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.render(state: state)
         }
 
-        let settingsWindow = TinyTaskbarSettingsWindow()
-        settingsWindow.onAccessibilityRequest = { [weak self] in
-            self?.requestAccessibility()
-        }
-        settingsWindow.onShowsWindowTitlesChanged = { [weak self] shows in
-            self?.setShowsWindowTitles(shows)
-        }
-        settingsWindow.onDone = { [weak self] in
-            self?.finishOnboarding()
-        }
-        settingsWindow.onQuit = {
-            NSApp.terminate(nil)
-        }
-        settingsWindow.onClosed = { [weak self] in
-            self?.restoreAccessoryActivationPolicy()
-        }
-        self.settingsWindow = settingsWindow
-
         let eventObserver = SystemEventObserver { [weak store] in
             store?.requestRefresh()
         }
@@ -177,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettingsWindow() {
-        guard let settingsWindow else { return }
+        let settingsWindow = settingsWindow ?? makeSettingsWindow()
         settingsWindow.restoreFixedContentSize()
         _ = settingsActivationState.apply(.show)
         let policyChanged = NSApp.setActivationPolicy(.regular)
@@ -208,6 +190,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "settings shown active=\(NSApp.isActive, privacy: .public) visible=\(settingsWindow.isVisible, privacy: .public) window_number=\(settingsWindow.windowNumber, privacy: .public)"
             )
         }
+    }
+
+    private func makeSettingsWindow() -> TinyTaskbarSettingsWindow {
+        let settingsWindow = TinyTaskbarSettingsWindow()
+        settingsWindow.onAccessibilityRequest = { [weak self] in
+            self?.requestAccessibility()
+        }
+        settingsWindow.onShowsWindowTitlesChanged = { [weak self] shows in
+            self?.setShowsWindowTitles(shows)
+        }
+        settingsWindow.onDone = { [weak self] in
+            self?.finishOnboarding()
+        }
+        settingsWindow.onQuit = {
+            NSApp.terminate(nil)
+        }
+        settingsWindow.onClosed = { [weak self] in
+            self?.restoreAccessoryActivationPolicy()
+        }
+        self.settingsWindow = settingsWindow
+        return settingsWindow
     }
 
     private func restoreAccessoryActivationPolicy() {

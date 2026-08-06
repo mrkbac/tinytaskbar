@@ -61,7 +61,8 @@ deterministic metadata to the real panels without calling AX or TCC.
 
 ## Accessibility onboarding and minimal settings
 
-`AppDelegate` owns one retained native `TinyTaskbarSettingsWindow`; it is a normal,
+`AppDelegate` lazily creates and then retains one native `TinyTaskbarSettingsWindow`;
+trusted taskbar-only launches do not construct the Settings hierarchy. It is a normal,
 key-capable `NSWindow` only while explicitly shown. On first launch when onboarding
 is incomplete, or whenever Accessibility is denied, the app refreshes permission and
 launch-at-login status, calls the current public `NSApp.activate()` API, explicitly
@@ -76,8 +77,10 @@ explicitly framed 640 × 340 point content view. Its content min/max sizes are b
 to that value after interface setup. The root vertical stack is manually framed with
 insets and uses width/height autoresizing; no outer constraints connect it to the
 content view, so intrinsic fitting cannot resize the window. Auto Layout remains
-inside the fixed stack for rows and accessories. The introduction uses the full
-available content width, action accessories retain their intrinsic button/control
+inside the fixed stack for rows and accessories. Each arranged row uses the same
+fixed content width and leading alignment, so Granted/Required accessory-width
+changes cannot shift row labels. The introduction uses the full available content
+width, action accessories retain their intrinsic button/control
 widths, and the launch-at-login status is constrained to 190 points and at most two
 wrapped lines. After the first WindowServer order, one main-actor yield reasserts and
 centers the fixed frame once; this avoids a transient intrinsic-fitting resize without
@@ -187,9 +190,10 @@ documented `.statusBar` level and this non-conflicting public collection set:
 Apple documents `primary`, `auxiliary`, and `canJoinAllApplications` as mutually
 exclusive within the Stage Manager/fullscreen group; TinyTaskbar selects only
 `canJoinAllApplications`. The horizontal AppKit stack is inside an `NSScrollView`,
-uses cached application icons, truncates titles, marks active items visually, and
-provides button accessibility labels. The bar is deliberately an overlay because
-third-party panels cannot reserve Dock-like work area.
+uses copied/cached application icons, falls back to the native `macwindow` symbol for
+a stale or unavailable application icon, truncates titles, marks active items
+visually, and provides button accessibility labels. The bar is deliberately an
+overlay because third-party panels cannot reserve Dock-like work area.
 
 Panel frames are calculated from the AppKit full and visible frames, not from AX
 geometry. The horizontal inset is applied within the full display; the vertical

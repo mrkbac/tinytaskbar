@@ -15,8 +15,38 @@ dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar \
 ```
 
 The package test suite also projects 120 windows and exercises the injected provider
-refresh/debounce path. These are repeatable preflight checks, not production CPU,
-RSS, wakeup, or click-to-focus measurements.
+refresh/debounce path. The fixture is valid evidence for the real AppKit panel's idle
+rendering cost, but not for real AX enumeration, wakeups, or click-to-focus latency.
+
+## Scoped local measurements — 2026-08-07
+
+Environment: macOS 26.5.1 (25F80), Apple M4 Max, app version 1.0.0 (1), one
+interactive screen exposed to the Computer test session, Accessibility mocked only
+by the DEBUG fixture. Settings had never been opened in the measured fixture
+processes, exercising the normal lazy taskbar-only path.
+
+| Scene | Sample | CPU | Physical footprint | RSS | Threads |
+| --- | --- | --- | --- | --- | --- |
+| Four-window normal fixture | 5 `top` samples over 10 s | 0.0% each | 14 MB, 15 MB peak | 50,144 KB | 3 |
+| 120-window overflow fixture | 5 `top` samples over 10 s | 0.0% each | 35 MB, 37 MB peak | 77,968 KB | 3 |
+
+`footprint` physical footprint and `ps` RSS are intentionally reported separately;
+they are not interchangeable on macOS. The physical footprint is the memory budget
+metric because it represents the process's charged physical memory. RSS remains a
+useful diagnostic and is not hidden: it was about 49 MB for four mocked windows and
+76 MB for 120 mocked windows.
+
+As an additional release-mode denied/background control before the lazy-Settings
+optimization, ten `top` samples over 20 seconds were all 0.0% CPU, physical footprint
+was 26 MB, and a 10-second `sample` placed every one of 8,624 main-thread samples in
+the ordinary AppKit event-loop Mach wait. This supports the no-polling design, but is
+not a wakeups-per-second measurement.
+
+A separate six-sample `top -d` run on the final four-window fixture reported delta
+context switches of 0, 1, 0, 0, and 0 after the initial cumulative sample: about
+0.1 context switches/s over the measured intervals. This is a useful non-privileged
+wakeup proxy and is comfortably below the provisional rate, but it does not replace
+an Instruments Energy Log wakeups trace.
 
 ## Provisional v1 budgets
 
@@ -27,11 +57,12 @@ These are engineering targets, not measured results:
 | Refresh duration | p95 ≤ 100 ms | 100 candidate windows on a representative session |
 | Click-to-focus | p95 ≤ 150 ms | Click timestamp to selected app/window visibly focused |
 | Idle CPU | < 0.5% average | Five minutes with no window events |
-| Idle RSS | < 40 MB after warm-up | Activity Monitor/Leaks baseline after five minutes |
+| Idle physical footprint | < 40 MB after warm-up | `footprint`/Activity Monitor after five minutes; report RSS separately |
 | Idle wakeups | < 5 wakeups/s average | Instruments Energy Log or Activity Monitor sample |
 
-The budgets are provisional until real hardware, display topology, Accessibility
-permissions, and representative applications are measured.
+The short local fixtures meet the CPU and physical-footprint budgets within their
+scope. Five-minute real-AX, wakeup, refresh-latency, click-to-focus, multi-display,
+fullscreen, and Stage Manager measurements remain required.
 
 ## Procedure
 

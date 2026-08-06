@@ -117,11 +117,14 @@ fullscreen windows are included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: debug tests, debug and release package builds,
-Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
-verification, and plist syntax/structure checks. Manual onboarding/settings flow,
-Accessibility grant, app launch, relaunch/reopen behavior, close-without-quit,
-click-to-focus, launch-at-login approval, multi-monitor/Spaces/fullscreen/Stage
-Manager behavior, Developer ID signing, notarization/stapling, Gatekeeper on a
-clean machine, and performance budgets remain explicitly pending until run on the
-required real environment.
+Validated in the local checkout: 31 automated tests, debug and release package
+builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
+verification, and plist syntax/structure checks. Computer QA covers the denied
+onboarding guide, Settings layout/reopen/close-without-quit, title preference, and
+the normal/120-window/empty DEBUG taskbar fixtures including horizontal scrolling.
+Scoped measurements recorded 0.0% CPU in each short idle sample and 14 MB physical
+footprint for four fixture windows (35 MB for 120); see `docs/PERFORMANCE.md` for RSS
+and limits. Real Accessibility grant/window focus, installed launch-at-login,
+multi-monitor/Spaces/fullscreen/Stage Manager behavior, five-minute energy/latency
+traces, Developer ID signing, notarization/stapling, and Gatekeeper on a clean machine
+remain explicitly pending.

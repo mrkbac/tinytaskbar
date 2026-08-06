@@ -375,23 +375,34 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         buttonRow.setContentHuggingPriority(.required, for: .horizontal)
         buttonRow.distribution = .fill
 
-        let stack = NSStackView(
-            views: [headingRow, introduction, accessibilityRow, launchRow, titleRow, buttonRow])
+        let arrangedRows = [
+            headingRow,
+            introduction,
+            accessibilityRow,
+            launchRow,
+            titleRow,
+            buttonRow,
+        ]
+        let stack = NSStackView(views: arrangedRows)
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = true
         stack.autoresizingMask = [.width, .height]
 
         guard let contentView else { return }
-        contentView.addSubview(stack)
         let horizontalInset: CGFloat = 28
         let topInset: CGFloat = 26
         let bottomInset: CGFloat = 24
+        let contentWidth = Self.fixedContentSize.width - horizontalInset * 2
+        for row in arrangedRows {
+            row.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+        }
+        contentView.addSubview(stack)
         stack.frame = NSRect(
             x: horizontalInset,
             y: bottomInset,
-            width: max(0, contentView.bounds.width - horizontalInset * 2),
+            width: contentWidth,
             height: max(0, contentView.bounds.height - topInset - bottomInset)
         )
         quitButton.setContentHuggingPriority(.required, for: .horizontal)
@@ -698,14 +709,18 @@ private final class TaskbarBarView: NSView {
 
     private func icon(for pid: Int32) -> NSImage? {
         if let cached = iconCache[pid] { return cached }
-        let icon =
+        let source =
             NSRunningApplication(processIdentifier: pid)?.icon
+            ?? NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
             ?? NSImage(named: NSImage.applicationIconName)
-        if let icon {
+        if let source,
+            let icon = source.copy() as? NSImage
+        {
             icon.size = NSSize(width: 18, height: 18)
             iconCache[pid] = icon
+            return icon
         }
-        return icon
+        return nil
     }
 
     @objc private func activateButton(_ sender: NSButton) {

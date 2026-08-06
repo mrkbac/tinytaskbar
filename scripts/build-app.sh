@@ -8,12 +8,13 @@ ENTITLEMENTS="$PROJECT_DIR/Resources/TinyTaskbar.entitlements"
 DIST_DIR="$PROJECT_DIR/dist"
 
 usage() {
-    echo "Usage: $0 --adhoc | --identity <Developer ID Application identity> [--output <app path>]" >&2
+    echo "Usage: $0 --adhoc | --identity <Developer ID Application identity> [--configuration debug|release] [--output <app path>]" >&2
 }
 
 SIGNING_MODE=""
 SIGNING_IDENTITY=""
 OUTPUT_APP=""
+CONFIGURATION="release"
 
 while (($# > 0)); do
     case "$1" in
@@ -28,6 +29,23 @@ while (($# > 0)); do
             fi
             SIGNING_MODE="developer-id"
             SIGNING_IDENTITY="$2"
+            shift 2
+            ;;
+        --configuration)
+            if (($# < 2)); then
+                usage
+                exit 2
+            fi
+            case "$2" in
+                debug|release)
+                    CONFIGURATION="$2"
+                    ;;
+                *)
+                    echo "Unsupported configuration: $2 (choose debug or release)." >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
             shift 2
             ;;
         --output)
@@ -67,10 +85,11 @@ if [[ -z "$OUTPUT_APP" ]]; then
     OUTPUT_APP="$DIST_DIR/TinyTaskbar.app"
 fi
 
-BIN_PATH="$(swift build -c release --product TinyTaskbar --show-bin-path)"
+swift build -c "$CONFIGURATION" --product TinyTaskbar
+BIN_PATH="$(swift build -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
 EXECUTABLE="$BIN_PATH/TinyTaskbar"
 if [[ ! -x "$EXECUTABLE" ]]; then
-    echo "Release executable was not produced at $EXECUTABLE" >&2
+    echo "$CONFIGURATION executable was not produced at $EXECUTABLE" >&2
     exit 1
 fi
 

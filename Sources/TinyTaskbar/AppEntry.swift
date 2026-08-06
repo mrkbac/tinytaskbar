@@ -7,7 +7,7 @@ import OSLog
 struct TinyTaskbarMain {
     static func main() {
         let application = NSApplication.shared
-        let delegate = AppDelegate()
+        let delegate = AppDelegate.makeDefault()
         application.delegate = delegate
         withExtendedLifetime(delegate) {
             application.run()
@@ -18,8 +18,10 @@ struct TinyTaskbarMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "ui")
-    private var provider: SystemWindowSnapshotProvider?
-    private var store: TaskbarStore?
+    private let accessibilityProvider: any AccessibilityPermissionProvider
+    private let provider: any WindowSnapshotProvider
+    private let store: TaskbarStore
+    private let skipsOnboarding: Bool
     private var eventObserver: SystemEventObserver?
     private let preferencesStore = TinyTaskbarPreferencesStore()
     private var permissionRequestState = AccessibilityPermissionRequestState()
@@ -27,14 +29,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: TinyTaskbarSettingsWindow?
     private var panels: [String: TaskbarPanel] = [:]
 
+    static func makeDefault() -> AppDelegate {
+        #if DEBUG
+            if let fixture = DebugFixture.parse(arguments: CommandLine.arguments) {
+                return AppDelegate(
+                    accessibilityProvider: DebugFixturePermissionProvider(),
+                    provider: DebugFixtureWindowSnapshotProvider(fixture: fixture),
+                    skipsOnboarding: true
+                )
+            }
+        #endif
+        return AppDelegate()
+    }
+
+    init(
+        accessibilityProvider: any AccessibilityPermissionProvider =
+            SystemAccessibilityPermissionProvider(),
+        provider: any WindowSnapshotProvider = SystemWindowSnapshotProvider(),
+        skipsOnboarding: Bool = false
+    ) {
+        self.accessibilityProvider = accessibilityProvider
+        self.provider = provider
+        self.store = TaskbarStore(provider: provider)
+        self.skipsOnboarding = skipsOnboarding
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        let provider = SystemWindowSnapshotProvider()
-        let store = TaskbarStore(provider: provider)
-        self.provider = provider
-        self.store = store
-
+        let provider = self.provider
+        let store = self.store
         provider.onChange = { [weak store] in
             store?.requestRefresh()
         }
@@ -66,8 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         eventObserver.start()
         self.eventObserver = eventObserver
 
-        let trusted = AXIsProcessTrusted()
-        let onboardingComplete = preferencesStore.values.onboardingComplete
+        let trusted = accessibilityProvider.isTrusted()
+        let onboardingComplete =
+            skipsOnboarding || preferencesStore.values.onboardingComplete
         logger.info(
             "application did finish launching trusted=\(trusted, privacy: .public) onboarding_complete=\(onboardingComplete, privacy: .public)"
         )
@@ -95,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_: Notification) {
         eventObserver?.stop()
-        store?.stop()
+        store.stop()
         for panel in panels.values {
             panel.orderOut(nil)
         }
@@ -104,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func render(state: TaskbarState) {
-        guard store?.accessibilityAvailable == true else {
+        guard store.accessibilityAvailable else {
             for panel in panels.values {
                 panel.orderOut(nil)
             }
@@ -118,14 +144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel = existing
             } else {
                 panel = TaskbarPanel(
-                    frame: display.appKitFrame,
+                    frame: TaskbarPanelLayout.frame(for: display),
                     onActivate: { [weak self] item in
-                        self?.store?.activate(item)
+                        self?.store.activate(item)
                     })
                 panels[display.identifier] = panel
             }
 
-            let frame = panelFrame(for: display.appKitFrame)
+            let frame = TaskbarPanelLayout.frame(for: display)
             panel.update(
                 frame: frame,
                 items: state.itemsByDisplay[display.identifier] ?? [],
@@ -141,8 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshPermissionStatus() {
-        let trusted = AXIsProcessTrusted()
-        store?.setAccessibilityAvailable(trusted)
+        let trusted = accessibilityProvider.isTrusted()
+        store.setAccessibilityAvailable(trusted)
         settingsWindow?.refresh(
             accessibilityTrusted: trusted,
             showsWindowTitles: preferencesStore.values.showsWindowTitles,
@@ -190,13 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestAccessibility() {
-        if !AXIsProcessTrusted(),
+        if !accessibilityProvider.isTrusted(),
             permissionRequestState.decision() == .request
         {
-            // The SDK exports this documented key as mutable CF storage, which strict
-            // concurrency correctly refuses to capture. Its public value is stable.
-            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
+            _ = accessibilityProvider.requestAccess()
         }
 
         if let url = URL(
@@ -215,20 +238,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setShowsWindowTitles(_ shows: Bool) {
         preferencesStore.setShowsWindowTitles(shows)
-        if let state = store?.state {
-            render(state: state)
-        }
-    }
-
-    private func panelFrame(for screenFrame: NSRect) -> NSRect {
-        let height: CGFloat = 42
-        let horizontalInset: CGFloat = 8
-        let bottomInset: CGFloat = 8
-        return NSRect(
-            x: screenFrame.minX + horizontalInset,
-            y: screenFrame.minY + bottomInset,
-            width: max(80, screenFrame.width - horizontalInset * 2),
-            height: height
-        )
+        render(state: store.state)
     }
 }

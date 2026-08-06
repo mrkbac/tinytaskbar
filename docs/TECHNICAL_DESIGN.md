@@ -11,7 +11,11 @@ in `WindowModel.swift` keep policy deterministic and testable:
 | --- | --- |
 | `WindowEligibility` | running regular app, AX role/subrole, hidden/minimized, usable-size policy |
 | `CGWindowMatcher` | conservative PID/layer/on-screen/bounds/title match |
+| `WindowCGAssignment` | deterministic one-to-one consumption of CG records per snapshot |
+| `WindowObservationKey` | shared projected/activation and unique observer key derivation |
 | `DisplayMapper` | greatest intersection, deterministic tie, center/nearest fallback |
+| `TaskbarPanelLayout` | full/visible AppKit frame placement with Dock-aware bottom inset |
+| `TaskbarButtonLayout` | compact title-on/title-off width bounds |
 | `WindowOrdering` | active first, app name, title, stable key |
 | `WindowDeduplicator` | one item per stable observation key |
 | `LifecycleReducer` | launch, permission change, and stop transitions |
@@ -46,6 +50,14 @@ the manually assembled SwiftPM bundle. The local macOS 26 SDK exposes the
 `NSApplication.shared`, `delegate`, and `run()` APIs used here, so the bundle does not
 need an `NSPrincipalClass = NSApplication` Info.plist entry; `LSUIElement` remains the
 explicit bundle-level accessory setting.
+
+`AppDelegate` receives small main-actor `AccessibilityPermissionProvider` and
+`WindowSnapshotProvider` seams. Production implementations call the public AX and
+Core Graphics/AppKit APIs. Tests inject mock providers to prove denied startup does
+not enumerate, granted/revoked transitions refresh and clear state, and stale
+activation is harmless. Debug builds additionally accept the explicit
+`--ui-test-fixture=normal|overflow|empty` argument; the fixture provider supplies
+deterministic metadata to the real panels without calling AX or TCC.
 
 ## Accessibility onboarding and minimal settings
 
@@ -122,6 +134,14 @@ public APIs expose no supported AX-to-CG window-ID bridge. A matched CG window n
 is used as the stable key when available; otherwise PID, normalized title, and rounded
 geometry form the fallback key.
 
+Within each snapshot, `WindowCGAssignment` sorts candidates and consumes each
+matching CG record at most once. The same assignment is used while associating AX
+elements for activation and while projecting taskbar items, so two identical
+overlapping AX observations can produce two items only when two distinct CG window
+numbers exist. `WindowObservationKey` derives the shared item/activation key and
+unique observer keys from those assignments; an unassigned duplicate is retained
+only as an observer record with an ordinal and cannot become a clickable item.
+
 An untitled eligible window displays its localized application name. Windows are
 assigned to the display with the greatest positive intersection area. Equal areas
 are resolved by stable display identifier; only if there is no positive intersection
@@ -170,6 +190,14 @@ exclusive within the Stage Manager/fullscreen group; TinyTaskbar selects only
 uses cached application icons, truncates titles, marks active items visually, and
 provides button accessibility labels. The bar is deliberately an overlay because
 third-party panels cannot reserve Dock-like work area.
+
+Panel frames are calculated from the AppKit full and visible frames, not from AX
+geometry. The horizontal inset is applied within the full display; the vertical
+origin is the greater of the full-frame bottom inset and the visible-frame bottom
+inset, so a bottom Dock lifts the overlay while a side Dock does not. Tiny and
+negative-origin displays are clamped deterministically. The title-off width range
+starts below the title-on minimum so app-name-only buttons stay compact while
+retaining their icon, tooltip, and full accessibility label.
 
 ## Public API and privacy boundary
 

@@ -24,6 +24,17 @@ The ad-hoc path is suitable for local bundle structure and launch experiments. I
 is not a distribution signature and cannot establish notarization or Gatekeeper
 acceptance.
 
+`build-app.sh` performs the selected Swift build before resolving the executable
+path. Its default is Release; Debug is available only for local fixture QA:
+
+```sh
+bash scripts/build-app.sh --adhoc --configuration debug \
+  --output dist/TinyTaskbar-Debug.app
+```
+
+The debug fixture is not a production feature and does not provide real window or
+Accessibility evidence.
+
 ## Developer ID distribution
 
 1. Bump both plist values deliberately and record the change in the release note.

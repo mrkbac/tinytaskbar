@@ -29,9 +29,11 @@ pre-commit run --all-files
 ```
 
 The local package tests cover eligibility, malformed input isolation, conservative
-Core Graphics matching, display intersection/tie/fallback mapping, stable ordering,
-deduplication, and lifecycle transitions. They do not replace tests on a real
-multi-display, Spaces, fullscreen, or Stage Manager session.
+Core Graphics matching, one-to-one AX/CG assignment and activation keys, display
+intersection/tie/fallback mapping, Dock-aware panel frames, stable ordering,
+deduplication, lifecycle transitions, injected permission/window providers, and the
+120-window projection path. They do not replace tests on a real multi-display,
+Spaces, fullscreen, or Stage Manager session.
 
 ## Local app bundle
 
@@ -53,6 +55,24 @@ bash scripts/package-dmg.sh
 Production notarization requires a separately configured `notarytool` keychain
 profile. See [docs/RELEASE.md](docs/RELEASE.md); do not put credentials in this
 workspace.
+
+For primary Computer QA without Accessibility or TCC changes, build the debug-only
+fixture bundle and launch one of the deterministic scenes directly:
+
+```sh
+bash scripts/build-app.sh --adhoc --configuration debug \
+  --output dist/TinyTaskbar-Debug.app
+dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar \
+  --ui-test-fixture=normal
+dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar \
+  --ui-test-fixture=overflow
+dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar \
+  --ui-test-fixture=empty
+```
+
+The fixture uses the real panel, item views, scrolling, and projection path while
+injecting deterministic window metadata; it never calls Accessibility or TCC.
+The flag is compiled only into Debug builds and is not a Release backdoor.
 
 ## Accessibility and privacy
 
@@ -82,8 +102,10 @@ deprecated Core Graphics workspace key is intentionally not used. Exact minimize
 or cross-Space membership is not attempted.
 
 The bar is an overlay. A third-party `NSPanel` cannot reserve screen work area like
-the Dock, so TinyTaskbar may cover the bottom edge of application content. A
-per-display panel uses public AppKit collection behavior for all Spaces,
+the Dock, so TinyTaskbar may cover the bottom edge of application content. Panels
+use each screen's full and visible AppKit frames: a bottom Dock lifts the bar by a
+small inset, while a side Dock does not unnecessarily change its vertical position.
+A per-display panel uses public AppKit collection behavior for all Spaces,
 fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
 real-machine behavior still needs validation.
 

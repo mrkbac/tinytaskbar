@@ -33,12 +33,21 @@ struct DisplayDescriptor: Equatable, Sendable {
     let identifier: String
     let frame: CGRect
     let appKitFrame: CGRect
+    let appKitVisibleFrame: CGRect
     let ordinal: Int
 
-    init(identifier: String, frame: CGRect, appKitFrame: CGRect? = nil, ordinal: Int = 0) {
+    init(
+        identifier: String,
+        frame: CGRect,
+        appKitFrame: CGRect? = nil,
+        appKitVisibleFrame: CGRect? = nil,
+        ordinal: Int = 0
+    ) {
         self.identifier = identifier
         self.frame = frame
-        self.appKitFrame = appKitFrame ?? frame
+        let resolvedAppKitFrame = appKitFrame ?? frame
+        self.appKitFrame = resolvedAppKitFrame
+        self.appKitVisibleFrame = appKitVisibleFrame ?? resolvedAppKitFrame
         self.ordinal = ordinal
     }
 }
@@ -136,6 +145,13 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
     static let defaults = TinyTaskbarPreferences()
 }
 
+extension CGRect {
+    var isFiniteGeometry: Bool {
+        minX.isFinite && minY.isFinite && maxX.isFinite && maxY.isFinite
+            && width.isFinite && height.isFinite
+    }
+}
+
 /// AX positions and CG window bounds already use the same global top-left screen space.
 enum AXScreenCoordinateMapper {
     static func toCGScreen(_ frame: CGRect) -> CGRect {
@@ -164,10 +180,7 @@ struct WindowEligibility: Sendable {
             let frame = candidate.frame,
             frame.width >= minimumSize.width,
             frame.height >= minimumSize.height,
-            frame.width.isFinite,
-            frame.height.isFinite,
-            frame.minX.isFinite,
-            frame.minY.isFinite
+            frame.isFiniteGeometry
         else {
             return false
         }
@@ -181,25 +194,42 @@ enum CGWindowMatcher {
 
     static func match(candidate: WindowCandidate, windows: [CGWindowMetadata]) -> CGWindowMetadata?
     {
-        guard let frame = candidate.frame else { return nil }
+        guard let index = matchIndex(candidate: candidate, windows: windows) else { return nil }
+        return windows[index]
+    }
 
-        let base = windows.filter {
-            $0.ownerPID == candidate.pid && $0.layer == 0 && $0.isOnScreen
-        }
+    static func matchIndex(
+        candidate: WindowCandidate,
+        windows: [CGWindowMetadata],
+        excluding excludedIndices: Set<Int> = []
+    ) -> Int? {
+        guard let frame = candidate.frame, frame.isFiniteGeometry else { return nil }
+
+        let base = windows.indices
+            .filter { index in
+                let window = windows[index]
+                return !excludedIndices.contains(index)
+                    && window.ownerPID == candidate.pid
+                    && window.layer == 0
+                    && window.isOnScreen
+                    && window.bounds.isFiniteGeometry
+            }
+            .sorted { preferredWindow(windows[$0], windows[$1]) }
         guard !base.isEmpty else { return nil }
 
         let boundsMatches = base.filter {
-            approximatelyEqual($0.bounds, frame, tolerance: boundsTolerance)
+            approximatelyEqual(windows[$0].bounds, frame, tolerance: boundsTolerance)
         }
 
         if !candidate.title.isEmpty {
-            let titleMatches = base.filter {
-                normalized($0.title) == normalized(candidate.title)
-            }
-            if let exact = titleMatches.first(where: {
-                approximatelyEqual($0.bounds, frame, tolerance: boundsTolerance)
-            }) {
-                return exact
+            let titledWindows = base.filter { !windows[$0].title.isEmpty }
+            if !titledWindows.isEmpty {
+                let titleMatches = titledWindows.filter {
+                    normalized(windows[$0].title) == normalized(candidate.title)
+                }
+                return titleMatches.first(where: {
+                    approximatelyEqual(windows[$0].bounds, frame, tolerance: boundsTolerance)
+                })
             }
         }
 
@@ -220,6 +250,71 @@ enum CGWindowMatcher {
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func preferredWindow(
+        _ lhs: CGWindowMetadata,
+        _ rhs: CGWindowMetadata
+    ) -> Bool {
+        let lhsNumber = lhs.windowNumber ?? .max
+        let rhsNumber = rhs.windowNumber ?? .max
+        if lhsNumber != rhsNumber { return lhsNumber < rhsNumber }
+        let lhsTitle = normalized(lhs.title)
+        let rhsTitle = normalized(rhs.title)
+        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
+        if lhs.bounds.minX != rhs.bounds.minX { return lhs.bounds.minX < rhs.bounds.minX }
+        if lhs.bounds.minY != rhs.bounds.minY { return lhs.bounds.minY < rhs.bounds.minY }
+        if lhs.bounds.width != rhs.bounds.width { return lhs.bounds.width < rhs.bounds.width }
+        return lhs.bounds.height < rhs.bounds.height
+    }
+}
+
+enum TaskbarPanelLayout {
+    static let defaultHeight: CGFloat = 42
+    static let defaultHorizontalInset: CGFloat = 8
+    static let defaultBottomInset: CGFloat = 8
+
+    static func frame(
+        for display: DisplayDescriptor,
+        height: CGFloat = defaultHeight,
+        horizontalInset: CGFloat = defaultHorizontalInset,
+        bottomInset: CGFloat = defaultBottomInset
+    ) -> CGRect {
+        let fullFrame = display.appKitFrame
+        let visibleFrame = display.appKitVisibleFrame
+        guard fullFrame.isFiniteGeometry, visibleFrame.isFiniteGeometry else { return .zero }
+
+        let safeHorizontalInset = min(
+            max(0, horizontalInset),
+            max(0, max(0, fullFrame.width) / 2)
+        )
+        let width = max(0, fullFrame.width - safeHorizontalInset * 2)
+        let bottom = max(
+            fullFrame.minY + max(0, bottomInset),
+            visibleFrame.minY + max(0, bottomInset)
+        )
+        let availableHeight = max(0, fullFrame.maxY - bottom)
+        let panelHeight = min(max(0, height), availableHeight)
+        return CGRect(
+            x: fullFrame.minX + safeHorizontalInset,
+            y: bottom,
+            width: width,
+            height: panelHeight
+        )
+    }
+}
+
+enum TaskbarButtonLayout {
+    static let titleOnMinimumWidth: CGFloat = 110
+    static let titleOffMinimumWidth: CGFloat = 72
+    static let titleOnMaximumWidth: CGFloat = 260
+    static let titleOffMaximumWidth: CGFloat = 190
+
+    static func widthRange(showsWindowTitles: Bool) -> ClosedRange<CGFloat> {
+        if showsWindowTitles {
+            return titleOnMinimumWidth...titleOnMaximumWidth
+        }
+        return titleOffMinimumWidth...titleOffMaximumWidth
     }
 }
 
@@ -323,13 +418,78 @@ enum WindowDeduplicator {
                 byID[item.id] = item
                 continue
             }
-            if item.isActive && !existing.isActive {
-                byID[item.id] = item
-            } else if item.cgWindowNumber != nil && existing.cgWindowNumber == nil {
+            if preferred(item, over: existing) {
                 byID[item.id] = item
             }
         }
         return Array(byID.values)
+    }
+
+    private static func preferred(_ lhs: TaskbarItem, over rhs: TaskbarItem) -> Bool {
+        if lhs.isActive != rhs.isActive { return lhs.isActive }
+        if (lhs.cgWindowNumber != nil) != (rhs.cgWindowNumber != nil) {
+            return lhs.cgWindowNumber != nil
+        }
+        if lhs.applicationName != rhs.applicationName {
+            return lhs.applicationName < rhs.applicationName
+        }
+        let lhsTitle = CGWindowMatcher.normalized(lhs.title)
+        let rhsTitle = CGWindowMatcher.normalized(rhs.title)
+        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
+        if lhs.displayIdentifier != rhs.displayIdentifier {
+            return lhs.displayIdentifier < rhs.displayIdentifier
+        }
+        return (lhs.cgWindowNumber ?? .max) < (rhs.cgWindowNumber ?? .max)
+    }
+}
+
+enum WindowCandidateOrdering {
+    static func preferred(_ lhs: WindowCandidate, _ rhs: WindowCandidate) -> Bool {
+        if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
+        let lhsStableKey = lhs.stableKey ?? ""
+        let rhsStableKey = rhs.stableKey ?? ""
+        if lhsStableKey != rhsStableKey { return lhsStableKey < rhsStableKey }
+        let lhsTitle = CGWindowMatcher.normalized(lhs.title)
+        let rhsTitle = CGWindowMatcher.normalized(rhs.title)
+        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
+        let lhsFrame = lhs.frame ?? .zero
+        let rhsFrame = rhs.frame ?? .zero
+        if lhsFrame.minX != rhsFrame.minX { return lhsFrame.minX < rhsFrame.minX }
+        if lhsFrame.minY != rhsFrame.minY { return lhsFrame.minY < rhsFrame.minY }
+        if lhsFrame.width != rhsFrame.width { return lhsFrame.width < rhsFrame.width }
+        if lhsFrame.height != rhsFrame.height { return lhsFrame.height < rhsFrame.height }
+        if lhs.isFocused != rhs.isFocused { return lhs.isFocused }
+        return lhs.isMain && !rhs.isMain
+    }
+}
+
+enum WindowCGAssignment {
+    static func assign(
+        candidates: [WindowCandidate],
+        cgWindows: [CGWindowMetadata],
+        selfPID: Int32,
+        eligibility: WindowEligibility = WindowEligibility()
+    ) -> [Int: Int] {
+        var assignments: [Int: Int] = [:]
+        var usedCGWindowIndices = Set<Int>()
+        let orderedCandidateIndices = candidates.indices
+            .filter { eligibility.isEligible(candidates[$0], selfPID: selfPID) }
+            .sorted { WindowCandidateOrdering.preferred(candidates[$0], candidates[$1]) }
+
+        for candidateIndex in orderedCandidateIndices {
+            guard
+                let cgWindowIndex = CGWindowMatcher.matchIndex(
+                    candidate: candidates[candidateIndex],
+                    windows: cgWindows,
+                    excluding: usedCGWindowIndices
+                )
+            else {
+                continue
+            }
+            assignments[candidateIndex] = cgWindowIndex
+            usedCGWindowIndices.insert(cgWindowIndex)
+        }
+        return assignments
     }
 }
 
@@ -343,10 +503,18 @@ enum WindowProjection {
         eligibility: WindowEligibility = WindowEligibility()
     ) -> TaskbarState {
         var projected: [TaskbarItem] = []
+        let assignments = WindowCGAssignment.assign(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            selfPID: selfPID,
+            eligibility: WindowEligibility(minimumSize: eligibility.minimumSize)
+        )
 
-        for candidate in candidates {
-            guard eligibility.isEligible(candidate, selfPID: selfPID),
-                let cgWindow = CGWindowMatcher.match(candidate: candidate, windows: cgWindows),
+        for candidateIndex in candidates.indices {
+            let candidate = candidates[candidateIndex]
+            guard let cgWindowIndex = assignments[candidateIndex] else { continue }
+            let cgWindow = cgWindows[cgWindowIndex]
+            guard
                 let frame = candidate.frame,
                 let displayIdentifier = DisplayMapper.identifier(for: frame, displays: displays)
             else {
@@ -354,8 +522,7 @@ enum WindowProjection {
             }
 
             let id =
-                candidate.stableKey
-                ?? StableWindowKey.make(
+                WindowObservationKey.itemKey(
                     candidate: candidate,
                     cgWindow: cgWindow
                 )
@@ -378,7 +545,14 @@ enum WindowProjection {
             $0.displayIdentifier
         }
         let ordered = grouped.mapValues(WindowOrdering.sorted)
-        return TaskbarState(displays: displays, itemsByDisplay: ordered)
+        let orderedDisplays = displays.sorted(by: preferredDisplay)
+        return TaskbarState(displays: orderedDisplays, itemsByDisplay: ordered)
+    }
+
+    private static func preferredDisplay(_ lhs: DisplayDescriptor, _ rhs: DisplayDescriptor) -> Bool
+    {
+        if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
+        return lhs.ordinal < rhs.ordinal
     }
 }
 
@@ -394,6 +568,31 @@ enum StableWindowKey {
             .map { String(Int($0.rounded())) }
             .joined(separator: ":")
         return "ax:\(candidate.pid):\(title):\(coordinates)"
+    }
+}
+
+enum WindowObservationKey {
+    static func itemKey(candidate: WindowCandidate, cgWindow: CGWindowMetadata) -> String {
+        candidate.stableKey ?? StableWindowKey.make(candidate: candidate, cgWindow: cgWindow)
+    }
+
+    static func observerKey(
+        candidate: WindowCandidate,
+        cgWindow: CGWindowMetadata?,
+        ordinal: Int
+    ) -> String {
+        if let windowNumber = cgWindow?.windowNumber {
+            return "cg-observer:\(candidate.pid):\(windowNumber)"
+        }
+
+        let frame = candidate.frame ?? .zero
+        let coordinates = [frame.minX, frame.minY, frame.width, frame.height]
+            .map { String(Int($0.rounded())) }
+            .joined(separator: ":")
+        let base =
+            candidate.stableKey
+            ?? "\(CGWindowMatcher.normalized(candidate.title)):\(coordinates)"
+        return "ax-observer:\(candidate.pid):\(base):\(ordinal)"
     }
 }
 

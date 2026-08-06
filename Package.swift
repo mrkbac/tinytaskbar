@@ -12,6 +12,9 @@ let package = Package(
         .executableTarget(
             name: "TinyTaskbar",
             path: "Sources/TinyTaskbar",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
@@ -22,7 +25,10 @@ let package = Package(
         .testTarget(
             name: "TinyTaskbarTests",
             dependencies: ["TinyTaskbar"],
-            path: "Tests/TinyTaskbarTests"
+            path: "Tests/TinyTaskbarTests",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

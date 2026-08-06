@@ -4,6 +4,20 @@ The runtime records refresh count, AX candidate count, visible item count, and
 refresh duration in `TaskbarStore.metrics`. OSLog writes one debug refresh record;
 healthy steady state has no repeating timer or polling work.
 
+The deterministic debug overflow fixture exercises the real panel and projection
+path without Accessibility or TCC changes:
+
+```sh
+bash scripts/build-app.sh --adhoc --configuration debug \
+  --output dist/TinyTaskbar-Debug.app
+dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar \
+  --ui-test-fixture=overflow
+```
+
+The package test suite also projects 120 windows and exercises the injected provider
+refresh/debounce path. These are repeatable preflight checks, not production CPU,
+RSS, wakeup, or click-to-focus measurements.
+
 ## Provisional v1 budgets
 
 These are engineering targets, not measured results:

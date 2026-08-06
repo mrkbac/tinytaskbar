@@ -70,6 +70,40 @@ struct WindowModelTests {
                 applicationIsRegular: false,
                 frame: CGRect(x: 0, y: 0, width: 300, height: 200)
             ),
+            WindowCandidate(
+                pid: 7,
+                applicationName: "App",
+                applicationIsRunning: false,
+                frame: CGRect(x: 0, y: 0, width: 300, height: 200)
+            ),
+            WindowCandidate(
+                pid: 8,
+                applicationName: "App",
+                applicationIsHidden: true,
+                frame: CGRect(x: 0, y: 0, width: 300, height: 200)
+            ),
+            WindowCandidate(
+                pid: 9,
+                applicationName: "App",
+                role: "AXSheet",
+                frame: CGRect(x: 0, y: 0, width: 300, height: 200)
+            ),
+            WindowCandidate(
+                pid: 10,
+                applicationName: "App",
+                subrole: "AXPopover",
+                frame: CGRect(x: 0, y: 0, width: 300, height: 200)
+            ),
+            WindowCandidate(
+                pid: 11,
+                applicationName: "App",
+                frame: CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 200)
+            ),
+            WindowCandidate(
+                pid: 12,
+                applicationName: "App",
+                frame: CGRect(x: 0, y: 0, width: 300, height: -CGFloat.infinity)
+            ),
         ]
 
         for candidate in candidates {
@@ -107,6 +141,21 @@ struct WindowModelTests {
             title: "Document",
             isOnScreen: false
         )
+        let wrongPID = CGWindowMetadata(
+            ownerPID: 11,
+            bounds: candidate.frame!,
+            title: "Document"
+        )
+        let wrongBounds = CGWindowMetadata(
+            ownerPID: 10,
+            bounds: CGRect(x: 200, y: 100, width: 500, height: 300),
+            title: "Document"
+        )
+        let wrongTitle = CGWindowMetadata(
+            ownerPID: 10,
+            bounds: candidate.frame!,
+            title: "Other document"
+        )
 
         #expect(
             WindowProjection.project(
@@ -122,6 +171,11 @@ struct WindowModelTests {
                 displays: [display],
                 selfPID: 999
             ) == TaskbarState(displays: [display], itemsByDisplay: [:]))
+        #expect(
+            CGWindowMatcher.match(
+                candidate: candidate,
+                windows: [wrongPID, wrongBounds, wrongTitle]
+            ) == nil)
     }
 
     @Test("untitled windows use the application name for display")
@@ -160,6 +214,16 @@ struct WindowModelTests {
                 for: CGRect(x: 450, y: 100, width: 100, height: 200),
                 displays: [right, left]
             ) == "a")
+
+        let overlappingA = DisplayDescriptor(
+            identifier: "a", frame: CGRect(x: 0, y: 0, width: 600, height: 500))
+        let overlappingB = DisplayDescriptor(
+            identifier: "b", frame: CGRect(x: 400, y: 0, width: 600, height: 500))
+        #expect(
+            DisplayMapper.identifier(
+                for: CGRect(x: 350, y: 100, width: 300, height: 200),
+                displays: [overlappingB, overlappingA]
+            ) == "a")
     }
 
     @Test("display mapping falls back to containing center and nearest screen")
@@ -178,6 +242,53 @@ struct WindowModelTests {
                 for: CGRect(x: 570, y: 200, width: 40, height: 40),
                 displays: [left, right]
             ) == "right")
+    }
+
+    @Test("panel placement respects bottom Dock but not side Dock")
+    func panelPlacementUsesVisibleFrame() {
+        let bottomDock = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            appKitFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            appKitVisibleFrame: CGRect(x: 0, y: 70, width: 1_440, height: 830)
+        )
+        let sideDock = DisplayDescriptor(
+            identifier: "side",
+            frame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900),
+            appKitFrame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900),
+            appKitVisibleFrame: CGRect(x: 1_520, y: 0, width: 1_360, height: 900)
+        )
+
+        let bottomFrame = TaskbarPanelLayout.frame(for: bottomDock)
+        let sideFrame = TaskbarPanelLayout.frame(for: sideDock)
+
+        #expect(bottomFrame.minY == 78)
+        #expect(bottomFrame.height == 42)
+        #expect(sideFrame.minY == 8)
+        #expect(sideFrame.width == 1_424)
+    }
+
+    @Test("panel placement stays bounded on tiny and negative-origin displays")
+    func panelPlacementHandlesTinyAndNegativeDisplays() {
+        let tiny = DisplayDescriptor(
+            identifier: "tiny",
+            frame: CGRect(x: -100, y: 20, width: 50, height: 30),
+            appKitFrame: CGRect(x: -100, y: 20, width: 50, height: 30),
+            appKitVisibleFrame: CGRect(x: -100, y: 20, width: 50, height: 30)
+        )
+        let frame = TaskbarPanelLayout.frame(for: tiny)
+        #expect(frame.minX >= tiny.appKitFrame.minX)
+        #expect(frame.maxX <= tiny.appKitFrame.maxX)
+        #expect(frame.minY >= tiny.appKitFrame.minY)
+        #expect(frame.maxY <= tiny.appKitFrame.maxY)
+
+        let negative = DisplayDescriptor(
+            identifier: "negative",
+            frame: CGRect(x: -1_920, y: -100, width: 1_920, height: 1_080)
+        )
+        let negativeFrame = TaskbarPanelLayout.frame(for: negative)
+        #expect(negativeFrame.minX == -1_912)
+        #expect(negativeFrame.minY == -92)
     }
 
     @Test("ordering puts active windows first then stable textual keys")
@@ -255,6 +366,206 @@ struct WindowModelTests {
             id: "same", pid: 1, applicationName: "App", title: "Window", displayIdentifier: "main",
             cgWindowNumber: 8, isActive: true)
         #expect(WindowDeduplicator.deduplicate([duplicate, active]) == [active])
+    }
+
+    @Test("one CG window is consumed by only one AX candidate")
+    func oneToOneWindowMatching() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let candidates = [
+            WindowCandidate(pid: 10, applicationName: "Editor", title: "Same", frame: frame),
+            WindowCandidate(pid: 10, applicationName: "Editor", title: "Same", frame: frame),
+        ]
+        let display = DisplayDescriptor(
+            identifier: "main", frame: CGRect(x: 0, y: 0, width: 1_000, height: 700))
+        let oneWindow = CGWindowMetadata(
+            windowNumber: 10, ownerPID: 10, bounds: frame, title: "Same")
+        let twoWindows = [
+            CGWindowMetadata(windowNumber: 20, ownerPID: 10, bounds: frame, title: "Same"),
+            oneWindow,
+        ]
+
+        let collapsed = WindowProjection.project(
+            candidates: candidates,
+            cgWindows: [oneWindow],
+            displays: [display],
+            selfPID: 999
+        )
+        #expect(collapsed.itemsByDisplay["main"]?.count == 1)
+
+        let assignments = WindowCGAssignment.assign(
+            candidates: candidates,
+            cgWindows: twoWindows,
+            selfPID: 999
+        )
+        #expect(assignments.count == 2)
+        #expect(assignments[0] != assignments[1])
+
+        let distinct = WindowProjection.project(
+            candidates: Array(candidates.reversed()),
+            cgWindows: twoWindows,
+            displays: [display],
+            selfPID: 999
+        )
+        #expect(distinct.itemsByDisplay["main"]?.map(\.cgWindowNumber) == [10, 20])
+    }
+
+    @Test("activation and observer keys stay unique for consumed CG windows")
+    func activationKeysFollowOneToOneAssignments() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let candidates = [
+            WindowCandidate(pid: 10, applicationName: "Editor", title: "Same", frame: frame),
+            WindowCandidate(pid: 10, applicationName: "Editor", title: "Same", frame: frame),
+        ]
+        let cgWindows = [
+            CGWindowMetadata(windowNumber: 20, ownerPID: 10, bounds: frame, title: "Same"),
+            CGWindowMetadata(windowNumber: 10, ownerPID: 10, bounds: frame, title: "Same"),
+        ]
+        let assignments = WindowCGAssignment.assign(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            selfPID: 999
+        )
+
+        let activationKeys = candidates.indices.compactMap { index -> String? in
+            guard let cgIndex = assignments[index] else { return nil }
+            return WindowObservationKey.itemKey(
+                candidate: candidates[index],
+                cgWindow: cgWindows[cgIndex]
+            )
+        }
+        let observerKeys = candidates.indices.compactMap { index -> String? in
+            let cgWindow = assignments[index].map { cgWindows[$0] }
+            return WindowObservationKey.observerKey(
+                candidate: candidates[index],
+                cgWindow: cgWindow,
+                ordinal: index
+            )
+        }
+
+        #expect(activationKeys.count == 2)
+        #expect(Set(activationKeys).count == 2)
+        #expect(Set(observerKeys).count == 2)
+        #expect(activationKeys.allSatisfy { $0.hasPrefix("cg:10:") })
+        #expect(observerKeys.allSatisfy { $0.hasPrefix("cg-observer:10:") })
+    }
+
+    @Test("projection is deterministic under input permutation")
+    func projectionPermutationIsStable() {
+        let displays = [
+            DisplayDescriptor(
+                identifier: "b", frame: CGRect(x: 500, y: 0, width: 500, height: 600)),
+            DisplayDescriptor(identifier: "a", frame: CGRect(x: 0, y: 0, width: 500, height: 600)),
+        ]
+        let candidates = (0..<6).map { index in
+            WindowCandidate(
+                pid: Int32(index + 1),
+                applicationName: index.isMultiple(of: 2) ? "Alpha" : "Beta",
+                title: "Title \(index)",
+                frame: CGRect(
+                    x: index < 3 ? 40 : 540,
+                    y: 80 + CGFloat(index) * 40,
+                    width: 220,
+                    height: 160
+                )
+            )
+        }
+        let cgWindows = candidates.enumerated().map { index, candidate in
+            CGWindowMetadata(
+                windowNumber: UInt32(100 + index),
+                ownerPID: candidate.pid,
+                bounds: candidate.frame!,
+                title: candidate.title
+            )
+        }
+
+        let first = WindowProjection.project(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            displays: displays,
+            selfPID: 999,
+            frontmostPID: 3
+        )
+        let second = WindowProjection.project(
+            candidates: Array(candidates.reversed()),
+            cgWindows: Array(cgWindows.reversed()),
+            displays: Array(displays.reversed()),
+            selfPID: 999,
+            frontmostPID: 3
+        )
+        #expect(first == second)
+    }
+
+    @Test("empty displays and long Unicode titles remain safe")
+    func emptyDisplaysAndUnicode() {
+        let candidate = WindowCandidate(
+            pid: 10,
+            applicationName: "Éditeur",
+            title: "Résumé — 文書 🚀 — Пример",
+            frame: CGRect(x: 0, y: 0, width: 400, height: 300)
+        )
+        let cg = CGWindowMetadata(
+            windowNumber: 1, ownerPID: 10, bounds: candidate.frame!, title: candidate.title)
+        let empty = WindowProjection.project(
+            candidates: [candidate], cgWindows: [cg], displays: [], selfPID: 999)
+        #expect(empty == .empty)
+
+        let item = WindowProjection.project(
+            candidates: [candidate],
+            cgWindows: [cg],
+            displays: [
+                DisplayDescriptor(
+                    identifier: "main", frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+            ],
+            selfPID: 999
+        ).itemsByDisplay["main"]!.first!
+        #expect(item.accessibilityLabel.contains(candidate.title))
+        #expect(item.tooltip.contains(candidate.title))
+    }
+
+    @Test("projection handles 120 windows for overflow")
+    func projectionStressOverflow() {
+        let display = DisplayDescriptor(
+            identifier: "main", frame: CGRect(x: 0, y: 0, width: 4_000, height: 2_000))
+        let candidates = (0..<120).map { index in
+            let frame = CGRect(
+                x: 20 + CGFloat(index % 20) * 180,
+                y: 40 + CGFloat(index / 20) * 240,
+                width: 160,
+                height: 180
+            )
+            return WindowCandidate(
+                pid: Int32(index + 1),
+                applicationName: "App \(index)",
+                title: "Window \(index)",
+                frame: frame,
+                isMain: index == 0
+            )
+        }
+        let cgWindows = candidates.enumerated().map { index, candidate in
+            CGWindowMetadata(
+                windowNumber: UInt32(index + 1),
+                ownerPID: candidate.pid,
+                bounds: candidate.frame!,
+                title: candidate.title
+            )
+        }
+
+        let state = WindowProjection.project(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            displays: [display],
+            selfPID: 999,
+            frontmostPID: 1
+        )
+        #expect(state.itemsByDisplay["main"]?.count == 120)
+        #expect(state.itemsByDisplay["main"]?.first?.isActive == true)
+    }
+
+    @Test("button sizing keeps title-off items materially narrower")
+    func buttonSizingRanges() {
+        #expect(TaskbarButtonLayout.titleOnMinimumWidth == 110)
+        #expect(TaskbarButtonLayout.titleOffMinimumWidth < 110)
+        #expect(TaskbarButtonLayout.titleOffMaximumWidth < TaskbarButtonLayout.titleOnMaximumWidth)
     }
 
     @Test("lifecycle reducer preserves permission-denied graceful running state")

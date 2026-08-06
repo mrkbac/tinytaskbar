@@ -19,6 +19,16 @@ executed by the automated package checks.
 | M12 | Clean macOS 26 machine | Install signed/notarized DMG and launch | Gatekeeper accepts; launch, permission, uninstall, and crash-log paths work | Pending |
 | M13 | TinyTaskbar already running | Relaunch/open the app; close Settings with X; reopen it | The retained Settings window shows on relaunch; a temporary Dock icon may appear only while Settings is visible; X hides it without quitting the process or removing taskbars | Pending |
 | M14 | Settings window visible with taskbars | Toggle Show Window Titles and Launch at Login; reopen Settings | Button text changes immediately without window re-enumeration; icons/full labels/tooltips remain; login status/error is inline and accurate | Pending |
+| M15 | Debug ad-hoc bundle, no Accessibility grant | Launch `dist/TinyTaskbar-Debug.app/Contents/MacOS/TinyTaskbar --ui-test-fixture=normal` | Real taskbar panels and item views appear without a TCC request; clicking a fixture item exercises the normal panel/projection path; no permission prerequisite | Pending primary Computer QA |
+| M16 | Debug fixture bundle | Repeat with `--ui-test-fixture=overflow` and `--ui-test-fixture=empty` | Overflow exercises horizontal scrolling and compact labels; empty renders no items safely; neither fixture calls AX/TCC | Pending primary Computer QA |
+| M17 | Debug fixture on a display with a bottom or side Dock | Launch the normal or overflow fixture and inspect panel placement | Bottom Dock leaves the configured visible-frame inset; side Dock does not unnecessarily lift the bar; record display arrangement and screenshot | Pending primary Computer QA |
+
+The debug fixture cases are mocked-E2E coverage of the real AppKit surface and
+projection/layout path, not evidence of Accessibility, window discovery,
+multi-monitor, Spaces, fullscreen, Stage Manager, or click-to-focus behavior for
+real applications. Automated provider and reducer tests cover denied startup,
+permission transitions, malformed snapshots, and stale activation without changing
+TCC.
 
 The active test record should include macOS build, hardware, display arrangement,
 Space/Stage Manager state, app build number, Accessibility state, timestamps, and

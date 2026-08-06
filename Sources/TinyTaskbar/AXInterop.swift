@@ -6,8 +6,27 @@ import OSLog
 
 @MainActor
 protocol WindowSnapshotProvider: AnyObject {
+    var onChange: (@MainActor @Sendable () -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
+}
+
+@MainActor
+protocol AccessibilityPermissionProvider: AnyObject {
+    func isTrusted() -> Bool
+    func requestAccess() -> Bool
+}
+
+@MainActor
+final class SystemAccessibilityPermissionProvider: AccessibilityPermissionProvider {
+    func isTrusted() -> Bool {
+        AXIsProcessTrusted()
+    }
+
+    func requestAccess() -> Bool {
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
 }
 
 struct RawWindowSnapshot: Equatable, Sendable {
@@ -37,33 +56,56 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         }
 
         var candidates: [WindowCandidate] = []
-        var observerRecords: [AXApplicationRecord] = []
+        var applicationInputs: [AXApplicationInput] = []
+        var allRecords: [AXWindowRecord] = []
         var nextElements: [String: AXUIElement] = [:]
 
         for application in applications {
             let records = inspector.enumerate(application)
-            var elements: [String: AXUIElement] = [:]
-            for record in records {
-                candidates.append(record.candidate)
-                let observerKey = observerKey(for: record.candidate, cgWindows: cgWindows)
-                elements[observerKey] = record.element
-                if let match = CGWindowMatcher.match(
-                    candidate: record.candidate, windows: cgWindows)
-                {
-                    nextElements[
-                        record.candidate.stableKey
-                            ?? StableWindowKey.make(
-                                candidate: record.candidate,
-                                cgWindow: match
-                            )] = record.element
-                }
-            }
-            observerRecords.append(
-                AXApplicationRecord(
+            let startIndex = allRecords.count
+            allRecords.append(contentsOf: records)
+            candidates.append(contentsOf: records.map(\.candidate))
+            applicationInputs.append(
+                AXApplicationInput(
                     pid: application.processIdentifier,
                     applicationElement: AXUIElementCreateApplication(application.processIdentifier),
-                    windowElements: elements
+                    records: records,
+                    startIndex: startIndex
                 )
+            )
+        }
+
+        let assignments = WindowCGAssignment.assign(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            selfPID: ProcessInfo.processInfo.processIdentifier
+        )
+        for (candidateIndex, record) in allRecords.enumerated() {
+            guard let cgWindowIndex = assignments[candidateIndex] else { continue }
+            let cgWindow = cgWindows[cgWindowIndex]
+            let key = WindowObservationKey.itemKey(
+                candidate: record.candidate,
+                cgWindow: cgWindow
+            )
+            nextElements[key] = record.element
+        }
+
+        let observerRecords = applicationInputs.map { input in
+            var elements: [String: AXUIElement] = [:]
+            for (ordinal, record) in input.records.enumerated() {
+                let candidateIndex = input.startIndex + ordinal
+                let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
+                let key = WindowObservationKey.observerKey(
+                    candidate: record.candidate,
+                    cgWindow: cgWindow,
+                    ordinal: ordinal
+                )
+                elements[key] = record.element
+            }
+            return AXApplicationRecord(
+                pid: input.pid,
+                applicationElement: input.applicationElement,
+                windowElements: elements
             )
         }
 
@@ -99,20 +141,6 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         onChange?()
     }
 
-    private func observerKey(
-        for candidate: WindowCandidate,
-        cgWindows: [CGWindowMetadata]
-    ) -> String {
-        guard let match = CGWindowMatcher.match(candidate: candidate, windows: cgWindows) else {
-            let frame = candidate.frame ?? .zero
-            let coordinates = [frame.minX, frame.minY, frame.width, frame.height]
-                .map { String(Int($0.rounded())) }
-                .joined(separator: ":")
-            return
-                "ax-observer:\(candidate.pid):\(CGWindowMatcher.normalized(candidate.title)):\(coordinates)"
-        }
-        return candidate.stableKey ?? StableWindowKey.make(candidate: candidate, cgWindow: match)
-    }
 }
 
 @MainActor
@@ -127,7 +155,14 @@ private final class AXWindowInspector {
         if let typed = rawWindows as? [AXUIElement] {
             windows = typed
         } else if let array = rawWindows as? NSArray {
-            windows = array.map { $0 as! AXUIElement }
+            windows = array.compactMap { value in
+                let cfValue = value as CFTypeRef
+                guard CFGetTypeID(cfValue) == AXUIElementGetTypeID()
+                else {
+                    return nil
+                }
+                return (cfValue as! AXUIElement)
+            }
         } else {
             return []
         }
@@ -215,6 +250,14 @@ private final class AXWindowInspector {
 private struct AXWindowRecord {
     let candidate: WindowCandidate
     let element: AXUIElement
+}
+
+@MainActor
+private struct AXApplicationInput {
+    let pid: pid_t
+    let applicationElement: AXUIElement
+    let records: [AXWindowRecord]
+    let startIndex: Int
 }
 
 @MainActor
@@ -436,6 +479,7 @@ enum DisplayReader {
                 identifier: "display:\(displayID):\(ordinal)",
                 frame: CGDisplayBounds(displayID),
                 appKitFrame: screen.frame,
+                appKitVisibleFrame: screen.visibleFrame,
                 ordinal: ordinal
             )
         }

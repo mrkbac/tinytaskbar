@@ -674,8 +674,13 @@ private final class TaskbarBarView: NSView {
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
-        button.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: widthRange.lowerBound)
+            .isActive =
+            true
+        button.widthAnchor.constraint(lessThanOrEqualToConstant: widthRange.upperBound).isActive =
+            true
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
         button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         button.wantsLayer = true

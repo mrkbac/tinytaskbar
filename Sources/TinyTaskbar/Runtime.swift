@@ -190,6 +190,8 @@ final class TinyTaskbarPreferencesStore {
 
 @MainActor
 final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
+    private static let fixedContentSize = NSSize(width: 640, height: 400)
+
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onShowsWindowTitlesChanged: (@MainActor (Bool) -> Void)?
     var onDone: (@MainActor () -> Void)?
@@ -217,7 +219,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         launchAtLoginService = SMAppService.mainApp
 
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
+            contentRect: NSRect(origin: .zero, size: Self.fixedContentSize),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -231,6 +233,10 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         hidesOnDeactivate = false
         delegate = self
         setupInterface()
+        contentView?.layoutSubtreeIfNeeded()
+        contentMinSize = Self.fixedContentSize
+        contentMaxSize = Self.fixedContentSize
+        setContentSize(Self.fixedContentSize)
     }
 
     required init?(coder: NSCoder) {
@@ -282,9 +288,8 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         launchAtLoginStatusLabel.maximumNumberOfLines = 2
         launchAtLoginStatusLabel.lineBreakMode = .byWordWrapping
         launchAtLoginStatusLabel.setContentCompressionResistancePriority(
-            .defaultLow, for: .horizontal)
-        launchAtLoginStatusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 190).isActive =
-            true
+            .required, for: .horizontal)
+        launchAtLoginStatusLabel.widthAnchor.constraint(equalToConstant: 190).isActive = true
 
         showWindowTitlesSwitch.target = self
         showWindowTitlesSwitch.action = #selector(showWindowTitlesChanged(_:))
@@ -306,6 +311,10 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         accessibilityControls.alignment = .centerY
         accessibilityControls.spacing = 10
         accessibilityControls.setContentHuggingPriority(.required, for: .horizontal)
+        accessibilityControls.setContentCompressionResistancePriority(
+            .required, for: .horizontal)
+        accessibilityButton.setContentHuggingPriority(.required, for: .horizontal)
+        accessibilityButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let accessibilityRow = makeRow(
             title: "Accessibility",
             detail: "Required for semantic window discovery and focus/raise.",
@@ -317,6 +326,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         launchControls.alignment = .centerY
         launchControls.spacing = 10
         launchControls.setContentHuggingPriority(.required, for: .horizontal)
+        launchControls.setContentCompressionResistancePriority(.required, for: .horizontal)
         let launchRow = makeRow(
             title: "Launch at Login",
             detail: "Start TinyTaskbar automatically when you sign in.",
@@ -382,6 +392,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         row.alignment = .centerY
         row.distribution = .fill
         row.spacing = 16
+        row.setContentCompressionResistancePriority(.required, for: .horizontal)
         return row
     }
 

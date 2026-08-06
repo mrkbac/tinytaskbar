@@ -36,6 +36,36 @@ There is no repeating enumeration timer, polling loop, helper, database, or
 background daemon. Healthy steady state is quiet; a refresh occurs after relevant
 window, application, Space, display, or activation events.
 
+## Accessibility onboarding and minimal settings
+
+`AppDelegate` owns one retained native `TinyTaskbarSettingsWindow`; it is a normal,
+key-capable `NSWindow` only while explicitly shown. On first launch when onboarding
+is incomplete, or whenever Accessibility is denied, the app refreshes permission and
+launch-at-login status, calls the current public `NSApp.activate()` API, and makes
+the window key/front. Standard window close and Done only close the guide; the app
+continues running, and `applicationShouldTerminateAfterLastWindowClosed` is false.
+`applicationShouldHandleReopen` shows and activates the same window when an already
+running app is launched again.
+
+The guide explains the utility and Accessibility requirement, shows Granted/Required
+status, and exposes clearly labelled controls. Only the explicit Enable Accessibility…
+or Open Accessibility Settings… action calls `AXIsProcessTrustedWithOptions` with
+`prompt: true` and opens the public
+`x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`
+destination. Returning to TinyTaskbar is handled by `applicationDidBecomeActive`,
+which rechecks `AXIsProcessTrusted()` and updates `TaskbarStore` and the row without
+polling. The request decision is a small one-shot value seam; TCC is never changed by
+the app.
+
+The same window contains only the required minimal settings. Launch at Login uses
+public `SMAppService.mainApp` status/register/unregister calls and displays unavailable,
+approval-required, or error states inline; there is no helper or login-item target.
+Show Window Titles defaults to true and persists in `UserDefaults`. When disabled,
+compact buttons use the owning application name while retaining app icons, full
+accessibility labels, and tooltips. The current `TaskbarState` is rerendered
+immediately without re-enumerating windows. A Quit TinyTaskbar button is provided.
+Taskbar panels remain non-activating and never use the settings-window activation path.
+
 ## Window eligibility and Space semantics
 
 For each running regular GUI application other than TinyTaskbar, AX enumeration

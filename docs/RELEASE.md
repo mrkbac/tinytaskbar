@@ -1,8 +1,9 @@
 # Release and validation
 
-TinyTaskbar has repository metadata for source history, but no updater, login item,
-helper, analytics, or configuration migration. Version and build numbers live in
-`Resources/Info.plist`:
+TinyTaskbar has repository metadata for source history, but no updater, helper,
+analytics, or configuration migration. Its minimal launch-at-login preference uses
+`SMAppService.mainApp`; there is no helper or separate login-item target. Version
+and build numbers live in `Resources/Info.plist`:
 
 * `CFBundleShortVersionString`: user-visible semantic version, currently `1.0.0`.
 * `CFBundleVersion`: monotonically increasing build number, currently `1`.
@@ -62,9 +63,10 @@ those distribution claims.
   ```
 
   This is a destructive permission reset and is not part of automated validation.
-* Re-test launch behavior, permission denial, clean-machine installation, and all
-  multi-display/Space/fullscreen/Stage Manager cases after each release-signing
-  or macOS update.
+* Re-test launch/onboarding/reopen behavior, permission denial and grant,
+  close-without-quit, clean-machine installation, launch-at-login approval, and all
+  multi-display/Space/fullscreen/Stage Manager cases after each release-signing or
+  macOS update.
 
 Developer ID identity availability, Apple notarization, stapling, Gatekeeper,
 clean-machine installation, and real-machine behavior remain pending until their

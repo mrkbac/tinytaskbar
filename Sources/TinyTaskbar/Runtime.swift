@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import OSLog
+import ServiceManagement
 
 struct RefreshMetrics: Equatable, Sendable {
     fileprivate(set) var refreshCount = 0
@@ -119,45 +120,302 @@ final class TaskbarStore {
     }
 }
 
+enum AccessibilityPermissionRequestDecision: Equatable, Sendable {
+    case request
+    case alreadyRequested
+}
+
+struct AccessibilityPermissionRequestState: Equatable, Sendable {
+    private(set) var didRequest = false
+
+    mutating func decision() -> AccessibilityPermissionRequestDecision {
+        guard !didRequest else { return .alreadyRequested }
+        didRequest = true
+        return .request
+    }
+}
+
 @MainActor
-final class AccessibilityPermissionController {
-    private var didPrompt = false
-    private let onStatusChanged: @MainActor (Bool) -> Void
+final class TinyTaskbarPreferencesStore {
+    private static let onboardingCompleteKey = "onboardingComplete"
+    private static let showsWindowTitlesKey = "showsWindowTitles"
 
-    init(onStatusChanged: @escaping @MainActor (Bool) -> Void) {
-        self.onStatusChanged = onStatusChanged
+    private let defaults: UserDefaults
+    private(set) var values: TinyTaskbarPreferences
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        values = TinyTaskbarPreferences(
+            onboardingComplete: defaults.object(forKey: Self.onboardingCompleteKey) as? Bool
+                ?? TinyTaskbarPreferences.defaults.onboardingComplete,
+            showsWindowTitles: defaults.object(forKey: Self.showsWindowTitlesKey) as? Bool
+                ?? TinyTaskbarPreferences.defaults.showsWindowTitles
+        )
     }
 
-    func checkAndPromptIfNeeded() -> Bool {
-        guard !AXIsProcessTrusted() else { return true }
-        guard !didPrompt else { return false }
-        didPrompt = true
-
-        // The SDK exports this documented key as mutable CF storage, which strict
-        // concurrency correctly refuses to capture. Its public value is stable.
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        presentExplanation()
-        return false
+    func setOnboardingComplete(_ complete: Bool) {
+        values.onboardingComplete = complete
+        defaults.set(complete, forKey: Self.onboardingCompleteKey)
     }
 
-    private func presentExplanation() {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "TinyTaskbar needs Accessibility access"
-        alert.informativeText =
-            "Accessibility lets TinyTaskbar read window titles and focus a window when you click its item. No screen recording or window thumbnails are used."
-        alert.addButton(withTitle: "Open Accessibility Settings")
-        alert.addButton(withTitle: "Continue Without Taskbars")
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn,
-            let url = URL(
-                string:
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        {
-            NSWorkspace.shared.open(url)
+    func setShowsWindowTitles(_ shows: Bool) {
+        values.showsWindowTitles = shows
+        defaults.set(shows, forKey: Self.showsWindowTitlesKey)
+    }
+}
+
+@MainActor
+final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
+    var onAccessibilityRequest: (@MainActor () -> Void)?
+    var onShowsWindowTitlesChanged: (@MainActor (Bool) -> Void)?
+    var onDone: (@MainActor () -> Void)?
+    var onQuit: (@MainActor () -> Void)?
+
+    private let accessibilityStatusLabel: NSTextField
+    private let accessibilityButton: NSButton
+    private let launchAtLoginSwitch: NSSwitch
+    private let launchAtLoginStatusLabel: NSTextField
+    private let showWindowTitlesSwitch: NSSwitch
+    private let doneButton: NSButton
+    private let quitButton: NSButton
+    private let launchAtLoginService: SMAppService
+
+    init() {
+        accessibilityStatusLabel = NSTextField(labelWithString: "Required")
+        accessibilityButton = NSButton(
+            title: "Enable Accessibility…", target: nil, action: nil)
+        launchAtLoginSwitch = NSSwitch()
+        launchAtLoginStatusLabel = NSTextField(wrappingLabelWithString: "Off")
+        showWindowTitlesSwitch = NSSwitch()
+        doneButton = NSButton(title: "Done", target: nil, action: nil)
+        quitButton = NSButton(title: "Quit TinyTaskbar", target: nil, action: nil)
+        launchAtLoginService = SMAppService.mainApp
+
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+
+        title = "TinyTaskbar Settings"
+        isReleasedWhenClosed = false
+        isMovableByWindowBackground = true
+        level = .normal
+        collectionBehavior = [.moveToActiveSpace]
+        hidesOnDeactivate = false
+        delegate = self
+        setupInterface()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func refresh(
+        accessibilityTrusted: Bool,
+        showsWindowTitles: Bool,
+        accessibilityRequestWasMade: Bool
+    ) {
+        accessibilityStatusLabel.stringValue = accessibilityTrusted ? "Granted" : "Required"
+        accessibilityStatusLabel.textColor =
+            accessibilityTrusted
+            ? .systemGreen
+            : .secondaryLabelColor
+        accessibilityButton.title =
+            accessibilityTrusted || accessibilityRequestWasMade
+            ? "Open Accessibility Settings…"
+            : "Enable Accessibility…"
+        accessibilityButton.setAccessibilityLabel(accessibilityButton.title)
+        showWindowTitlesSwitch.state = showsWindowTitles ? .on : .off
+        refreshLaunchAtLoginStatus()
+    }
+
+    func windowWillClose(_: Notification) {
+        NSApp.deactivate()
+    }
+
+    private func setupInterface() {
+        let heading = NSTextField(labelWithString: "TinyTaskbar")
+        heading.font = .systemFont(ofSize: 22, weight: .semibold)
+
+        let introduction = NSTextField(
+            wrappingLabelWithString:
+                "A compact taskbar for the windows visible on your displays. Accessibility is required to read window titles and focus a window when you select it. No screen recording or thumbnails are used."
+        )
+        introduction.maximumNumberOfLines = 0
+
+        accessibilityButton.bezelStyle = .rounded
+        accessibilityButton.target = self
+        accessibilityButton.action = #selector(accessibilityButtonPressed)
+        accessibilityButton.setAccessibilityLabel("Enable Accessibility")
+
+        launchAtLoginSwitch.target = self
+        launchAtLoginSwitch.action = #selector(launchAtLoginChanged(_:))
+        launchAtLoginSwitch.setAccessibilityLabel("Launch TinyTaskbar at login")
+        launchAtLoginStatusLabel.maximumNumberOfLines = 2
+        launchAtLoginStatusLabel.lineBreakMode = .byWordWrapping
+        launchAtLoginStatusLabel.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
+        launchAtLoginStatusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 190).isActive =
+            true
+
+        showWindowTitlesSwitch.target = self
+        showWindowTitlesSwitch.action = #selector(showWindowTitlesChanged(_:))
+        showWindowTitlesSwitch.setAccessibilityLabel("Show window titles")
+
+        doneButton.bezelStyle = .rounded
+        doneButton.keyEquivalent = "\r"
+        doneButton.target = self
+        doneButton.action = #selector(doneButtonPressed)
+        doneButton.setAccessibilityLabel("Done")
+
+        quitButton.bezelStyle = .rounded
+        quitButton.target = self
+        quitButton.action = #selector(quitButtonPressed)
+        quitButton.setAccessibilityLabel("Quit TinyTaskbar")
+
+        let accessibilityControls = NSStackView(
+            views: [accessibilityStatusLabel, accessibilityButton])
+        accessibilityControls.alignment = .centerY
+        accessibilityControls.spacing = 10
+        accessibilityControls.setContentHuggingPriority(.required, for: .horizontal)
+        let accessibilityRow = makeRow(
+            title: "Accessibility",
+            detail: "Required for semantic window discovery and focus/raise.",
+            accessory: accessibilityControls
+        )
+
+        let launchControls = NSStackView(
+            views: [launchAtLoginSwitch, launchAtLoginStatusLabel])
+        launchControls.alignment = .centerY
+        launchControls.spacing = 10
+        launchControls.setContentHuggingPriority(.required, for: .horizontal)
+        let launchRow = makeRow(
+            title: "Launch at Login",
+            detail: "Start TinyTaskbar automatically when you sign in.",
+            accessory: launchControls
+        )
+
+        let titleControls = NSStackView(views: [showWindowTitlesSwitch])
+        titleControls.setContentHuggingPriority(.required, for: .horizontal)
+        let titleRow = makeRow(
+            title: "Show Window Titles",
+            detail: "When off, compact buttons show only the owning app name.",
+            accessory: titleControls
+        )
+
+        let buttonRow = NSStackView(views: [quitButton, doneButton])
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 10
+        buttonRow.setContentHuggingPriority(.required, for: .horizontal)
+        buttonRow.distribution = .fill
+
+        let stack = NSStackView(
+            views: [heading, introduction, accessibilityRow, launchRow, titleRow, buttonRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        guard let contentView else { return }
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 26),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
+            introduction.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+
+        for row in [accessibilityRow, launchRow, titleRow, buttonRow] {
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
-        onStatusChanged(AXIsProcessTrusted())
+
+        quitButton.setContentHuggingPriority(.required, for: .horizontal)
+        doneButton.setContentHuggingPriority(.required, for: .horizontal)
+        doneButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    private func makeRow(title: String, detail: String, accessory: NSView) -> NSStackView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let detailLabel = NSTextField(wrappingLabelWithString: detail)
+        detailLabel.maximumNumberOfLines = 0
+        detailLabel.textColor = .secondaryLabelColor
+
+        let text = NSStackView(views: [titleLabel, detailLabel])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 3
+        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [text, accessory])
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 16
+        return row
+    }
+
+    private func refreshLaunchAtLoginStatus() {
+        switch launchAtLoginService.status {
+        case .enabled:
+            launchAtLoginSwitch.state = .on
+            launchAtLoginSwitch.isEnabled = true
+            launchAtLoginStatusLabel.stringValue = "On"
+        case .notRegistered:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginSwitch.isEnabled = true
+            launchAtLoginStatusLabel.stringValue = "Off"
+        case .requiresApproval:
+            launchAtLoginSwitch.state = .on
+            launchAtLoginSwitch.isEnabled = false
+            launchAtLoginStatusLabel.stringValue = "Approval required in System Settings"
+        case .notFound:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginSwitch.isEnabled = false
+            launchAtLoginStatusLabel.stringValue = "Unavailable for this app bundle"
+        @unknown default:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginSwitch.isEnabled = false
+            launchAtLoginStatusLabel.stringValue = "Unavailable"
+        }
+        launchAtLoginStatusLabel.textColor = .secondaryLabelColor
+    }
+
+    @objc private func accessibilityButtonPressed() {
+        onAccessibilityRequest?()
+    }
+
+    @objc private func launchAtLoginChanged(_ sender: NSSwitch) {
+        do {
+            if sender.state == .on {
+                try launchAtLoginService.register()
+            } else {
+                try launchAtLoginService.unregister()
+            }
+            refreshLaunchAtLoginStatus()
+        } catch {
+            sender.state = launchAtLoginService.status == .enabled ? .on : .off
+            sender.isEnabled = false
+            launchAtLoginStatusLabel.stringValue =
+                "Could not update: \(error.localizedDescription)"
+            launchAtLoginStatusLabel.textColor = .systemOrange
+        }
+    }
+
+    @objc private func showWindowTitlesChanged(_ sender: NSSwitch) {
+        onShowsWindowTitlesChanged?(sender.state == .on)
+    }
+
+    @objc private func doneButtonPressed() {
+        onDone?()
+    }
+
+    @objc private func quitButtonPressed() {
+        onQuit?()
     }
 }
 
@@ -250,9 +508,9 @@ final class TaskbarPanel: NSPanel {
 
     override var canBecomeMain: Bool { false }
 
-    func update(frame: NSRect, items: [TaskbarItem]) {
+    func update(frame: NSRect, items: [TaskbarItem], showsWindowTitles: Bool) {
         setFrame(frame, display: false)
-        barView.update(items: items)
+        barView.update(items: items, showsWindowTitles: showsWindowTitles)
     }
 }
 
@@ -262,6 +520,7 @@ private final class TaskbarBarView: NSView {
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
     private var currentItems: [TaskbarItem] = []
+    private var currentShowsWindowTitles = true
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var iconCache: [Int32: NSImage] = [:]
     private let onActivate: @MainActor (TaskbarItem) -> Void
@@ -313,9 +572,12 @@ private final class TaskbarBarView: NSView {
         stackView.frame.origin = .zero
     }
 
-    func update(items: [TaskbarItem]) {
-        guard items != currentItems else { return }
+    func update(items: [TaskbarItem], showsWindowTitles: Bool) {
+        guard items != currentItems || showsWindowTitles != currentShowsWindowTitles else {
+            return
+        }
         currentItems = items
+        currentShowsWindowTitles = showsWindowTitles
         buttons.removeAll()
         for view in stackView.arrangedSubviews {
             stackView.removeArrangedSubview(view)
@@ -323,16 +585,19 @@ private final class TaskbarBarView: NSView {
         }
 
         for item in items {
-            let button = makeButton(for: item)
+            let button = makeButton(for: item, showsWindowTitles: showsWindowTitles)
             buttons[ObjectIdentifier(button)] = item
             stackView.addArrangedSubview(button)
         }
         needsLayout = true
     }
 
-    private func makeButton(for item: TaskbarItem) -> NSButton {
+    private func makeButton(for item: TaskbarItem, showsWindowTitles: Bool) -> NSButton {
         let button = NSButton(
-            title: item.displayTitle, target: self, action: #selector(activateButton(_:)))
+            title: item.buttonTitle(showsWindowTitles: showsWindowTitles),
+            target: self,
+            action: #selector(activateButton(_:))
+        )
         button.isBordered = false
         button.setButtonType(.momentaryPushIn)
         button.font = .systemFont(ofSize: 12, weight: item.isActive ? .semibold : .regular)
@@ -341,9 +606,9 @@ private final class TaskbarBarView: NSView {
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
         button.contentTintColor = item.isActive ? .controlAccentColor : .labelColor
-        button.toolTip = "Activate \(item.applicationName): \(item.displayTitle)"
+        button.toolTip = item.tooltip
         button.setAccessibilityRole(.button)
-        button.setAccessibilityLabel("\(item.applicationName), \(item.displayTitle)")
+        button.setAccessibilityLabel(item.accessibilityLabel)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
         button.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true

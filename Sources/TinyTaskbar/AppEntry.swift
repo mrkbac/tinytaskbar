@@ -7,7 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var provider: SystemWindowSnapshotProvider?
     private var store: TaskbarStore?
     private var eventObserver: SystemEventObserver?
-    private var permissionController: AccessibilityPermissionController?
+    private let preferencesStore = TinyTaskbarPreferencesStore()
+    private var permissionRequestState = AccessibilityPermissionRequestState()
+    private var settingsWindow: TinyTaskbarSettingsWindow?
     private var panels: [String: TaskbarPanel] = [:]
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -25,10 +27,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.render(state: state)
         }
 
-        let permissionController = AccessibilityPermissionController { [weak self] trusted in
-            self?.store?.setAccessibilityAvailable(trusted)
+        let settingsWindow = TinyTaskbarSettingsWindow()
+        settingsWindow.onAccessibilityRequest = { [weak self] in
+            self?.requestAccessibility()
         }
-        self.permissionController = permissionController
+        settingsWindow.onShowsWindowTitlesChanged = { [weak self] shows in
+            self?.setShowsWindowTitles(shows)
+        }
+        settingsWindow.onDone = { [weak self] in
+            self?.finishOnboarding()
+        }
+        settingsWindow.onQuit = {
+            NSApp.terminate(nil)
+        }
+        self.settingsWindow = settingsWindow
 
         let eventObserver = SystemEventObserver { [weak store] in
             store?.requestRefresh()
@@ -36,8 +48,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         eventObserver.start()
         self.eventObserver = eventObserver
 
-        let trusted = permissionController.checkAndPromptIfNeeded()
+        let trusted = AXIsProcessTrusted()
         store.start(accessibilityTrusted: trusted)
+        if !trusted || !preferencesStore.values.onboardingComplete {
+            showSettingsWindow()
+        }
+    }
+
+    func applicationDidBecomeActive(_: Notification) {
+        refreshPermissionStatus()
+    }
+
+    func applicationShouldHandleReopen(_: NSApplication, hasVisibleWindows _: Bool) -> Bool {
+        showSettingsWindow()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
+        false
     }
 
     func applicationWillTerminate(_: Notification) {
@@ -47,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.orderOut(nil)
         }
         panels.removeAll()
+        settingsWindow?.orderOut(nil)
     }
 
     private func render(state: TaskbarState) {
@@ -72,13 +101,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let frame = panelFrame(for: display.appKitFrame)
-            panel.update(frame: frame, items: state.itemsByDisplay[display.identifier] ?? [])
+            panel.update(
+                frame: frame,
+                items: state.itemsByDisplay[display.identifier] ?? [],
+                showsWindowTitles: preferencesStore.values.showsWindowTitles
+            )
             panel.orderFrontRegardless()
         }
 
         for (identifier, panel) in panels where !displayIDs.contains(identifier) {
             panel.orderOut(nil)
             panels.removeValue(forKey: identifier)
+        }
+    }
+
+    private func refreshPermissionStatus() {
+        let trusted = AXIsProcessTrusted()
+        store?.setAccessibilityAvailable(trusted)
+        settingsWindow?.refresh(
+            accessibilityTrusted: trusted,
+            showsWindowTitles: preferencesStore.values.showsWindowTitles,
+            accessibilityRequestWasMade: permissionRequestState.didRequest
+        )
+    }
+
+    private func showSettingsWindow() {
+        guard let settingsWindow else { return }
+        refreshPermissionStatus()
+        if !settingsWindow.isVisible {
+            settingsWindow.center()
+        }
+        NSApp.activate()
+        settingsWindow.makeKeyAndOrderFront(nil)
+    }
+
+    private func requestAccessibility() {
+        if !AXIsProcessTrusted(),
+            permissionRequestState.decision() == .request
+        {
+            // The SDK exports this documented key as mutable CF storage, which strict
+            // concurrency correctly refuses to capture. Its public value is stable.
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
+
+        if let url = URL(
+            string:
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        {
+            NSWorkspace.shared.open(url)
+        }
+        refreshPermissionStatus()
+    }
+
+    private func finishOnboarding() {
+        preferencesStore.setOnboardingComplete(true)
+        settingsWindow?.close()
+    }
+
+    private func setShowsWindowTitles(_ shows: Bool) {
+        preferencesStore.setShowsWindowTitles(shows)
+        if let state = store?.state {
+            render(state: state)
         }
     }
 

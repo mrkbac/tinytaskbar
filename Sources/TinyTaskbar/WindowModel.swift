@@ -108,6 +108,18 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     var displayTitle: String {
         title.isEmpty ? applicationName : title
     }
+
+    func buttonTitle(showsWindowTitles: Bool) -> String {
+        showsWindowTitles ? displayTitle : applicationName
+    }
+
+    var accessibilityLabel: String {
+        "\(applicationName), \(displayTitle)"
+    }
+
+    var tooltip: String {
+        "Activate \(applicationName): \(displayTitle)"
+    }
 }
 
 struct TaskbarState: Equatable, Sendable {
@@ -115,6 +127,13 @@ struct TaskbarState: Equatable, Sendable {
     let itemsByDisplay: [String: [TaskbarItem]]
 
     static let empty = TaskbarState(displays: [], itemsByDisplay: [:])
+}
+
+struct TinyTaskbarPreferences: Equatable, Sendable {
+    var onboardingComplete = false
+    var showsWindowTitles = true
+
+    static let defaults = TinyTaskbarPreferences()
 }
 
 /// AX positions and CG window bounds already use the same global top-left screen space.

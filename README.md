@@ -6,8 +6,10 @@ reported by Accessibility and matched to a current on-screen Core Graphics windo
 Clicking an item activates, focuses, and raises its owning window.
 
 The executable is an `LSUIElement` AppKit application. It has no Dock icon,
-preferences window, helper, updater, analytics, thumbnail capture, or third-party
-runtime dependency.
+helper, updater, analytics, thumbnail capture, or third-party runtime dependency.
+It includes one small native onboarding/settings window for Accessibility,
+launch-at-login, and the window-title display preference; there is no SwiftUI or
+general-purpose settings framework.
 
 ## Build and test
 
@@ -49,10 +51,17 @@ workspace.
 ## Accessibility and privacy
 
 Accessibility permission is required for semantic window enumeration, observation,
-and focus/raise. TinyTaskbar checks trust once per launch, uses
-`AXIsProcessTrustedWithOptions`, and presents one concise explanation with the
-Privacy & Security → Accessibility path. If access is denied, it remains running
-without taskbars and does not repeatedly prompt.
+and focus/raise. On first launch, or whenever access is denied, TinyTaskbar shows a
+retained native onboarding/settings window and activates only that explicit window.
+The Accessibility button calls `AXIsProcessTrustedWithOptions` only after the user
+chooses it, opens Privacy & Security → Accessibility, and updates the status when
+the app becomes active again. Closing the window keeps the process and taskbars
+running; Done records onboarding completion. If access is denied, it remains
+running without taskbars and does not automatically request TCC access.
+
+The same window offers public `SMAppService.mainApp` launch-at-login control and a
+persisted Show Window Titles toggle. Turning titles off changes compact button text
+immediately while retaining full accessibility labels, tooltips, and app icons.
 
 TinyTaskbar does not request Screen Recording. Window titles come from AX; Core
 Graphics is used only for public owner, layer, on-screen, title, and geometry
@@ -82,8 +91,9 @@ fullscreen windows are included when Core Graphics reports them on-screen.
 
 Validated in the local checkout: debug tests, debug and release package builds,
 Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
-verification, and plist syntax/structure checks. Manual Accessibility flow, app
-launch, click-to-focus, multi-monitor/Spaces/fullscreen/Stage Manager behavior,
-Developer ID signing, notarization/stapling, Gatekeeper on a clean machine, and
-performance budgets remain explicitly pending until run on the required real
-environment.
+verification, and plist syntax/structure checks. Manual onboarding/settings flow,
+Accessibility grant, app launch, relaunch/reopen behavior, close-without-quit,
+click-to-focus, launch-at-login approval, multi-monitor/Spaces/fullscreen/Stage
+Manager behavior, Developer ID signing, notarization/stapling, Gatekeeper on a
+clean machine, and performance budgets remain explicitly pending until run on the
+required real environment.

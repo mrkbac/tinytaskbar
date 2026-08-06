@@ -59,12 +59,15 @@ continues running, and `applicationShouldTerminateAfterLastWindowClosed` is fals
 `applicationShouldHandleReopen` shows and activates the same window when an already
 running app is launched again.
 
-The retained Settings window is a non-resizable fixed-size AppKit window with a 640 ×
-400 point content area. Its content min/max sizes are both set to that value after
-interface constraints are installed and laid out, preventing automatic fitting from
-collapsing the width or growing the height. The introduction uses the full available
-content width, action accessories retain their intrinsic button/control widths, and
-the launch-at-login status is constrained to 190 points and at most two wrapped lines.
+The retained Settings window is a non-resizable fixed-size AppKit window with an
+explicitly framed 640 × 400 point content view. Its content min/max sizes are both set
+to that value after interface setup. The root vertical stack is manually framed with
+insets and uses width/height autoresizing; no outer constraints connect it to the
+content view, so intrinsic fitting cannot resize the window. Auto Layout remains
+inside the fixed stack for rows and accessories. The introduction uses the full
+available content width, action accessories retain their intrinsic button/control
+widths, and the launch-at-login status is constrained to 190 points and at most two
+wrapped lines.
 
 The initial launch show is deferred by one `Task.yield()` on the main actor because
 `applicationDidFinishLaunching` runs before the first application event-loop turn;

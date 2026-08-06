@@ -225,6 +225,11 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
             defer: false
         )
 
+        let fixedContentView = NSView(
+            frame: NSRect(origin: .zero, size: Self.fixedContentSize))
+        fixedContentView.autoresizingMask = [.width, .height]
+        contentView = fixedContentView
+
         title = "TinyTaskbar Settings"
         isReleasedWhenClosed = false
         isMovableByWindowBackground = true
@@ -352,17 +357,21 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.translatesAutoresizingMaskIntoConstraints = true
+        stack.autoresizingMask = [.width, .height]
 
         guard let contentView else { return }
         contentView.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 26),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
-            introduction.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
+        let horizontalInset: CGFloat = 28
+        let topInset: CGFloat = 26
+        let bottomInset: CGFloat = 24
+        stack.frame = NSRect(
+            x: horizontalInset,
+            y: bottomInset,
+            width: max(0, contentView.bounds.width - horizontalInset * 2),
+            height: max(0, contentView.bounds.height - topInset - bottomInset)
+        )
+        introduction.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         for row in [accessibilityRow, launchRow, titleRow, buttonRow] {
             row.translatesAutoresizingMaskIntoConstraints = false

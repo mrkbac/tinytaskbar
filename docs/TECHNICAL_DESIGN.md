@@ -46,12 +46,14 @@ excluded, as are malformed frames and surfaces smaller than 80 × 40 points. Tha
 size is a conservative v1 guard against tiny/transient surfaces, not a claim that
 all applications use the same minimum window size.
 
-The AX frame is converted to Quartz screen coordinates using the main display’s
-public `CGDisplayBounds` height. It must match a layer-zero, on-screen Core Graphics
-window for the same PID. Bounds are compared within four points, with title matching
-preferred when both titles are available. This is deliberately conservative: public
-APIs expose no supported AX-to-CG window-ID bridge. A matched CG window number is
-used as the stable key when available; otherwise PID, normalized title, and rounded
+AX positions and Core Graphics bounds already use the same global top-left screen
+coordinate space, so no AX→CG flip or main-display-height conversion occurs. The
+AppKit bottom-left coordinate system is used only for panel frames sourced separately
+from `NSScreen`. The unchanged AX frame must match a layer-zero, on-screen Core
+Graphics window for the same PID. Bounds are compared within four points, with title
+matching preferred when both titles are available. This is deliberately conservative:
+public APIs expose no supported AX-to-CG window-ID bridge. A matched CG window number
+is used as the stable key when available; otherwise PID, normalized title, and rounded
 geometry form the fallback key.
 
 An untitled eligible window displays its localized application name. Windows are

@@ -4,6 +4,16 @@ import Testing
 @testable import TinyTaskbar
 
 struct WindowModelTests {
+    @Test("AX frames preserve global top-left CG screen coordinates")
+    func axCoordinatesRemainUnchanged() {
+        let axFrame = CGRect(x: -1280, y: 100, width: 640, height: 400)
+
+        let cgFrame = AXScreenCoordinateMapper.toCGScreen(axFrame)
+
+        #expect(cgFrame == axFrame)
+        #expect(cgFrame.minY == 100)
+    }
+
     @Test("eligibility accepts standard and dialog windows")
     func eligibleWindowRules() {
         let eligibility = WindowEligibility()
@@ -185,6 +195,55 @@ struct WindowModelTests {
         ]
 
         #expect(WindowOrdering.sorted(items).map(\.id) == ["a", "b", "z"])
+    }
+
+    @Test("only the frontmost application can provide an active item")
+    func activeStateRequiresFrontmostApplication() {
+        let alpha = WindowCandidate(
+            stableKey: "alpha",
+            pid: 10,
+            applicationName: "Alpha",
+            title: "Alpha window",
+            frame: CGRect(x: 0, y: 0, width: 400, height: 300),
+            isMain: true
+        )
+        let beta = WindowCandidate(
+            stableKey: "beta",
+            pid: 20,
+            applicationName: "Beta",
+            title: "Beta window",
+            frame: CGRect(x: 500, y: 0, width: 400, height: 300),
+            isMain: true
+        )
+        let displays = [
+            DisplayDescriptor(
+                identifier: "main",
+                frame: CGRect(x: 0, y: 0, width: 1_000, height: 600)
+            )
+        ]
+        let cgWindows = [
+            CGWindowMetadata(ownerPID: 10, bounds: alpha.frame!),
+            CGWindowMetadata(ownerPID: 20, bounds: beta.frame!),
+        ]
+
+        let frontmost = WindowProjection.project(
+            candidates: [alpha, beta],
+            cgWindows: cgWindows,
+            displays: displays,
+            selfPID: 999,
+            frontmostPID: 20
+        ).itemsByDisplay["main"]!
+        #expect(frontmost.map(\.pid) == [20, 10])
+        #expect(frontmost.map(\.isActive) == [true, false])
+
+        let noFrontmost = WindowProjection.project(
+            candidates: [alpha, beta],
+            cgWindows: cgWindows,
+            displays: displays,
+            selfPID: 999,
+            frontmostPID: nil
+        ).itemsByDisplay["main"]!
+        #expect(noFrontmost.allSatisfy { !$0.isActive })
     }
 
     @Test("deduplication keeps the strongest observation")

@@ -117,8 +117,6 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
 @MainActor
 private final class AXWindowInspector {
-    private let mainDisplayBounds = CGDisplayBounds(CGMainDisplayID())
-
     func enumerate(_ application: NSRunningApplication) -> [AXWindowRecord] {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         guard let rawWindows = copyAttribute(applicationElement, kAXWindowsAttribute) else {
@@ -146,7 +144,7 @@ private final class AXWindowInspector {
             }
 
             let axFrame = CGRect(origin: position, size: size)
-            let frame = convertAXFrameToQuartz(axFrame)
+            let frame = AXScreenCoordinateMapper.toCGScreen(axFrame)
             let title = stringAttribute(element, kAXTitleAttribute) ?? ""
             let candidate = WindowCandidate(
                 pid: application.processIdentifier,
@@ -166,13 +164,6 @@ private final class AXWindowInspector {
             )
             return AXWindowRecord(candidate: candidate, element: element)
         }
-    }
-
-    private func convertAXFrameToQuartz(_ frame: CGRect) -> CGRect {
-        // AX and CG both describe screen positions from the top-left. The main display
-        // height is the public conversion anchor for AppKit's bottom-left coordinates.
-        let quartzY = mainDisplayBounds.minY + mainDisplayBounds.height - frame.maxY
-        return CGRect(x: frame.minX, y: quartzY, width: frame.width, height: frame.height)
     }
 
     private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {

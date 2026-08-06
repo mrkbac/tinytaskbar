@@ -1,7 +1,7 @@
 # Release and validation
 
-TinyTaskbar has no repository metadata, updater, login item, helper, analytics, or
-configuration migration. Version and build numbers live in
+TinyTaskbar has repository metadata for source history, but no updater, login item,
+helper, analytics, or configuration migration. Version and build numbers live in
 `Resources/Info.plist`:
 
 * `CFBundleShortVersionString`: user-visible semantic version, currently `1.0.0`.

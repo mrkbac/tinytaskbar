@@ -117,6 +117,13 @@ struct TaskbarState: Equatable, Sendable {
     static let empty = TaskbarState(displays: [], itemsByDisplay: [:])
 }
 
+/// AX positions and CG window bounds already use the same global top-left screen space.
+enum AXScreenCoordinateMapper {
+    static func toCGScreen(_ frame: CGRect) -> CGRect {
+        frame
+    }
+}
+
 struct WindowEligibility: Sendable {
     static let defaultMinimumSize = CGSize(width: 80, height: 40)
 
@@ -334,8 +341,7 @@ enum WindowProjection {
                     cgWindow: cgWindow
                 )
             let isActive =
-                candidate.isFocused || candidate.isMain
-                || (frontmostPID == candidate.pid && candidate.isMain)
+                frontmostPID == candidate.pid && (candidate.isFocused || candidate.isMain)
             projected.append(
                 TaskbarItem(
                     id: id,

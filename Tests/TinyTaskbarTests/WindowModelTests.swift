@@ -244,7 +244,7 @@ struct WindowModelTests {
             ) == "right")
     }
 
-    @Test("panel placement respects bottom Dock but not side Dock")
+    @Test("panel placement respects bottom and side Docks")
     func panelPlacementUsesVisibleFrame() {
         let bottomDock = DisplayDescriptor(
             identifier: "main",
@@ -258,14 +258,25 @@ struct WindowModelTests {
             appKitFrame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900),
             appKitVisibleFrame: CGRect(x: 1_520, y: 0, width: 1_360, height: 900)
         )
+        let rightDock = DisplayDescriptor(
+            identifier: "right",
+            frame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900),
+            appKitFrame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900),
+            appKitVisibleFrame: CGRect(x: 1_440, y: 0, width: 1_360, height: 900)
+        )
 
         let bottomFrame = TaskbarPanelLayout.frame(for: bottomDock)
         let sideFrame = TaskbarPanelLayout.frame(for: sideDock)
+        let rightFrame = TaskbarPanelLayout.frame(for: rightDock)
 
         #expect(bottomFrame.minY == 78)
         #expect(bottomFrame.height == 42)
         #expect(sideFrame.minY == 8)
-        #expect(sideFrame.width == 1_424)
+        #expect(sideFrame.minX == 1_528)
+        #expect(sideFrame.width == 1_344)
+        #expect(rightFrame.minY == 8)
+        #expect(rightFrame.minX == 1_448)
+        #expect(rightFrame.width == 1_344)
     }
 
     @Test("panel placement stays bounded on tiny and negative-origin displays")
@@ -500,6 +511,7 @@ struct WindowModelTests {
         let candidate = WindowCandidate(
             pid: 10,
             applicationName: "Éditeur",
+            applicationIdentity: "com.example.editor",
             title: "Résumé — 文書 🚀 — Пример",
             frame: CGRect(x: 0, y: 0, width: 400, height: 300)
         )
@@ -520,6 +532,7 @@ struct WindowModelTests {
         ).itemsByDisplay["main"]!.first!
         #expect(item.accessibilityLabel.contains(candidate.title))
         #expect(item.tooltip.contains(candidate.title))
+        #expect(item.applicationIdentity == candidate.applicationIdentity)
     }
 
     @Test("projection handles 120 windows for overflow")

@@ -47,7 +47,19 @@ if [[ ! -e "$ARTIFACT" ]]; then
     exit 1
 fi
 if [[ -z "$STAPLE_TARGET" ]]; then
-    STAPLE_TARGET="$ARTIFACT"
+    case "$ARTIFACT" in
+        *.zip)
+            echo "ZIP submissions require --staple with the original app or DMG path." >&2
+            exit 2
+            ;;
+        *)
+            STAPLE_TARGET="$ARTIFACT"
+            ;;
+    esac
+fi
+if [[ ! -e "$STAPLE_TARGET" ]]; then
+    echo "Staple target not found: $STAPLE_TARGET" >&2
+    exit 1
 fi
 
 xcrun notarytool submit "$ARTIFACT" --keychain-profile "$PROFILE" --wait

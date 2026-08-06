@@ -169,6 +169,10 @@ private final class AXWindowInspector {
 
         let applicationName =
             application.localizedName ?? application.bundleIdentifier ?? "Application"
+        let applicationIdentity =
+            application.bundleIdentifier
+            ?? application.bundleURL?.standardizedFileURL.path
+            ?? application.executableURL?.standardizedFileURL.path
         return windows.compactMap { element in
             guard let role = stringAttribute(element, kAXRoleAttribute),
                 let subrole = stringAttribute(element, kAXSubroleAttribute),
@@ -184,6 +188,7 @@ private final class AXWindowInspector {
             let candidate = WindowCandidate(
                 pid: application.processIdentifier,
                 applicationName: applicationName,
+                applicationIdentity: applicationIdentity,
                 localizedApplicationName: applicationName,
                 applicationIsRunning: !application.isTerminated,
                 applicationIsRegular: application.activationPolicy == .regular,

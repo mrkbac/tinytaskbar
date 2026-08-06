@@ -57,6 +57,7 @@ struct WindowCandidate: Equatable, Sendable {
     let stableKey: String?
     let pid: Int32
     let applicationName: String
+    let applicationIdentity: String?
     let localizedApplicationName: String
     let applicationIsRunning: Bool
     let applicationIsRegular: Bool
@@ -74,6 +75,7 @@ struct WindowCandidate: Equatable, Sendable {
         stableKey: String? = nil,
         pid: Int32,
         applicationName: String,
+        applicationIdentity: String? = nil,
         localizedApplicationName: String? = nil,
         applicationIsRunning: Bool = true,
         applicationIsRegular: Bool = true,
@@ -90,6 +92,7 @@ struct WindowCandidate: Equatable, Sendable {
         self.stableKey = stableKey
         self.pid = pid
         self.applicationName = applicationName
+        self.applicationIdentity = applicationIdentity
         self.localizedApplicationName = localizedApplicationName ?? applicationName
         self.applicationIsRunning = applicationIsRunning
         self.applicationIsRegular = applicationIsRegular
@@ -109,10 +112,31 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let id: String
     let pid: Int32
     let applicationName: String
+    let applicationIdentity: String?
     let title: String
     let displayIdentifier: String
     let cgWindowNumber: UInt32?
     let isActive: Bool
+
+    init(
+        id: String,
+        pid: Int32,
+        applicationName: String,
+        applicationIdentity: String? = nil,
+        title: String,
+        displayIdentifier: String,
+        cgWindowNumber: UInt32?,
+        isActive: Bool
+    ) {
+        self.id = id
+        self.pid = pid
+        self.applicationName = applicationName
+        self.applicationIdentity = applicationIdentity
+        self.title = title
+        self.displayIdentifier = displayIdentifier
+        self.cgWindowNumber = cgWindowNumber
+        self.isActive = isActive
+    }
 
     var displayTitle: String {
         title.isEmpty ? applicationName : title
@@ -284,11 +308,17 @@ enum TaskbarPanelLayout {
         let visibleFrame = display.appKitVisibleFrame
         guard fullFrame.isFiniteGeometry, visibleFrame.isFiniteGeometry else { return .zero }
 
+        let horizontalMin = min(max(fullFrame.minX, visibleFrame.minX), fullFrame.maxX)
+        let horizontalMax = max(
+            horizontalMin,
+            min(fullFrame.maxX, visibleFrame.maxX)
+        )
+        let horizontalWidth = max(0, horizontalMax - horizontalMin)
         let safeHorizontalInset = min(
             max(0, horizontalInset),
-            max(0, max(0, fullFrame.width) / 2)
+            horizontalWidth / 2
         )
-        let width = max(0, fullFrame.width - safeHorizontalInset * 2)
+        let width = max(0, horizontalWidth - safeHorizontalInset * 2)
         let bottom = max(
             fullFrame.minY + max(0, bottomInset),
             visibleFrame.minY + max(0, bottomInset)
@@ -296,7 +326,7 @@ enum TaskbarPanelLayout {
         let availableHeight = max(0, fullFrame.maxY - bottom)
         let panelHeight = min(max(0, height), availableHeight)
         return CGRect(
-            x: fullFrame.minX + safeHorizontalInset,
+            x: horizontalMin + safeHorizontalInset,
             y: bottom,
             width: width,
             height: panelHeight
@@ -533,6 +563,7 @@ enum WindowProjection {
                     id: id,
                     pid: candidate.pid,
                     applicationName: candidate.localizedApplicationName,
+                    applicationIdentity: candidate.applicationIdentity,
                     title: candidate.title,
                     displayIdentifier: displayIdentifier,
                     cgWindowNumber: cgWindow.windowNumber,

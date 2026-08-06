@@ -108,7 +108,8 @@ or cross-Space membership is not attempted.
 The bar is an overlay. A third-party `NSPanel` cannot reserve screen work area like
 the Dock, so TinyTaskbar may cover the bottom edge of application content. Panels
 use each screen's full and visible AppKit frames: a bottom Dock lifts the bar by a
-small inset, while a side Dock does not unnecessarily change its vertical position.
+small inset, while a side Dock trims its horizontal span without changing its
+vertical position.
 A per-display panel uses public AppKit collection behavior for all Spaces,
 fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
 real-machine behavior still needs validation.

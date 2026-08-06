@@ -591,13 +591,21 @@ final class TaskbarPanel: NSPanel {
 
 @MainActor
 private final class TaskbarBarView: NSView {
+    private struct ApplicationIconKey: Hashable {
+        let stableIdentity: String
+
+        init(item: TaskbarItem) {
+            stableIdentity = item.applicationIdentity ?? "name:\(item.applicationName)"
+        }
+    }
+
     private let visualEffectView = NSVisualEffectView()
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
     private var currentItems: [TaskbarItem] = []
     private var currentShowsWindowTitles = true
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
-    private var iconCache: [Int32: NSImage] = [:]
+    private var iconCache: [ApplicationIconKey: NSImage] = [:]
     private let onActivate: @MainActor (TaskbarItem) -> Void
 
     init(onActivate: @escaping @MainActor (TaskbarItem) -> Void) {
@@ -653,6 +661,8 @@ private final class TaskbarBarView: NSView {
         }
         currentItems = items
         currentShowsWindowTitles = showsWindowTitles
+        let currentIconKeys = Set(items.map(ApplicationIconKey.init))
+        iconCache = iconCache.filter { currentIconKeys.contains($0.key) }
         buttons.removeAll()
         for view in stackView.arrangedSubviews {
             stackView.removeArrangedSubview(view)
@@ -701,23 +711,24 @@ private final class TaskbarBarView: NSView {
             ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
             : NSColor.clear.cgColor
 
-        if let icon = icon(for: item.pid) {
+        if let icon = icon(for: item) {
             button.image = icon
         }
         return button
     }
 
-    private func icon(for pid: Int32) -> NSImage? {
-        if let cached = iconCache[pid] { return cached }
+    private func icon(for item: TaskbarItem) -> NSImage? {
+        let key = ApplicationIconKey(item: item)
+        if let cached = iconCache[key] { return cached }
         let source =
-            NSRunningApplication(processIdentifier: pid)?.icon
+            NSRunningApplication(processIdentifier: item.pid)?.icon
             ?? NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
             ?? NSImage(named: NSImage.applicationIconName)
         if let source,
             let icon = source.copy() as? NSImage
         {
             icon.size = NSSize(width: 18, height: 18)
-            iconCache[pid] = icon
+            iconCache[key] = icon
             return icon
         }
         return nil

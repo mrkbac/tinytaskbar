@@ -54,6 +54,9 @@ Accessibility evidence.
    bash scripts/notarize.sh --profile "<keychain-profile>" --artifact dist/TinyTaskbar.dmg
    ```
 
+   A ZIP may be submitted when a service requires it, but ZIP files cannot be
+   stapled. In that case pass `--staple` with the original `.app` or `.dmg` path.
+
 7. On a clean macOS 26 machine, install from the DMG, launch, grant Accessibility,
    exercise the manual matrix, inspect the crash-log location, and uninstall by
    quitting and moving the app bundle to Trash.

@@ -198,7 +198,8 @@ overlay because third-party panels cannot reserve Dock-like work area.
 Panel frames are calculated from the AppKit full and visible frames, not from AX
 geometry. The horizontal inset is applied within the full display; the vertical
 origin is the greater of the full-frame bottom inset and the visible-frame bottom
-inset, so a bottom Dock lifts the overlay while a side Dock does not. Tiny and
+inset, so a bottom Dock lifts the overlay while a side Dock trims its horizontal
+span without lifting it. Tiny and
 negative-origin displays are clamped deterministically. The title-off width range
 starts below the title-on minimum so app-name-only buttons stay compact while
 retaining their icon, tooltip, and full accessibility label.

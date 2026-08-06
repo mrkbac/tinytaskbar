@@ -152,12 +152,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettingsWindow() {
         guard let settingsWindow else { return }
-        logger.info("settings show requested")
+        settingsWindow.restoreFixedContentSize()
         _ = settingsActivationState.apply(.show)
         let policyChanged = NSApp.setActivationPolicy(.regular)
-        logger.info(
-            "settings activation policy regular success=\(policyChanged, privacy: .public) current=\(String(describing: NSApp.activationPolicy), privacy: .public)"
-        )
+        if !policyChanged {
+            logger.error(
+                "could not switch settings activation policy current=\(NSApp.activationPolicy().rawValue, privacy: .public)"
+            )
+        }
         refreshPermissionStatus()
         if !settingsWindow.isVisible {
             settingsWindow.center()
@@ -167,9 +169,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow.canBecomeKey {
             settingsWindow.makeKey()
         }
-        logger.info(
-            "settings ordered active=\(NSApp.isActive, privacy: .public) visible=\(settingsWindow.isVisible, privacy: .public) window_number=\(settingsWindow.windowNumber, privacy: .public)"
-        )
+        // The first WindowServer order performs an intrinsic fitting pass. Reassert
+        // the intentional fixed form size afterward, then center the final frame.
+        settingsWindow.restoreFixedContentSize()
+        settingsWindow.center()
+        Task { @MainActor [weak self, weak settingsWindow] in
+            await Task.yield()
+            guard let settingsWindow, settingsWindow.isVisible else { return }
+            settingsWindow.restoreFixedContentSize()
+            settingsWindow.center()
+            self?.logger.debug(
+                "settings shown active=\(NSApp.isActive, privacy: .public) visible=\(settingsWindow.isVisible, privacy: .public) window_number=\(settingsWindow.windowNumber, privacy: .public)"
+            )
+        }
     }
 
     private func restoreAccessoryActivationPolicy() {

@@ -190,7 +190,7 @@ final class TinyTaskbarPreferencesStore {
 
 @MainActor
 final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
-    private static let fixedContentSize = NSSize(width: 640, height: 400)
+    private static let fixedContentSize = NSSize(width: 640, height: 340)
 
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onShowsWindowTitlesChanged: (@MainActor (Bool) -> Void)?
@@ -242,6 +242,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         contentMinSize = Self.fixedContentSize
         contentMaxSize = Self.fixedContentSize
         setContentSize(Self.fixedContentSize)
+        restoreFixedContentSize()
     }
 
     required init?(coder: NSCoder) {
@@ -267,6 +268,16 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         refreshLaunchAtLoginStatus()
     }
 
+    func restoreFixedContentSize() {
+        let contentRect = NSRect(origin: .zero, size: Self.fixedContentSize)
+        let targetFrameSize = frameRect(forContentRect: contentRect).size
+        setFrame(
+            NSRect(origin: frame.origin, size: targetFrameSize),
+            display: isVisible
+        )
+        contentView?.frame = contentRect
+    }
+
     func windowWillClose(_: Notification) {
         onClosed?()
         NSApp.deactivate()
@@ -275,12 +286,21 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     private func setupInterface() {
         let heading = NSTextField(labelWithString: "TinyTaskbar")
         heading.font = .systemFont(ofSize: 22, weight: .semibold)
+        heading.alignment = .left
+        heading.setContentHuggingPriority(.required, for: .horizontal)
+        let headingSpacer = NSView()
+        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        headingSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let headingRow = NSStackView(views: [heading, headingSpacer])
+        headingRow.alignment = .centerY
+        headingRow.distribution = .fill
 
         let introduction = NSTextField(
             wrappingLabelWithString:
                 "A compact taskbar for the windows visible on your displays. Accessibility is required to read window titles and focus a window when you select it. No screen recording or thumbnails are used."
         )
         introduction.maximumNumberOfLines = 0
+        introduction.alignment = .left
 
         accessibilityButton.bezelStyle = .rounded
         accessibilityButton.target = self
@@ -346,16 +366,19 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
             accessory: titleControls
         )
 
-        let buttonRow = NSStackView(views: [quitButton, doneButton])
+        let buttonSpacer = NSView()
+        buttonSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        buttonSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let buttonRow = NSStackView(views: [buttonSpacer, quitButton, doneButton])
         buttonRow.alignment = .centerY
         buttonRow.spacing = 10
         buttonRow.setContentHuggingPriority(.required, for: .horizontal)
         buttonRow.distribution = .fill
 
         let stack = NSStackView(
-            views: [heading, introduction, accessibilityRow, launchRow, titleRow, buttonRow])
+            views: [headingRow, introduction, accessibilityRow, launchRow, titleRow, buttonRow])
         stack.orientation = .vertical
-        stack.alignment = .leading
+        stack.alignment = .width
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = true
         stack.autoresizingMask = [.width, .height]
@@ -371,13 +394,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
             width: max(0, contentView.bounds.width - horizontalInset * 2),
             height: max(0, contentView.bounds.height - topInset - bottomInset)
         )
-        introduction.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
-        for row in [accessibilityRow, launchRow, titleRow, buttonRow] {
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-
         quitButton.setContentHuggingPriority(.required, for: .horizontal)
         doneButton.setContentHuggingPriority(.required, for: .horizontal)
         doneButton.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -386,9 +402,11 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     private func makeRow(title: String, detail: String, accessory: NSView) -> NSStackView {
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.alignment = .left
         let detailLabel = NSTextField(wrappingLabelWithString: detail)
         detailLabel.maximumNumberOfLines = 0
         detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .left
 
         let text = NSStackView(views: [titleLabel, detailLabel])
         text.orientation = .vertical

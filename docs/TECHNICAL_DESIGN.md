@@ -60,21 +60,21 @@ continues running, and `applicationShouldTerminateAfterLastWindowClosed` is fals
 running app is launched again.
 
 The retained Settings window is a non-resizable fixed-size AppKit window with an
-explicitly framed 640 × 400 point content view. Its content min/max sizes are both set
+explicitly framed 640 × 340 point content view. Its content min/max sizes are both set
 to that value after interface setup. The root vertical stack is manually framed with
 insets and uses width/height autoresizing; no outer constraints connect it to the
 content view, so intrinsic fitting cannot resize the window. Auto Layout remains
 inside the fixed stack for rows and accessories. The introduction uses the full
 available content width, action accessories retain their intrinsic button/control
 widths, and the launch-at-login status is constrained to 190 points and at most two
-wrapped lines.
+wrapped lines. After the first WindowServer order, one main-actor yield reasserts and
+centers the fixed frame once; this avoids a transient intrinsic-fitting resize without
+polling.
 
 The initial launch show is deferred by one `Task.yield()` on the main actor because
 `applicationDidFinishLaunching` runs before the first application event-loop turn;
-reopen handling remains synchronous. The UI logger records the requested show,
-activation-policy result/current policy, app active state, window visibility, and
-window number for real-machine diagnosis. It also records the trusted Accessibility
-state and persisted onboarding-complete value when launch finishes.
+reopen handling remains synchronous. The UI logger records launch permission/onboarding
+state, activation-policy failures, and debug-only final presentation state.
 
 Because an `LSUIElement` accessory app can still be suppressed by WindowServer when
 bringing a normal window forward, the explicit Settings-show path temporarily sets

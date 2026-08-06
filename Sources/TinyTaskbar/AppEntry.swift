@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventObserver: SystemEventObserver?
     private let preferencesStore = TinyTaskbarPreferencesStore()
     private var permissionRequestState = AccessibilityPermissionRequestState()
+    private var settingsActivationState = SettingsActivationPolicyState()
     private var settingsWindow: TinyTaskbarSettingsWindow?
     private var panels: [String: TaskbarPanel] = [:]
 
@@ -39,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settingsWindow.onQuit = {
             NSApp.terminate(nil)
+        }
+        settingsWindow.onClosed = { [weak self] in
+            self?.restoreAccessoryActivationPolicy()
         }
         self.settingsWindow = settingsWindow
 
@@ -127,6 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettingsWindow() {
         guard let settingsWindow else { return }
+        _ = settingsActivationState.apply(.show)
+        NSApp.setActivationPolicy(.regular)
         refreshPermissionStatus()
         if !settingsWindow.isVisible {
             settingsWindow.center()
@@ -136,6 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow.canBecomeKey {
             settingsWindow.makeKey()
         }
+    }
+
+    private func restoreAccessoryActivationPolicy() {
+        _ = settingsActivationState.apply(.close)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func requestAccessibility() {

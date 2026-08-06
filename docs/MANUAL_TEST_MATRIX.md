@@ -17,7 +17,7 @@ executed by the automated package checks.
 | M10 | Long titles and many windows | Open enough windows to overflow | App icon, accessibility label, truncation, horizontal scrolling, and active state are usable | Pending |
 | M11 | Activity Monitor/Instruments | Leave idle for 5 minutes, then interact | Record CPU, RSS, wakeups, refresh latency, click-to-focus latency against provisional budgets | Pending |
 | M12 | Clean macOS 26 machine | Install signed/notarized DMG and launch | Gatekeeper accepts; launch, permission, uninstall, and crash-log paths work | Pending |
-| M13 | TinyTaskbar already running | Relaunch/open the app; close Settings with X; reopen it | The retained Settings window shows on relaunch; X hides it without quitting the process or removing taskbars | Pending |
+| M13 | TinyTaskbar already running | Relaunch/open the app; close Settings with X; reopen it | The retained Settings window shows on relaunch; a temporary Dock icon may appear only while Settings is visible; X hides it without quitting the process or removing taskbars | Pending |
 | M14 | Settings window visible with taskbars | Toggle Show Window Titles and Launch at Login; reopen Settings | Button text changes immediately without window re-enumeration; icons/full labels/tooltips remain; login status/error is inline and accurate | Pending |
 
 The active test record should include macOS build, hardware, display arrangement,

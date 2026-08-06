@@ -48,6 +48,13 @@ continues running, and `applicationShouldTerminateAfterLastWindowClosed` is fals
 `applicationShouldHandleReopen` shows and activates the same window when an already
 running app is launched again.
 
+Because an `LSUIElement` accessory app can still be suppressed by WindowServer when
+bringing a normal window forward, the explicit Settings-show path temporarily sets
+the activation policy to `.regular` before activation and ordering. macOS may show a
+TinyTaskbar Dock icon while Settings is visible; the close callback for either X or
+Done restores `.accessory`, deactivates the app, and removes that temporary Dock
+presence. Taskbar panels never use `.regular` and remain non-activating.
+
 The guide explains the utility and Accessibility requirement, shows Granted/Required
 status, and exposes clearly labelled controls. Only the explicit Enable Accessibility…
 or Open Accessibility Settings… action calls `AXIsProcessTrustedWithOptions` with

@@ -135,6 +135,30 @@ struct AccessibilityPermissionRequestState: Equatable, Sendable {
     }
 }
 
+enum SettingsActivationPolicy: Equatable, Sendable {
+    case accessory
+    case regular
+}
+
+enum SettingsVisibilityEvent: Equatable, Sendable {
+    case show
+    case close
+}
+
+struct SettingsActivationPolicyState: Equatable, Sendable {
+    private(set) var policy: SettingsActivationPolicy = .accessory
+
+    mutating func apply(_ event: SettingsVisibilityEvent) -> SettingsActivationPolicy {
+        switch event {
+        case .show:
+            policy = .regular
+        case .close:
+            policy = .accessory
+        }
+        return policy
+    }
+}
+
 @MainActor
 final class TinyTaskbarPreferencesStore {
     private static let onboardingCompleteKey = "onboardingComplete"
@@ -170,6 +194,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     var onShowsWindowTitlesChanged: (@MainActor (Bool) -> Void)?
     var onDone: (@MainActor () -> Void)?
     var onQuit: (@MainActor () -> Void)?
+    var onClosed: (@MainActor () -> Void)?
 
     private let accessibilityStatusLabel: NSTextField
     private let accessibilityButton: NSButton
@@ -232,6 +257,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     }
 
     func windowWillClose(_: Notification) {
+        onClosed?()
         NSApp.deactivate()
     }
 

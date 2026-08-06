@@ -5,11 +5,17 @@ the bottom of each connected display. Each item represents one eligible window
 reported by Accessibility and matched to a current on-screen Core Graphics window.
 Clicking an item activates, focuses, and raises its owning window.
 
-The executable is an `LSUIElement` AppKit application. It has no Dock icon,
-helper, updater, analytics, thumbnail capture, or third-party runtime dependency.
-It includes one small native onboarding/settings window for Accessibility,
+The executable is an `LSUIElement` AppKit application with no Dock icon during
+normal taskbar operation, no helper, updater, analytics, thumbnail capture, or
+third-party runtime dependency. It includes one small native onboarding/settings
+window for Accessibility,
 launch-at-login, and the window-title display preference; there is no SwiftUI or
 general-purpose settings framework.
+
+While Settings is visible, the app temporarily uses the regular activation policy so
+WindowServer will present the normal window; macOS may show a Dock icon during that
+interval. Closing Settings with X or Done restores accessory mode and removes the
+temporary Dock presence.
 
 ## Build and test
 

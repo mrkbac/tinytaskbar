@@ -13,6 +13,17 @@ struct PermissionTests {
         #expect(state.decision() == .alreadyRequested)
     }
 
+    @Test("Settings visibility temporarily uses regular activation")
+    func settingsActivationPolicyTransitions() {
+        var state = SettingsActivationPolicyState()
+
+        #expect(state.policy == .accessory)
+        #expect(state.apply(.show) == .regular)
+        #expect(state.policy == .regular)
+        #expect(state.apply(.close) == .accessory)
+        #expect(state.policy == .accessory)
+    }
+
     @Test("preferences default and persisted state transitions")
     @MainActor
     func preferencesPersist() {

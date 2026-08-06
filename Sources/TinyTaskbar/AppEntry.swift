@@ -1,9 +1,11 @@
 import AppKit
 import Foundation
+import OSLog
 
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let logger = Logger(subsystem: "com.tinytaskbar", category: "ui")
     private var provider: SystemWindowSnapshotProvider?
     private var store: TaskbarStore?
     private var eventObserver: SystemEventObserver?
@@ -55,7 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let trusted = AXIsProcessTrusted()
         store.start(accessibilityTrusted: trusted)
         if !trusted || !preferencesStore.values.onboardingComplete {
-            showSettingsWindow()
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                self?.showSettingsWindow()
+            }
         }
     }
 
@@ -131,8 +136,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettingsWindow() {
         guard let settingsWindow else { return }
+        logger.info("settings show requested")
         _ = settingsActivationState.apply(.show)
-        NSApp.setActivationPolicy(.regular)
+        let policyChanged = NSApp.setActivationPolicy(.regular)
+        logger.info(
+            "settings activation policy regular success=\(policyChanged, privacy: .public) current=\(String(describing: NSApp.activationPolicy), privacy: .public)"
+        )
         refreshPermissionStatus()
         if !settingsWindow.isVisible {
             settingsWindow.center()
@@ -142,6 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow.canBecomeKey {
             settingsWindow.makeKey()
         }
+        logger.info(
+            "settings ordered active=\(NSApp.isActive, privacy: .public) visible=\(settingsWindow.isVisible, privacy: .public) window_number=\(settingsWindow.windowNumber, privacy: .public)"
+        )
     }
 
     private func restoreAccessoryActivationPolicy() {

@@ -48,6 +48,12 @@ continues running, and `applicationShouldTerminateAfterLastWindowClosed` is fals
 `applicationShouldHandleReopen` shows and activates the same window when an already
 running app is launched again.
 
+The initial launch show is deferred by one `Task.yield()` on the main actor because
+`applicationDidFinishLaunching` runs before the first application event-loop turn;
+reopen handling remains synchronous. The UI logger records the requested show,
+activation-policy result/current policy, app active state, window visibility, and
+window number for real-machine diagnosis.
+
 Because an `LSUIElement` accessory app can still be suppressed by WindowServer when
 bringing a normal window forward, the explicit Settings-show path temporarily sets
 the activation policy to `.regular` before activation and ordering. macOS may show a

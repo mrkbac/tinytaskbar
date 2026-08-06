@@ -132,7 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow.center()
         }
         NSApp.activate()
-        settingsWindow.makeKeyAndOrderFront(nil)
+        settingsWindow.orderFrontRegardless()
+        if settingsWindow.canBecomeKey {
+            settingsWindow.makeKey()
+        }
     }
 
     private func requestAccessibility() {

@@ -41,8 +41,9 @@ window, application, Space, display, or activation events.
 `AppDelegate` owns one retained native `TinyTaskbarSettingsWindow`; it is a normal,
 key-capable `NSWindow` only while explicitly shown. On first launch when onboarding
 is incomplete, or whenever Accessibility is denied, the app refreshes permission and
-launch-at-login status, calls the current public `NSApp.activate()` API, and makes
-the window key/front. Standard window close and Done only close the guide; the app
+launch-at-login status, calls the current public `NSApp.activate()` API, explicitly
+orders the retained window front regardless, and makes it key when supported.
+Standard window close and Done only close the guide; the app
 continues running, and `applicationShouldTerminateAfterLastWindowClosed` is false.
 `applicationShouldHandleReopen` shows and activates the same window when an already
 running app is launched again.

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INFO_PLIST="$PROJECT_DIR/Resources/Info.plist"
 ENTITLEMENTS="$PROJECT_DIR/Resources/TinyTaskbar.entitlements"
+APP_ICON="$PROJECT_DIR/Resources/AppIcon.icns"
 DIST_DIR="$PROJECT_DIR/dist"
 
 usage() {
@@ -74,7 +75,7 @@ if [[ -z "$SIGNING_MODE" ]]; then
     exit 2
 fi
 
-if [[ ! -f "$INFO_PLIST" || ! -f "$ENTITLEMENTS" ]]; then
+if [[ ! -f "$INFO_PLIST" || ! -f "$ENTITLEMENTS" || ! -f "$APP_ICON" ]]; then
     echo "Missing bundle resources under $PROJECT_DIR/Resources" >&2
     exit 1
 fi
@@ -100,6 +101,7 @@ mkdir -p "$MACOS" "$RESOURCES"
 rm -f "$MACOS/TinyTaskbar"
 cp "$EXECUTABLE" "$MACOS/TinyTaskbar"
 cp "$INFO_PLIST" "$CONTENTS/Info.plist"
+cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
 
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
     codesign --force --deep --sign - "$OUTPUT_APP"

@@ -40,9 +40,17 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tinytaskbar-dmg.XXXXXX")"
+cleanup() {
+    rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
+
+ditto "$APP_PATH" "$STAGING_DIR/TinyTaskbar.app"
+ln -s /Applications "$STAGING_DIR/Applications"
 hdiutil create \
     -volname TinyTaskbar \
-    -srcfolder "$APP_PATH" \
+    -srcfolder "$STAGING_DIR" \
     -ov \
     -format UDZO \
     "$OUTPUT_PATH"

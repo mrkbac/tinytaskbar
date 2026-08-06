@@ -43,8 +43,8 @@ Accessibility evidence.
 3. Assemble with `bash scripts/build-app.sh --identity "<identity>"`. The script
    enables Hardened Runtime, adds a secure timestamp, uses only the empty/minimal
    entitlements file, and verifies the result.
-4. Create a DMG with `bash scripts/package-dmg.sh`. This performs no hidden network
-   work.
+4. Create a DMG with `bash scripts/package-dmg.sh`. This stages the app beside an
+   Applications shortcut for drag-to-install and performs no hidden network work.
 5. Store notarization credentials in a named keychain profile using Apple’s
    `notarytool` setup. Never put an Apple ID password, app-specific password, or
    API private key in this workspace or command history.

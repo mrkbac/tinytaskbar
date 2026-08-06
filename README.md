@@ -52,6 +52,10 @@ bash scripts/build-app.sh --identity "Developer ID Application: Example (TEAMID)
 bash scripts/package-dmg.sh
 ```
 
+The disk image contains the signed app and an Applications shortcut for the
+standard drag-to-install flow. The bundle includes a project-owned native macOS
+app icon in Finder and Launch Services.
+
 Production notarization requires a separately configured `notarytool` keychain
 profile. See [docs/RELEASE.md](docs/RELEASE.md); do not put credentials in this
 workspace.

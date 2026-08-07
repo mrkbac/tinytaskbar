@@ -244,20 +244,31 @@ enum CGWindowMatcher {
         let boundsMatches = base.filter {
             approximatelyEqual(windows[$0].bounds, frame, tolerance: boundsTolerance)
         }
+        guard !boundsMatches.isEmpty else { return nil }
 
         if !candidate.title.isEmpty {
-            let titledWindows = base.filter { !windows[$0].title.isEmpty }
-            if !titledWindows.isEmpty {
-                let titleMatches = titledWindows.filter {
-                    normalized(windows[$0].title) == normalized(candidate.title)
-                }
-                return titleMatches.first(where: {
-                    approximatelyEqual(windows[$0].bounds, frame, tolerance: boundsTolerance)
-                })
+            let titleMatches = boundsMatches.filter {
+                !windows[$0].title.isEmpty
+                    && normalized(windows[$0].title) == normalized(candidate.title)
+            }
+            if titleMatches.count == 1 {
+                return titleMatches[0]
+            }
+            if titleMatches.count > 1 {
+                return titleMatches.sorted {
+                    preferredWindow(windows[$0], windows[$1])
+                }.first
             }
         }
 
-        return boundsMatches.first
+        // AX and CG title updates can arrive in different event-loop turns. Geometry is
+        // authoritative when it identifies exactly one layer-zero window for the PID;
+        // title is only needed to disambiguate otherwise identical bounds.
+        if boundsMatches.count == 1 {
+            return boundsMatches[0]
+        }
+
+        return nil
     }
 
     private static func approximatelyEqual(

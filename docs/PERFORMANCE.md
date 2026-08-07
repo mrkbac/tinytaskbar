@@ -4,6 +4,11 @@ The runtime records refresh count, AX candidate count, visible item count, and
 refresh duration in `TaskbarStore.metrics`. OSLog writes one debug refresh record;
 healthy steady state has no repeating timer or polling work.
 
+Production AX reads use one batched attribute request per candidate window and a
+250 ms process-wide messaging timeout. This reduces IPC round trips and prevents a
+single unresponsive application from blocking a request indefinitely; real-AX
+latency still requires the interactive trace below.
+
 The deterministic debug overflow fixture exercises the real panel and projection
 path without Accessibility or TCC changes:
 
@@ -29,6 +34,7 @@ processes, exercising the normal lazy taskbar-only path.
 | --- | --- | --- | --- | --- | --- |
 | Four-window normal fixture | 5 `top` samples over 10 s | 0.0% each | 14 MB, 15 MB peak | 50,144 KB | 3 |
 | 120-window overflow fixture | 5 `top` samples over 10 s | 0.0% each | 35 MB, 37 MB peak | 77,968 KB | 3 |
+| Final four-window normal fixture after reliability changes | 11 `top` samples over 5 min | 0.0% each | 15 MB, 15 MB peak | 54,352 KB | 3, briefly 4 in the final sample |
 
 `footprint` physical footprint and `ps` RSS are intentionally reported separately;
 they are not interchangeable on macOS. The physical footprint is the memory budget
@@ -47,6 +53,14 @@ context switches of 0, 1, 0, 0, and 0 after the initial cumulative sample: about
 0.1 context switches/s over the measured intervals. This is a useful non-privileged
 wakeup proxy and is comfortably below the provisional rate, but it does not replace
 an Instruments Energy Log wakeups trace.
+
+The post-audit five-minute run started with 1,215 cumulative context switches and
+ended with 1,224, an increase of nine or about 0.03/s. Its process CPU time remained
+0.10 seconds from the first through final sample. `footprint` at the end independently
+reported 15 MB physical footprint and 15 MB peak. This strengthens the real-process
+AppKit idle evidence after the AX batching, timeout, and logging changes; because the
+fixture does not call AX, it is still not evidence for real-AX enumeration cost or
+Instruments wakeups.
 
 ## Provisional v1 budgets
 

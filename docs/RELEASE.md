@@ -41,8 +41,11 @@ Accessibility evidence.
 2. Confirm the exact `Developer ID Application` identity with
    `security find-identity -v -p codesigning`.
 3. Assemble with `bash scripts/build-app.sh --identity "<identity>"`. The script
-   enables Hardened Runtime, adds a secure timestamp, uses only the empty/minimal
-   entitlements file, and verifies the result.
+   builds into a fresh staging bundle before replacing the destination, enables
+   Hardened Runtime, adds a secure timestamp, uses only the empty/minimal
+   entitlements file, and verifies both the staged and final result.
+   `bash scripts/test-build-app-rollback.sh` fault-injects a final-verification
+   failure and proves that the previous destination bundle is restored.
 4. Create a DMG with `bash scripts/package-dmg.sh`. This stages the app beside an
    Applications shortcut for drag-to-install and performs no hidden network work.
 5. Store notarization credentials in a named keychain profile using Apple’s

@@ -150,6 +150,79 @@ struct PermissionTests {
         #expect(store.state.itemsByDisplay.isEmpty)
     }
 
+    @Test("window lifecycle snapshots open, move, minimize, restore, and close")
+    @MainActor
+    func windowLifecycleSnapshots() {
+        let provider = MockWindowSnapshotProvider()
+        let store = TaskbarStore(provider: provider)
+        let left = DisplayDescriptor(
+            identifier: "left",
+            frame: CGRect(x: 0, y: 0, width: 1_000, height: 700)
+        )
+        let right = DisplayDescriptor(
+            identifier: "right",
+            frame: CGRect(x: 1_000, y: 0, width: 1_000, height: 700)
+        )
+        let leftFrame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let rightFrame = CGRect(x: 1_200, y: 100, width: 500, height: 300)
+        var emittedStates: [TaskbarState] = []
+        store.onStateChange = { emittedStates.append($0) }
+        defer { store.stop() }
+
+        func snapshot(frame: CGRect, minimized: Bool = false) -> RawWindowSnapshot {
+            let candidate = WindowCandidate(
+                pid: fixturePID,
+                applicationName: "Fixture",
+                title: "Document",
+                frame: frame,
+                isMinimized: minimized
+            )
+            return RawWindowSnapshot(
+                candidates: [candidate],
+                cgWindows: minimized
+                    ? []
+                    : [
+                        CGWindowMetadata(
+                            windowNumber: 77,
+                            ownerPID: fixturePID,
+                            bounds: frame,
+                            title: candidate.title
+                        )
+                    ],
+                displays: [left, right],
+                frontmostPID: minimized ? nil : fixturePID
+            )
+        }
+
+        provider.snapshotValue = snapshot(frame: leftFrame)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay["left"]?.count == 1)
+
+        provider.snapshotValue = snapshot(frame: rightFrame)
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay["left"] == nil)
+        #expect(store.state.itemsByDisplay["right"]?.count == 1)
+
+        provider.snapshotValue = snapshot(frame: rightFrame, minimized: true)
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay.isEmpty)
+
+        provider.snapshotValue = snapshot(frame: rightFrame)
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay["right"]?.count == 1)
+
+        provider.snapshotValue = RawWindowSnapshot(
+            candidates: [],
+            cgWindows: [],
+            displays: [left, right],
+            frontmostPID: nil
+        )
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay.isEmpty)
+        #expect(emittedStates.count == 5)
+    }
+
     @Test("stale activation is ignored after Accessibility revocation")
     @MainActor
     func staleActivationIsSafe() {

@@ -175,7 +175,22 @@ struct WindowModelTests {
             CGWindowMatcher.match(
                 candidate: candidate,
                 windows: [wrongPID, wrongBounds, wrongTitle]
-            ) == nil)
+            ) == wrongTitle)
+
+        let ambiguousA = CGWindowMetadata(
+            windowNumber: 21,
+            ownerPID: 10,
+            bounds: candidate.frame!,
+            title: "First stale title"
+        )
+        let ambiguousB = CGWindowMetadata(
+            windowNumber: 22,
+            ownerPID: 10,
+            bounds: candidate.frame!,
+            title: "Second stale title"
+        )
+        #expect(
+            CGWindowMatcher.match(candidate: candidate, windows: [ambiguousA, ambiguousB]) == nil)
     }
 
     @Test("untitled windows use the application name for display")

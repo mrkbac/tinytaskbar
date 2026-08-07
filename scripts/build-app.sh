@@ -85,6 +85,10 @@ BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST
 if [[ -z "$OUTPUT_APP" ]]; then
     OUTPUT_APP="$DIST_DIR/TinyTaskbar.app"
 fi
+if [[ "$OUTPUT_APP" != *.app ]]; then
+    echo "Output path must end in .app: $OUTPUT_APP" >&2
+    exit 2
+fi
 
 swift build -c "$CONFIGURATION" --product TinyTaskbar
 BIN_PATH="$(swift build -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
@@ -94,17 +98,61 @@ if [[ ! -x "$EXECUTABLE" ]]; then
     exit 1
 fi
 
-CONTENTS="$OUTPUT_APP/Contents"
+OUTPUT_PARENT="$(dirname "$OUTPUT_APP")"
+mkdir -p "$OUTPUT_PARENT"
+STAGING_DIR="$(mktemp -d "$OUTPUT_PARENT/.tinytaskbar-build.XXXXXX")"
+STAGED_APP="$STAGING_DIR/TinyTaskbar.app"
+PREVIOUS_APP="$STAGING_DIR/previous.app"
+FAILED_APP="$STAGING_DIR/failed.app"
+REPLACEMENT_STARTED=false
+REPLACEMENT_COMMITTED=false
+cleanup() {
+    local exit_status=$?
+    local rollback_failed=false
+    local previous_available=false
+
+    if [[ -e "$PREVIOUS_APP" || -L "$PREVIOUS_APP" ]]; then
+        previous_available=true
+    fi
+    if [[ "$REPLACEMENT_COMMITTED" != true && ( "$REPLACEMENT_STARTED" == true || "$previous_available" == true ) ]]; then
+        if [[ -e "$OUTPUT_APP" || -L "$OUTPUT_APP" ]]; then
+            if ! mv "$OUTPUT_APP" "$FAILED_APP"; then
+                echo "Could not quarantine failed bundle at $OUTPUT_APP" >&2
+                rollback_failed=true
+            fi
+        fi
+        if [[ "$previous_available" == true ]]; then
+            if [[ ! -e "$OUTPUT_APP" && ! -L "$OUTPUT_APP" ]]; then
+                if ! mv "$PREVIOUS_APP" "$OUTPUT_APP"; then
+                    echo "Could not restore previous bundle at $OUTPUT_APP" >&2
+                    rollback_failed=true
+                fi
+            else
+                echo "Could not restore previous bundle because destination is occupied: $OUTPUT_APP" >&2
+                rollback_failed=true
+            fi
+        fi
+    fi
+
+    if [[ "$rollback_failed" == true ]]; then
+        echo "Preserved recovery artifacts at $STAGING_DIR" >&2
+    else
+        rm -rf "$STAGING_DIR"
+    fi
+    return "$exit_status"
+}
+trap cleanup EXIT
+
+CONTENTS="$STAGED_APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 mkdir -p "$MACOS" "$RESOURCES"
-rm -f "$MACOS/TinyTaskbar"
 cp "$EXECUTABLE" "$MACOS/TinyTaskbar"
 cp "$INFO_PLIST" "$CONTENTS/Info.plist"
 cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
 
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
-    codesign --force --deep --sign - "$OUTPUT_APP"
+    codesign --force --deep --sign - "$STAGED_APP"
 else
     if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
         echo "Developer ID signing identity was not found: $SIGNING_IDENTITY" >&2
@@ -117,11 +165,28 @@ else
         --timestamp \
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGNING_IDENTITY" \
-        "$OUTPUT_APP"
+        "$STAGED_APP"
 fi
 
-codesign --verify --deep --strict --verbose=2 "$OUTPUT_APP"
+codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
 plutil -lint "$CONTENTS/Info.plist"
+
+if [[ -e "$OUTPUT_APP" || -L "$OUTPUT_APP" ]]; then
+    mv "$OUTPUT_APP" "$PREVIOUS_APP"
+fi
+REPLACEMENT_STARTED=true
+if ! mv "$STAGED_APP" "$OUTPUT_APP"; then
+    echo "Could not install assembled bundle at $OUTPUT_APP" >&2
+    exit 1
+fi
+
+if [[ "${TINYTASKBAR_BUILD_TEST_FAIL_AFTER_REPLACE:-0}" == 1 ]]; then
+    echo "Injected final bundle verification failure" >&2
+    false
+fi
+codesign --verify --deep --strict --verbose=2 "$OUTPUT_APP"
+plutil -lint "$OUTPUT_APP/Contents/Info.plist"
+REPLACEMENT_COMMITTED=true
 
 echo "Built $OUTPUT_APP"
 echo "Version $VERSION ($BUILD_NUMBER)"

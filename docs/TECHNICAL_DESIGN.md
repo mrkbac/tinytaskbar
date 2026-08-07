@@ -132,7 +132,9 @@ coordinate space, so no AX→CG flip or main-display-height conversion occurs. T
 AppKit bottom-left coordinate system is used only for panel frames sourced separately
 from `NSScreen`. The unchanged AX frame must match a layer-zero, on-screen Core
 Graphics window for the same PID. Bounds are compared within four points, with title
-matching preferred when both titles are available. This is deliberately conservative:
+matching preferred when both titles are available. A unique bounds match remains
+valid when AX and CG title updates race; multiple equal-bounds candidates still
+require title disambiguation. This is deliberately conservative:
 public APIs expose no supported AX-to-CG window-ID bridge. A matched CG window number
 is used as the stable key when available; otherwise PID, normalized title, and rounded
 geometry form the fallback key.
@@ -171,6 +173,14 @@ CG conversion failures are isolated to that application/window.
 unhide, and active-Space notifications plus
 `NSApplication.didChangeScreenParametersNotification`. Every event goes through the
 same short one-shot debounce; there is no continuous polling.
+
+The process-wide public AX messaging timeout is 250 ms, bounding each synchronous
+request so one unresponsive application cannot indefinitely block the main actor.
+Per-window role, geometry, title, and state are read in one public
+`AXUIElementCopyMultipleAttributeValues` batch. Window-list failures, aggregated
+batch/malformed counts, observer registration failures, and partial activation
+error codes are logged at debug level without emitting a success-path line per
+window.
 
 ## Activation and panels
 

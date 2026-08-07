@@ -36,16 +36,34 @@ struct RawWindowSnapshot: Equatable, Sendable {
     let frontmostPID: Int32?
 }
 
+enum AXMessagingPolicy {
+    /// Bounds a single synchronous AX request so one unresponsive process cannot
+    /// indefinitely block TinyTaskbar's main-actor refresh path.
+    static let timeoutSeconds: Float = 0.25
+}
+
 @MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
-    private let inspector = AXWindowInspector()
+    private lazy var inspector = AXWindowInspector(logger: logger)
     private lazy var observerRegistry = AXObserverRegistry(logger: logger) { [weak self] in
         self?.onChange?()
     }
     private var axElementsByStableKey: [String: AXUIElement] = [:]
 
     var onChange: (@MainActor @Sendable () -> Void)?
+
+    init() {
+        let error = AXUIElementSetMessagingTimeout(
+            AXUIElementCreateSystemWide(),
+            AXMessagingPolicy.timeoutSeconds
+        )
+        if error != .success {
+            logger.error(
+                "could not set AX messaging timeout error=\(error.rawValue, privacy: .public)"
+            )
+        }
+    }
 
     func snapshot() -> RawWindowSnapshot {
         let cgWindows = CGWindowReader.onScreenWindows()
@@ -129,25 +147,76 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
         // The snapshot can race a minimize or focus change. Each operation is best effort;
         // AX documents invalid references and unsupported attributes as ordinary failures.
-        _ = AXUIElementSetAttributeValue(
+        var failures: [String] = []
+        let minimizeError = AXUIElementSetAttributeValue(
             element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-        if let application = NSRunningApplication(processIdentifier: item.pid) {
-            _ = application.activate(options: [])
+        if minimizeError != .success {
+            failures.append("unminimize=\(minimizeError.rawValue)")
         }
-        _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        if let application = NSRunningApplication(processIdentifier: item.pid) {
+            if !application.activate(options: []) {
+                failures.append("activate=false")
+            }
+        } else {
+            failures.append("application=missing")
+        }
+        let mainError = AXUIElementSetAttributeValue(
+            element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        if mainError != .success {
+            failures.append("main=\(mainError.rawValue)")
+        }
+        let focusError = AXUIElementSetAttributeValue(
+            element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if focusError != .success {
+            failures.append("focus=\(focusError.rawValue)")
+        }
+        let raiseError = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        if raiseError != .success {
+            failures.append("raise=\(raiseError.rawValue)")
+        }
+        if !failures.isEmpty {
+            let summary = failures.joined(separator: ",")
+            logger.debug(
+                "activation completed with failures pid=\(item.pid, privacy: .public) operations=\(summary, privacy: .public)"
+            )
+        }
 
         onChange?()
     }
-
 }
 
 @MainActor
 private final class AXWindowInspector {
+    private static let windowAttributes: [String] = [
+        kAXRoleAttribute,
+        kAXSubroleAttribute,
+        kAXPositionAttribute,
+        kAXSizeAttribute,
+        kAXTitleAttribute,
+        kAXHiddenAttribute,
+        kAXMinimizedAttribute,
+        kAXFocusedAttribute,
+        kAXMainAttribute,
+    ]
+
+    private let logger: Logger
+
+    init(logger: Logger) {
+        self.logger = logger
+    }
+
     func enumerate(_ application: NSRunningApplication) -> [AXWindowRecord] {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard let rawWindows = copyAttribute(applicationElement, kAXWindowsAttribute) else {
+        var rawWindows: CFTypeRef?
+        let windowListError = AXUIElementCopyAttributeValue(
+            applicationElement,
+            kAXWindowsAttribute as CFString,
+            &rawWindows
+        )
+        guard windowListError == .success, let rawWindows else {
+            logger.debug(
+                "AX window list unavailable pid=\(application.processIdentifier, privacy: .public) error=\(windowListError.rawValue, privacy: .public)"
+            )
             return []
         }
 
@@ -173,18 +242,36 @@ private final class AXWindowInspector {
             application.bundleIdentifier
             ?? application.bundleURL?.standardizedFileURL.path
             ?? application.executableURL?.standardizedFileURL.path
-        return windows.compactMap { element in
-            guard let role = stringAttribute(element, kAXRoleAttribute),
-                let subrole = stringAttribute(element, kAXSubroleAttribute),
-                let position = pointAttribute(element, kAXPositionAttribute),
-                let size = sizeAttribute(element, kAXSizeAttribute)
+        var records: [AXWindowRecord] = []
+        var batchFailures: [Int32: Int] = [:]
+        var malformedCount = 0
+
+        for element in windows {
+            var rawValues: CFArray?
+            let error = AXUIElementCopyMultipleAttributeValues(
+                element,
+                Self.windowAttributes as CFArray,
+                [],
+                &rawValues
+            )
+            guard error == .success,
+                let values = rawValues as? [Any],
+                values.count == Self.windowAttributes.count
             else {
-                return nil
+                batchFailures[error.rawValue, default: 0] += 1
+                continue
+            }
+
+            guard let role = stringValue(values[0]),
+                let subrole = stringValue(values[1]),
+                let position = pointValue(values[2]),
+                let size = sizeValue(values[3])
+            else {
+                malformedCount += 1
+                continue
             }
 
             let axFrame = CGRect(origin: position, size: size)
-            let frame = AXScreenCoordinateMapper.toCGScreen(axFrame)
-            let title = stringAttribute(element, kAXTitleAttribute) ?? ""
             let candidate = WindowCandidate(
                 pid: application.processIdentifier,
                 applicationName: applicationName,
@@ -195,39 +282,41 @@ private final class AXWindowInspector {
                 applicationIsHidden: application.isHidden,
                 role: role,
                 subrole: subrole,
-                title: title,
-                frame: frame,
-                isHidden: boolAttribute(element, kAXHiddenAttribute) ?? false,
-                isMinimized: boolAttribute(element, kAXMinimizedAttribute) ?? false,
-                isFocused: boolAttribute(element, kAXFocusedAttribute) ?? false,
-                isMain: boolAttribute(element, kAXMainAttribute) ?? false
+                title: stringValue(values[4]) ?? "",
+                frame: AXScreenCoordinateMapper.toCGScreen(axFrame),
+                isHidden: boolValue(values[5]) ?? false,
+                isMinimized: boolValue(values[6]) ?? false,
+                isFocused: boolValue(values[7]) ?? false,
+                isMain: boolValue(values[8]) ?? false
             )
-            return AXWindowRecord(candidate: candidate, element: element)
+            records.append(AXWindowRecord(candidate: candidate, element: element))
         }
+
+        if !batchFailures.isEmpty || malformedCount > 0 {
+            let errors = batchFailures.keys.sorted().map { code in
+                "\(code):\(batchFailures[code] ?? 0)"
+            }.joined(separator: ",")
+            logger.debug(
+                "AX window attributes skipped pid=\(application.processIdentifier, privacy: .public) batch_errors=\(errors, privacy: .public) malformed=\(malformedCount, privacy: .public)"
+            )
+        }
+        return records
     }
 
-    private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-        return error == .success ? value : nil
-    }
-
-    private func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
-        guard let value = copyAttribute(element, attribute) else { return nil }
+    private func stringValue(_ value: Any) -> String? {
         if let string = value as? String { return string }
         if let string = value as? NSString { return string as String }
         return nil
     }
 
-    private func boolAttribute(_ element: AXUIElement, _ attribute: String) -> Bool? {
-        guard let value = copyAttribute(element, attribute) else { return nil }
-        return (value as? NSNumber)?.boolValue
+    private func boolValue(_ value: Any) -> Bool? {
+        (value as? NSNumber)?.boolValue
     }
 
-    private func pointAttribute(_ element: AXUIElement, _ attribute: String) -> CGPoint? {
-        guard let value = copyAttribute(element, attribute),
-            CFGetTypeID(value) == AXValueGetTypeID(),
-            let axValue = value as! AXValue?,
+    private func pointValue(_ value: Any) -> CGPoint? {
+        let cfValue = value as CFTypeRef
+        guard CFGetTypeID(cfValue) == AXValueGetTypeID(),
+            let axValue = cfValue as! AXValue?,
             AXValueGetType(axValue) == .cgPoint
         else {
             return nil
@@ -237,10 +326,10 @@ private final class AXWindowInspector {
         return point
     }
 
-    private func sizeAttribute(_ element: AXUIElement, _ attribute: String) -> CGSize? {
-        guard let value = copyAttribute(element, attribute),
-            CFGetTypeID(value) == AXValueGetTypeID(),
-            let axValue = value as! AXValue?,
+    private func sizeValue(_ value: Any) -> CGSize? {
+        let cfValue = value as CFTypeRef
+        guard CFGetTypeID(cfValue) == AXValueGetTypeID(),
+            let axValue = cfValue as! AXValue?,
             AXValueGetType(axValue) == .cgSize
         else {
             return nil

@@ -26,13 +26,15 @@ swift test
 swift build
 swift build -c release
 pre-commit run --all-files
+bash scripts/test-build-app-rollback.sh
 ```
 
 The local package tests cover eligibility, malformed input isolation, conservative
 Core Graphics matching, one-to-one AX/CG assignment and activation keys, display
 intersection/tie/fallback mapping, Dock-aware panel frames, stable ordering,
-deduplication, lifecycle transitions, injected permission/window providers, and the
-120-window projection path. They do not replace tests on a real multi-display,
+deduplication, lifecycle transitions including open/move/minimize/restore/close,
+injected permission/window providers, and the 120-window projection path. They do
+not replace tests on a real multi-display,
 Spaces, fullscreen, or Stage Manager session.
 
 ## Local app bundle
@@ -122,14 +124,15 @@ fullscreen windows are included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: 31 automated tests, debug and release package
+Validated in the local checkout: 32 automated tests, debug and release package
 builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
 verification, and plist syntax/structure checks. Computer QA covers the denied
 onboarding guide, Settings layout/reopen/close-without-quit, title preference, and
 the normal/120-window/empty DEBUG taskbar fixtures including horizontal scrolling.
-Scoped measurements recorded 0.0% CPU in each short idle sample and 14 MB physical
-footprint for four fixture windows (35 MB for 120); see `docs/PERFORMANCE.md` for RSS
-and limits. Real Accessibility grant/window focus, installed launch-at-login,
+Scoped measurements recorded 0.0% CPU in all 11 samples of a five-minute final
+four-window fixture soak and 15 MB physical footprint (35 MB for the earlier
+120-window fixture); see `docs/PERFORMANCE.md` for RSS and limits. Real Accessibility
+grant/window focus, installed launch-at-login,
 multi-monitor/Spaces/fullscreen/Stage Manager behavior, five-minute energy/latency
 traces, Developer ID signing, notarization/stapling, and Gatekeeper on a clean machine
 remain explicitly pending.

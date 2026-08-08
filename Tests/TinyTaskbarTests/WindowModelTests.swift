@@ -284,14 +284,14 @@ struct WindowModelTests {
         let sideFrame = TaskbarPanelLayout.frame(for: sideDock)
         let rightFrame = TaskbarPanelLayout.frame(for: rightDock)
 
-        #expect(bottomFrame.minY == 78)
-        #expect(bottomFrame.height == 42)
-        #expect(sideFrame.minY == 8)
-        #expect(sideFrame.minX == 1_528)
-        #expect(sideFrame.width == 1_344)
-        #expect(rightFrame.minY == 8)
-        #expect(rightFrame.minX == 1_448)
-        #expect(rightFrame.width == 1_344)
+        #expect(bottomFrame.minY == 70)
+        #expect(bottomFrame.height == 30)
+        #expect(sideFrame.minY == 0)
+        #expect(sideFrame.minX == 1_520)
+        #expect(sideFrame.width == 1_360)
+        #expect(rightFrame.minY == 0)
+        #expect(rightFrame.minX == 1_440)
+        #expect(rightFrame.width == 1_360)
     }
 
     @Test("panel placement stays bounded on tiny and negative-origin displays")
@@ -313,25 +313,61 @@ struct WindowModelTests {
             frame: CGRect(x: -1_920, y: -100, width: 1_920, height: 1_080)
         )
         let negativeFrame = TaskbarPanelLayout.frame(for: negative)
-        #expect(negativeFrame.minX == -1_912)
-        #expect(negativeFrame.minY == -92)
+        #expect(negativeFrame.minX == -1_920)
+        #expect(negativeFrame.minY == -100)
     }
 
-    @Test("ordering puts active windows first then stable textual keys")
+    @Test("ordering stays stable when the active window changes")
     func stableOrdering() {
         let items = [
             TaskbarItem(
                 id: "z", pid: 1, applicationName: "Beta", title: "A", displayIdentifier: "main",
-                cgWindowNumber: nil, isActive: false),
+                cgWindowNumber: nil, isActive: true),
             TaskbarItem(
                 id: "b", pid: 2, applicationName: "Alpha", title: "Z", displayIdentifier: "main",
                 cgWindowNumber: nil, isActive: false),
             TaskbarItem(
                 id: "a", pid: 3, applicationName: "Alpha", title: "A", displayIdentifier: "main",
-                cgWindowNumber: nil, isActive: true),
+                cgWindowNumber: nil, isActive: false),
         ]
 
         #expect(WindowOrdering.sorted(items).map(\.id) == ["a", "b", "z"])
+    }
+
+    @Test("numbered windows retain creation-style order instead of lexical order")
+    func numberedWindowOrdering() {
+        let items = [
+            TaskbarItem(
+                id: "window-10", pid: 10, applicationName: "App 10", title: "Window 10",
+                displayIdentifier: "main", cgWindowNumber: 10, isActive: true),
+            TaskbarItem(
+                id: "window-2", pid: 2, applicationName: "App 2", title: "Window 2",
+                displayIdentifier: "main", cgWindowNumber: 2, isActive: false),
+            TaskbarItem(
+                id: "window-1", pid: 1, applicationName: "App 1", title: "Window 1",
+                displayIdentifier: "main", cgWindowNumber: 1, isActive: false),
+        ]
+
+        #expect(WindowOrdering.sorted(items).map(\.id) == ["window-1", "window-2", "window-10"])
+    }
+
+    @Test("numbered and unnumbered windows use one total stable order")
+    func mixedWindowNumberOrdering() {
+        let items = [
+            TaskbarItem(
+                id: "numbered-2", pid: 2, applicationName: "Alpha", title: "Two",
+                displayIdentifier: "main", cgWindowNumber: 2, isActive: false),
+            TaskbarItem(
+                id: "unnumbered", pid: 3, applicationName: "Beta", title: "Unknown",
+                displayIdentifier: "main", cgWindowNumber: nil, isActive: true),
+            TaskbarItem(
+                id: "numbered-1", pid: 1, applicationName: "Zulu", title: "One",
+                displayIdentifier: "main", cgWindowNumber: 1, isActive: false),
+        ]
+
+        #expect(
+            WindowOrdering.sorted(items).map(\.id)
+                == ["numbered-1", "numbered-2", "unnumbered"])
     }
 
     @Test("only the frontmost application can provide an active item")
@@ -370,8 +406,8 @@ struct WindowModelTests {
             selfPID: 999,
             frontmostPID: 20
         ).itemsByDisplay["main"]!
-        #expect(frontmost.map(\.pid) == [20, 10])
-        #expect(frontmost.map(\.isActive) == [true, false])
+        #expect(frontmost.map(\.pid) == [10, 20])
+        #expect(frontmost.map(\.isActive) == [false, true])
 
         let noFrontmost = WindowProjection.project(
             candidates: [alpha, beta],

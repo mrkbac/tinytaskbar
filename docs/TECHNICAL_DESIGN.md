@@ -16,7 +16,7 @@ in `WindowModel.swift` keep policy deterministic and testable:
 | `DisplayMapper` | greatest intersection, deterministic tie, center/nearest fallback |
 | `TaskbarPanelLayout` | full/visible AppKit frame placement with Dock-aware bottom inset |
 | `TaskbarButtonLayout` | compact title-on/title-off width bounds |
-| `WindowOrdering` | active first, app name, title, stable key |
+| `WindowOrdering` | numbered windows first in numeric order, then stable fallback keys |
 | `WindowDeduplicator` | one item per stable observation key |
 | `LifecycleReducer` | launch, permission change, and stop transitions |
 | `WindowProjection` | converts raw observations into the store’s display state |
@@ -74,11 +74,12 @@ running app is launched again.
 
 The retained Settings window is a non-resizable fixed-size AppKit window with an
 explicitly framed 640 × 340 point content view. Its content min/max sizes are both set
-to that value after interface setup. The root vertical stack is manually framed with
-insets and uses width/height autoresizing; no outer constraints connect it to the
-content view, so intrinsic fitting cannot resize the window. Auto Layout remains
-inside the fixed stack for rows and accessories. Each arranged row uses the same
-fixed content width and leading alignment, so Granted/Required accessory-width
+to that value after interface setup. The root vertical stack is constrained to fixed
+content-view insets, and every arranged row is constrained to the stack width. The
+window's fixed content min/max size prevents intrinsic fitting from resizing it while
+Auto Layout keeps the hierarchy's geometry finite during presentation and AX reads.
+Each arranged row uses the same content width and leading alignment, so
+Granted/Required accessory-width
 changes cannot shift row labels. The introduction uses the full available content
 width, action accessories retain their intrinsic button/control
 widths, and the launch-at-login status is constrained to 190 points and at most two
@@ -189,6 +190,16 @@ Activation defensively tries to clear `AXMinimized`, activates the owning
 `AXRaise`. All operations tolerate stale references. The resulting notification
 path schedules a refresh.
 
+Window order is stable across focus changes: items use their numeric Core Graphics
+window identity as creation-style order, with stable application/item keys as the
+fallback. Active state changes only presentation, so clicking never moves the target
+out from under the pointer. Each item has one
+native context command, Close, paired with AppKit's standard `xmark` symbol so the
+menu's symbol column is intentional rather than empty. The command reads the window's public
+`kAXCloseButtonAttribute` and performs `kAXPressAction`, matching the semantic red
+window control and preserving any save-confirmation UI owned by the target app.
+Missing, stale, or unsupported close controls are isolated to that item.
+
 Each `TaskbarPanel` is a borderless, non-activating `NSPanel` with
 `canBecomeKeyWindow == false` and `canBecomeMainWindow == false`. It uses the
 documented `.statusBar` level and this non-conflicting public collection set:
@@ -201,15 +212,16 @@ Apple documents `primary`, `auxiliary`, and `canJoinAllApplications` as mutually
 exclusive within the Stage Manager/fullscreen group; TinyTaskbar selects only
 `canJoinAllApplications`. The horizontal AppKit stack is inside an `NSScrollView`,
 uses copied/cached application icons, falls back to the native `macwindow` symbol for
-a stale or unavailable application icon, truncates titles, marks active items
-visually, and provides button accessibility labels. The bar is deliberately an
-overlay because third-party panels cannot reserve Dock-like work area.
+a stale or unavailable application icon, truncates titles, marks active items with a
+subtle neutral emphasis, and provides button accessibility labels. The 30-point bar
+uses AppKit's native header/footer material, spans the usable display width, and has
+no floating outer inset. It is deliberately an overlay because third-party panels
+cannot reserve Dock-like work area.
 
 Panel frames are calculated from the AppKit full and visible frames, not from AX
-geometry. The horizontal inset is applied within the full display; the vertical
-origin is the greater of the full-frame bottom inset and the visible-frame bottom
-inset, so a bottom Dock lifts the overlay while a side Dock trims its horizontal
-span without lifting it. Tiny and
+geometry. The panel is flush with the usable horizontal and bottom edges: a bottom
+Dock lifts it exactly to the visible-frame boundary while a side Dock trims its
+horizontal span without lifting it. Tiny and
 negative-origin displays are clamped deterministically. The title-off width range
 starts below the title-on minimum so app-name-only buttons stay compact while
 retaining their icon, tooltip, and full accessibility label.

@@ -1,9 +1,82 @@
+import AppKit
 import Foundation
 import Testing
 
 @testable import TinyTaskbar
 
 struct PermissionTests {
+    @Test("Settings layout keeps finite nonnegative view geometry")
+    @MainActor
+    func settingsLayoutGeometryIsValid() {
+        let window = TinyTaskbarSettingsWindow()
+        defer { window.close() }
+
+        window.refresh(
+            accessibilityTrusted: false,
+            showsWindowTitles: true,
+            accessibilityRequestWasMade: false
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(window.contentView?.bounds.size == NSSize(width: 640, height: 340))
+        var pendingViews = window.contentView.map { [$0] } ?? []
+        while let view = pendingViews.popLast() {
+            #expect(view.frame.origin.x.isFinite)
+            #expect(view.frame.origin.y.isFinite)
+            #expect(view.frame.width.isFinite)
+            #expect(view.frame.height.isFinite)
+            #expect(view.frame.width >= 0)
+            #expect(view.frame.height >= 0)
+            pendingViews.append(contentsOf: view.subviews)
+        }
+    }
+
+    @Test("Taskbar window items expose only the native Close context command")
+    @MainActor
+    func taskbarContextMenuClosesSelectedItem() {
+        let item = TaskbarItem(
+            id: "context-window",
+            pid: 42,
+            applicationName: "Editor",
+            title: "Document",
+            displayIdentifier: "main",
+            cgWindowNumber: 7,
+            isActive: false
+        )
+        var closedItem: TaskbarItem?
+        let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { closedItem = $0 }
+        )
+        defer { panel.close() }
+        panel.update(frame: frame, items: [item], showsWindowTitles: true)
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        var pendingViews = panel.contentView.map { [$0] } ?? []
+        var itemButton: NSButton?
+        while let view = pendingViews.popLast() {
+            if let button = view as? NSButton, button.menu != nil {
+                itemButton = button
+                break
+            }
+            pendingViews.append(contentsOf: view.subviews)
+        }
+        guard let closeItem = itemButton?.menu?.items.first,
+            let action = closeItem.action
+        else {
+            Issue.record("taskbar Close context command was not rendered")
+            return
+        }
+
+        #expect(itemButton?.menu?.items.map(\.title) == ["Close"])
+        #expect(closeItem.image?.isTemplate == true)
+        #expect(closeItem.image?.size == NSSize(width: 13, height: 13))
+        #expect(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
+        #expect(closedItem?.id == item.id)
+    }
+
     @Test("explicit Accessibility requests are offered at most once per launch")
     func requestDecisionIsOneShot() {
         var state = AccessibilityPermissionRequestState()
@@ -87,7 +160,7 @@ struct PermissionTests {
 
         store.start(accessibilityTrusted: false)
         store.setAccessibilityAvailable(true)
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForSnapshot(from: provider)
 
         #expect(provider.snapshotCount == 1)
         #expect(store.state.itemsByDisplay["main"]?.count == 1)
@@ -111,7 +184,7 @@ struct PermissionTests {
         store.setAccessibilityAvailable(true)
         store.requestRefresh()
         store.requestRefresh()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForSnapshot(from: provider)
 
         #expect(provider.snapshotCount == 1)
     }
@@ -223,7 +296,7 @@ struct PermissionTests {
         #expect(emittedStates.count == 5)
     }
 
-    @Test("stale activation is ignored after Accessibility revocation")
+    @Test("stale window operations are ignored after Accessibility revocation")
     @MainActor
     func staleActivationIsSafe() {
         let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
@@ -239,10 +312,14 @@ struct PermissionTests {
 
         store.activate(item)
         #expect(provider.activationCount == 1)
+        store.close(item)
+        #expect(provider.closeCount == 1)
 
         store.setAccessibilityAvailable(false)
         store.activate(item)
+        store.close(item)
         #expect(provider.activationCount == 1)
+        #expect(provider.closeCount == 1)
     }
 
     @Test("injected Accessibility provider exposes trust and request calls")
@@ -279,6 +356,15 @@ struct PermissionTests {
         )
     }
 
+    @MainActor
+    private func waitForSnapshot(from provider: MockWindowSnapshotProvider) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while provider.snapshotCount == 0, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private var fixtureDisplay: DisplayDescriptor {
         DisplayDescriptor(
             identifier: "main",
@@ -297,6 +383,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
         candidates: [], cgWindows: [], displays: [], frontmostPID: nil)
     var snapshotCount = 0
     var activationCount = 0
+    var closeCount = 0
     var onChange: (@MainActor @Sendable () -> Void)?
 
     init(snapshot: RawWindowSnapshot? = nil) {
@@ -312,6 +399,10 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
 
     func activate(_: TaskbarItem) {
         activationCount += 1
+    }
+
+    func close(_: TaskbarItem) {
+        closeCount += 1
     }
 }
 

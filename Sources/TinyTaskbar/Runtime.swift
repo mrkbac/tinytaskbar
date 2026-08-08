@@ -108,6 +108,12 @@ final class TaskbarStore {
         requestRefresh()
     }
 
+    func close(_ item: TaskbarItem) {
+        guard accessibilityAvailable else { return }
+        provider.close(item)
+        requestRefresh()
+    }
+
     func stop() {
         pendingRefresh?.cancel()
         pendingRefresh = nil
@@ -387,24 +393,25 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = true
-        stack.autoresizingMask = [.width, .height]
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
         guard let contentView else { return }
         let horizontalInset: CGFloat = 28
         let topInset: CGFloat = 26
         let bottomInset: CGFloat = 24
-        let contentWidth = Self.fixedContentSize.width - horizontalInset * 2
-        for row in arrangedRows {
-            row.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-        }
         contentView.addSubview(stack)
-        stack.frame = NSRect(
-            x: horizontalInset,
-            y: bottomInset,
-            width: contentWidth,
-            height: max(0, contentView.bounds.height - topInset - bottomInset)
-        )
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor, constant: horizontalInset),
+            stack.trailingAnchor.constraint(
+                equalTo: contentView.trailingAnchor, constant: -horizontalInset),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: topInset),
+            stack.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor, constant: -bottomInset),
+        ])
+        for row in arrangedRows {
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
         quitButton.setContentHuggingPriority(.required, for: .horizontal)
         doneButton.setContentHuggingPriority(.required, for: .horizontal)
         doneButton.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -552,9 +559,10 @@ final class TaskbarPanel: NSPanel {
 
     init(
         frame: NSRect,
-        onActivate: @escaping @MainActor (TaskbarItem) -> Void
+        onActivate: @escaping @MainActor (TaskbarItem) -> Void,
+        onClose: @escaping @MainActor (TaskbarItem) -> Void
     ) {
-        barView = TaskbarBarView(onActivate: onActivate)
+        barView = TaskbarBarView(onActivate: onActivate, onClose: onClose)
         super.init(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -564,7 +572,7 @@ final class TaskbarPanel: NSPanel {
 
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
         level = .statusBar
         collectionBehavior = [
             .canJoinAllSpaces,
@@ -607,20 +615,25 @@ private final class TaskbarBarView: NSView {
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var iconCache: [ApplicationIconKey: NSImage] = [:]
     private let onActivate: @MainActor (TaskbarItem) -> Void
+    private let onClose: @MainActor (TaskbarItem) -> Void
 
-    init(onActivate: @escaping @MainActor (TaskbarItem) -> Void) {
+    init(
+        onActivate: @escaping @MainActor (TaskbarItem) -> Void,
+        onClose: @escaping @MainActor (TaskbarItem) -> Void
+    ) {
         self.onActivate = onActivate
+        self.onClose = onClose
         super.init(frame: .zero)
 
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = 0
 
-        visualEffectView.material = .hudWindow
+        visualEffectView.material = .headerView
         visualEffectView.blendingMode = .behindWindow
         visualEffectView.state = .active
+        visualEffectView.isEmphasized = false
         visualEffectView.wantsLayer = true
-        visualEffectView.layer?.cornerRadius = 8
-        visualEffectView.layer?.masksToBounds = true
+        visualEffectView.layer?.cornerRadius = 0
         addSubview(visualEffectView)
 
         scrollView.drawsBackground = false
@@ -633,8 +646,8 @@ private final class TaskbarBarView: NSView {
 
         stackView.orientation = .horizontal
         stackView.alignment = .centerY
-        stackView.spacing = 4
-        stackView.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+        stackView.spacing = 1
+        stackView.edgeInsets = NSEdgeInsets()
         stackView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = stackView
     }
@@ -690,10 +703,29 @@ private final class TaskbarBarView: NSView {
         button.alignment = .left
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
-        button.contentTintColor = item.isActive ? .controlAccentColor : .labelColor
+        button.contentTintColor = .labelColor
         button.toolTip = item.tooltip
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let closeItem = NSMenuItem(
+            title: "Close",
+            action: #selector(closeWindow(_:)),
+            keyEquivalent: ""
+        )
+        closeItem.target = self
+        closeItem.representedObject = item.id
+        if let closeImage = NSImage(
+            systemSymbolName: "xmark",
+            accessibilityDescription: "Close"
+        ) {
+            closeImage.size = NSSize(width: 13, height: 13)
+            closeImage.isTemplate = true
+            closeItem.image = closeImage
+        }
+        menu.addItem(closeItem)
+        button.menu = menu
         button.translatesAutoresizingMaskIntoConstraints = false
         let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: widthRange.lowerBound)
@@ -701,14 +733,14 @@ private final class TaskbarBarView: NSView {
             true
         button.widthAnchor.constraint(lessThanOrEqualToConstant: widthRange.upperBound).isActive =
             true
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 30).isActive = true
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
         button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         button.wantsLayer = true
-        button.layer?.cornerRadius = 5
+        button.layer?.cornerRadius = 0
         button.layer?.backgroundColor =
             item.isActive
-            ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+            ? NSColor.labelColor.withAlphaComponent(0.10).cgColor
             : NSColor.clear.cgColor
 
         if let icon = icon(for: item) {
@@ -737,5 +769,14 @@ private final class TaskbarBarView: NSView {
     @objc private func activateButton(_ sender: NSButton) {
         guard let item = buttons[ObjectIdentifier(sender)] else { return }
         onActivate(item)
+    }
+
+    @objc private func closeWindow(_ sender: NSMenuItem) {
+        guard let itemID = sender.representedObject as? String,
+            let item = currentItems.first(where: { $0.id == itemID })
+        else {
+            return
+        }
+        onClose(item)
     }
 }

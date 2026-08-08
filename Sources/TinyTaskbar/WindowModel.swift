@@ -305,9 +305,9 @@ enum CGWindowMatcher {
 }
 
 enum TaskbarPanelLayout {
-    static let defaultHeight: CGFloat = 42
-    static let defaultHorizontalInset: CGFloat = 8
-    static let defaultBottomInset: CGFloat = 8
+    static let defaultHeight: CGFloat = 30
+    static let defaultHorizontalInset: CGFloat = 0
+    static let defaultBottomInset: CGFloat = 0
 
     static func frame(
         for display: DisplayDescriptor,
@@ -436,17 +436,29 @@ enum DisplayMapper {
 enum WindowOrdering {
     static func sorted(_ items: [TaskbarItem]) -> [TaskbarItem] {
         items.sorted { lhs, rhs in
-            if lhs.isActive != rhs.isActive { return lhs.isActive }
+            switch (lhs.cgWindowNumber, rhs.cgWindowNumber) {
+            case (let lhsWindowNumber?, let rhsWindowNumber?)
+            where lhsWindowNumber != rhsWindowNumber:
+                return lhsWindowNumber < rhsWindowNumber
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
 
             let lhsApplication = lhs.applicationName.lowercased()
             let rhsApplication = rhs.applicationName.lowercased()
             if lhsApplication != rhsApplication { return lhsApplication < rhsApplication }
 
+            if lhs.id != rhs.id { return lhs.id < rhs.id }
+
             let lhsTitle = CGWindowMatcher.normalized(lhs.title)
             let rhsTitle = CGWindowMatcher.normalized(rhs.title)
             if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
 
-            return lhs.id < rhs.id
+            return lhs.pid < rhs.pid
         }
     }
 }

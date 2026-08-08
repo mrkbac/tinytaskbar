@@ -109,9 +109,9 @@ or cross-Space membership is not attempted.
 
 The bar is an overlay. A third-party `NSPanel` cannot reserve screen work area like
 the Dock, so TinyTaskbar may cover the bottom edge of application content. Panels
-use each screen's full and visible AppKit frames: a bottom Dock lifts the bar by a
-small inset, while a side Dock trims its horizontal span without changing its
-vertical position.
+use each screen's full and visible AppKit frames: a bottom Dock lifts the bar exactly
+to the visible-frame boundary, while a side Dock trims its horizontal span without
+changing its vertical position. There is no additional floating outer margin.
 A per-display panel uses public AppKit collection behavior for all Spaces,
 fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
 real-machine behavior still needs validation.
@@ -124,11 +124,12 @@ fullscreen windows are included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: 32 automated tests, debug and release package
+Validated in the local checkout: 38 automated tests, debug and release package
 builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
 verification, and plist syntax/structure checks. Computer QA covers the denied
-onboarding guide, Settings layout/reopen/close-without-quit, title preference, and
-the normal/120-window/empty DEBUG taskbar fixtures including horizontal scrolling.
+onboarding guide, Settings layout/reopen/close-without-quit, title preference, stable
+window switching, the native Close context menu, and the normal/120-window/empty
+DEBUG taskbar fixtures including horizontal scrolling.
 Scoped measurements recorded 0.0% CPU in all 11 samples of a five-minute final
 four-window fixture soak and 15 MB physical footprint (35 MB for the earlier
 120-window fixture); see `docs/PERFORMANCE.md` for RSS and limits. Real Accessibility

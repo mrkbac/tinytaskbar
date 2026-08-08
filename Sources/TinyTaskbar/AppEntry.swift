@@ -129,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     frame: TaskbarPanelLayout.frame(for: display),
                     onActivate: { [weak self] item in
                         self?.store.activate(item)
+                    },
+                    onClose: { [weak self] item in
+                        self?.store.close(item)
                     })
                 panels[display.identifier] = panel
             }

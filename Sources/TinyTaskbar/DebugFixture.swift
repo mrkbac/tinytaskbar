@@ -27,6 +27,8 @@
     final class DebugFixtureWindowSnapshotProvider: WindowSnapshotProvider {
         let fixture: DebugFixture
         var onChange: (@MainActor @Sendable () -> Void)?
+        private var activePID: Int32?
+        private var closedPIDs: Set<Int32> = []
 
         init(fixture: DebugFixture) {
             self.fixture = fixture
@@ -48,11 +50,20 @@
                 candidates: candidates,
                 cgWindows: cgWindows,
                 displays: resolvedDisplays,
-                frontmostPID: candidates.first?.pid
+                frontmostPID: activePID ?? candidates.first?.pid
             )
         }
 
-        func activate(_: TaskbarItem) {
+        func activate(_ item: TaskbarItem) {
+            activePID = item.pid
+            onChange?()
+        }
+
+        func close(_ item: TaskbarItem) {
+            closedPIDs.insert(item.pid)
+            if activePID == item.pid {
+                activePID = nil
+            }
             onChange?()
         }
 
@@ -70,6 +81,7 @@
 
             var candidates: [WindowCandidate] = []
             var globalIndex = 0
+            var assignedFallbackActiveWindow = false
             for (displayIndex, display) in displays.enumerated() {
                 let count = fixture == .overflow && displayIndex == 0 ? 120 : 4
                 let width = min(360, max(160, display.frame.width - 100))
@@ -82,17 +94,21 @@
                     let pid = Int32(10_000 + globalIndex)
                     let applicationName = "Fixture App \(globalIndex + 1)"
                     let title = "Window \(globalIndex + 1) — 文書 🚀"
-                    candidates.append(
-                        WindowCandidate(
-                            pid: pid,
-                            applicationName: applicationName,
-                            localizedApplicationName: applicationName,
-                            title: title,
-                            frame: CGRect(x: x, y: y, width: width, height: height),
-                            isFocused: globalIndex == 0,
-                            isMain: globalIndex == 0
+                    if !closedPIDs.contains(pid) {
+                        let isActive = activePID.map { $0 == pid } ?? !assignedFallbackActiveWindow
+                        assignedFallbackActiveWindow = assignedFallbackActiveWindow || isActive
+                        candidates.append(
+                            WindowCandidate(
+                                pid: pid,
+                                applicationName: applicationName,
+                                localizedApplicationName: applicationName,
+                                title: title,
+                                frame: CGRect(x: x, y: y, width: width, height: height),
+                                isFocused: isActive,
+                                isMain: isActive
+                            )
                         )
-                    )
+                    }
                     globalIndex += 1
                 }
             }

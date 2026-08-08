@@ -9,6 +9,7 @@ protocol WindowSnapshotProvider: AnyObject {
     var onChange: (@MainActor @Sendable () -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
+    func close(_ item: TaskbarItem)
 }
 
 @MainActor
@@ -181,6 +182,44 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             )
         }
 
+        onChange?()
+    }
+
+    func close(_ item: TaskbarItem) {
+        guard let element = axElementsByStableKey[item.id] else {
+            logger.debug(
+                "Close skipped because AX reference is stale for \(item.id, privacy: .public)")
+            return
+        }
+
+        var rawCloseButton: CFTypeRef?
+        let copyError = AXUIElementCopyAttributeValue(
+            element,
+            kAXCloseButtonAttribute as CFString,
+            &rawCloseButton
+        )
+        guard copyError == .success,
+            let rawCloseButton,
+            CFGetTypeID(rawCloseButton) == AXUIElementGetTypeID()
+        else {
+            logger.debug(
+                "Close button unavailable pid=\(item.pid, privacy: .public) error=\(copyError.rawValue, privacy: .public)"
+            )
+            return
+        }
+
+        let closeButton = rawCloseButton as! AXUIElement
+        let pressError = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+        if pressError == .success {
+            axElementsByStableKey.removeValue(forKey: item.id)
+        } else {
+            logger.debug(
+                "Close action failed pid=\(item.pid, privacy: .public) error=\(pressError.rawValue, privacy: .public)"
+            )
+        }
+        // A modal save prompt can make AX report cannotComplete even though the
+        // press was delivered. Refresh once and let the target application's
+        // resulting window state remain authoritative.
         onChange?()
     }
 }

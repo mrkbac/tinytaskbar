@@ -116,6 +116,8 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let title: String
     let displayIdentifier: String
     let cgWindowNumber: UInt32?
+    let stableOrderKey: String?
+    let isMinimized: Bool
     let isActive: Bool
 
     init(
@@ -126,6 +128,8 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         title: String,
         displayIdentifier: String,
         cgWindowNumber: UInt32?,
+        stableOrderKey: String? = nil,
+        isMinimized: Bool = false,
         isActive: Bool
     ) {
         self.id = id
@@ -135,6 +139,8 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         self.title = title
         self.displayIdentifier = displayIdentifier
         self.cgWindowNumber = cgWindowNumber
+        self.stableOrderKey = stableOrderKey
+        self.isMinimized = isMinimized
         self.isActive = isActive
     }
 
@@ -151,7 +157,13 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     }
 
     var tooltip: String {
-        "Activate \(applicationName): \(displayTitle)"
+        if isActive {
+            return "Minimize \(applicationName): \(displayTitle)"
+        }
+        if isMinimized {
+            return "Restore \(applicationName): \(displayTitle)"
+        }
+        return "Activate \(applicationName): \(displayTitle)"
     }
 }
 
@@ -200,7 +212,6 @@ struct WindowEligibility: Sendable {
             candidate.role == "AXWindow",
             candidate.subrole == "AXStandardWindow" || candidate.subrole == "AXDialog",
             !candidate.isHidden,
-            !candidate.isMinimized,
             let frame = candidate.frame,
             frame.width >= minimumSize.width,
             frame.height >= minimumSize.height,
@@ -348,8 +359,8 @@ enum TaskbarPanelLayout {
 enum TaskbarButtonLayout {
     static let titleOnMinimumWidth: CGFloat = 110
     static let titleOffMinimumWidth: CGFloat = 72
-    static let titleOnMaximumWidth: CGFloat = 260
-    static let titleOffMaximumWidth: CGFloat = 190
+    static let titleOnMaximumWidth: CGFloat = 180
+    static let titleOffMaximumWidth: CGFloat = 150
 
     static func widthRange(showsWindowTitles: Bool) -> ClosedRange<CGFloat> {
         if showsWindowTitles {
@@ -436,6 +447,17 @@ enum DisplayMapper {
 enum WindowOrdering {
     static func sorted(_ items: [TaskbarItem]) -> [TaskbarItem] {
         items.sorted { lhs, rhs in
+            switch (lhs.stableOrderKey, rhs.stableOrderKey) {
+            case (let lhsKey?, let rhsKey?) where lhsKey != rhsKey:
+                return lhsKey < rhsKey
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+
             switch (lhs.cgWindowNumber, rhs.cgWindowNumber) {
             case (let lhsWindowNumber?, let rhsWindowNumber?)
             where lhsWindowNumber != rhsWindowNumber:
@@ -526,7 +548,10 @@ enum WindowCGAssignment {
         var assignments: [Int: Int] = [:]
         var usedCGWindowIndices = Set<Int>()
         let orderedCandidateIndices = candidates.indices
-            .filter { eligibility.isEligible(candidates[$0], selfPID: selfPID) }
+            .filter {
+                !candidates[$0].isMinimized
+                    && eligibility.isEligible(candidates[$0], selfPID: selfPID)
+            }
             .sorted { WindowCandidateOrdering.preferred(candidates[$0], candidates[$1]) }
 
         for candidateIndex in orderedCandidateIndices {
@@ -565,14 +590,16 @@ enum WindowProjection {
 
         for candidateIndex in candidates.indices {
             let candidate = candidates[candidateIndex]
-            guard let cgWindowIndex = assignments[candidateIndex] else { continue }
-            let cgWindow = cgWindows[cgWindowIndex]
             guard
+                eligibility.isEligible(candidate, selfPID: selfPID),
                 let frame = candidate.frame,
                 let displayIdentifier = DisplayMapper.identifier(for: frame, displays: displays)
             else {
                 continue
             }
+
+            let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
+            guard cgWindow != nil || candidate.isMinimized else { continue }
 
             let id =
                 WindowObservationKey.itemKey(
@@ -580,7 +607,8 @@ enum WindowProjection {
                     cgWindow: cgWindow
                 )
             let isActive =
-                frontmostPID == candidate.pid && (candidate.isFocused || candidate.isMain)
+                !candidate.isMinimized && frontmostPID == candidate.pid
+                && (candidate.isFocused || candidate.isMain)
             projected.append(
                 TaskbarItem(
                     id: id,
@@ -589,7 +617,9 @@ enum WindowProjection {
                     applicationIdentity: candidate.applicationIdentity,
                     title: candidate.title,
                     displayIdentifier: displayIdentifier,
-                    cgWindowNumber: cgWindow.windowNumber,
+                    cgWindowNumber: cgWindow?.windowNumber,
+                    stableOrderKey: candidate.stableKey,
+                    isMinimized: candidate.isMinimized,
                     isActive: isActive
                 )
             )
@@ -611,8 +641,8 @@ enum WindowProjection {
 }
 
 enum StableWindowKey {
-    static func make(candidate: WindowCandidate, cgWindow: CGWindowMetadata) -> String {
-        if let windowNumber = cgWindow.windowNumber {
+    static func make(candidate: WindowCandidate, cgWindow: CGWindowMetadata?) -> String {
+        if let windowNumber = cgWindow?.windowNumber {
             return "cg:\(candidate.pid):\(windowNumber)"
         }
 
@@ -626,7 +656,7 @@ enum StableWindowKey {
 }
 
 enum WindowObservationKey {
-    static func itemKey(candidate: WindowCandidate, cgWindow: CGWindowMetadata) -> String {
+    static func itemKey(candidate: WindowCandidate, cgWindow: CGWindowMetadata?) -> String {
         candidate.stableKey ?? StableWindowKey.make(candidate: candidate, cgWindow: cgWindow)
     }
 

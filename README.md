@@ -104,8 +104,9 @@ metadata. No thumbnails or window content are captured.
 The current Space is represented conservatively by the intersection of AX window
 geometry with the public `CGWindowListCopyWindowInfo(.optionOnScreenOnly, ...)`
 list. macOS does not expose a reliable public arbitrary-window Space ID, and the
-deprecated Core Graphics workspace key is intentionally not used. Exact minimized
-or cross-Space membership is not attempted.
+deprecated Core Graphics workspace key is intentionally not used. Minimized windows
+remain associated with their last AX geometry so they can be restored; exact
+cross-Space membership is not attempted.
 
 The bar is an overlay. A third-party `NSPanel` cannot reserve screen work area like
 the Dock, so TinyTaskbar may cover the bottom edge of application content. Panels
@@ -118,13 +119,14 @@ real-machine behavior still needs validation.
 
 App-provided AX metadata and notifications can be missing or malformed. A failing
 application or window is skipped and revisited on later system events. Hidden
-applications, minimized windows, and windows not reported on-screen by Core
-Graphics are omitted in v1. Stage Manager background sets are therefore omitted;
-fullscreen windows are included when Core Graphics reports them on-screen.
+applications and non-minimized windows not reported on-screen by Core Graphics are
+omitted in v1. Minimized AX windows remain as dimmed taskbar items and restore on
+click. Stage Manager background sets are therefore omitted; fullscreen windows are
+included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: 38 automated tests, debug and release package
+Validated in the local checkout: 41 automated tests, debug and release package
 builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
 verification, and plist syntax/structure checks. Computer QA covers the denied
 onboarding guide, Settings layout/reopen/close-without-quit, title preference, stable

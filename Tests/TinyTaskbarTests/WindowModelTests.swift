@@ -4,6 +4,30 @@ import Testing
 @testable import TinyTaskbar
 
 struct WindowModelTests {
+    @Test("window identities do not depend on hash uniqueness")
+    func collisionSafeWindowIdentityRegistry() {
+        struct CollidingElement: Hashable {
+            let value: Int
+
+            func hash(into hasher: inout Hasher) {
+                hasher.combine(0)
+            }
+        }
+
+        var registry = WindowElementIdentityRegistry<CollidingElement> {
+            $0.value == $1.value
+        }
+        registry.beginSnapshot()
+        let first = registry.identifier(for: CollidingElement(value: 1), namespace: "42")
+        let second = registry.identifier(for: CollidingElement(value: 2), namespace: "42")
+        let repeatedFirst = registry.identifier(
+            for: CollidingElement(value: 1), namespace: "42")
+        registry.endSnapshot()
+
+        #expect(first != second)
+        #expect(repeatedFirst == first)
+    }
+
     @Test("AX frames preserve global top-left CG screen coordinates")
     func axCoordinatesRemainUnchanged() {
         let axFrame = CGRect(x: -1280, y: 100, width: 640, height: 400)
@@ -59,12 +83,6 @@ struct WindowModelTests {
                 isHidden: true
             ),
             WindowCandidate(
-                pid: 5,
-                applicationName: "App",
-                frame: CGRect(x: 0, y: 0, width: 300, height: 200),
-                isMinimized: true
-            ),
-            WindowCandidate(
                 pid: 6,
                 applicationName: "App",
                 applicationIsRegular: false,
@@ -109,6 +127,14 @@ struct WindowModelTests {
         for candidate in candidates {
             #expect(!eligibility.isEligible(candidate, selfPID: 999))
         }
+
+        let minimized = WindowCandidate(
+            pid: 5,
+            applicationName: "App",
+            frame: CGRect(x: 0, y: 0, width: 300, height: 200),
+            isMinimized: true
+        )
+        #expect(eligibility.isEligible(minimized, selfPID: 999))
     }
 
     @Test("projection requires an on-screen layer-zero Core Graphics match")
@@ -370,6 +396,77 @@ struct WindowModelTests {
                 == ["numbered-1", "numbered-2", "unnumbered"])
     }
 
+    @Test("minimize and restore preserve stable item identity and order")
+    func minimizedWindowIdentityAndOrder() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let firstFrame = CGRect(x: 50, y: 50, width: 400, height: 300)
+        let secondFrame = CGRect(x: 500, y: 50, width: 400, height: 300)
+
+        func candidate(
+            key: String,
+            pid: Int32,
+            title: String,
+            frame: CGRect,
+            minimized: Bool = false
+        ) -> WindowCandidate {
+            WindowCandidate(
+                stableKey: key,
+                pid: pid,
+                applicationName: title,
+                title: title,
+                frame: frame,
+                isMinimized: minimized,
+                isFocused: !minimized && key == "stable-first",
+                isMain: !minimized && key == "stable-first"
+            )
+        }
+
+        let initialCandidates = [
+            candidate(key: "stable-first", pid: 10, title: "First", frame: firstFrame),
+            candidate(key: "stable-second", pid: 11, title: "Second", frame: secondFrame),
+        ]
+        let initialCGWindows = [
+            CGWindowMetadata(windowNumber: 10, ownerPID: 10, bounds: firstFrame),
+            CGWindowMetadata(windowNumber: 11, ownerPID: 11, bounds: secondFrame),
+        ]
+        let initial = WindowProjection.project(
+            candidates: initialCandidates,
+            cgWindows: initialCGWindows,
+            displays: [display],
+            selfPID: 999,
+            frontmostPID: 10
+        )
+
+        let minimizedCandidates = [
+            candidate(
+                key: "stable-first", pid: 10, title: "First", frame: firstFrame,
+                minimized: true),
+            initialCandidates[1],
+        ]
+        let minimized = WindowProjection.project(
+            candidates: minimizedCandidates,
+            cgWindows: [initialCGWindows[1]],
+            displays: [display],
+            selfPID: 999,
+            frontmostPID: 11
+        )
+        let restored = WindowProjection.project(
+            candidates: initialCandidates,
+            cgWindows: initialCGWindows,
+            displays: [display],
+            selfPID: 999,
+            frontmostPID: 10
+        )
+
+        #expect(initial.itemsByDisplay["main"]?.map(\.id) == ["stable-first", "stable-second"])
+        #expect(minimized.itemsByDisplay["main"]?.map(\.id) == ["stable-first", "stable-second"])
+        #expect(minimized.itemsByDisplay["main"]?.first?.isMinimized == true)
+        #expect(restored.itemsByDisplay["main"]?.map(\.id) == ["stable-first", "stable-second"])
+    }
+
     @Test("only the frontmost application can provide an active item")
     func activeStateRequiresFrontmostApplication() {
         let alpha = WindowCandidate(
@@ -628,6 +725,7 @@ struct WindowModelTests {
     @Test("button sizing keeps title-off items materially narrower")
     func buttonSizingRanges() {
         #expect(TaskbarButtonLayout.titleOnMinimumWidth == 110)
+        #expect(TaskbarButtonLayout.titleOnMaximumWidth == 180)
         #expect(TaskbarButtonLayout.titleOffMinimumWidth < 110)
         #expect(TaskbarButtonLayout.titleOffMaximumWidth < TaskbarButtonLayout.titleOnMaximumWidth)
     }

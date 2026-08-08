@@ -45,6 +45,36 @@
             #expect(activated.candidates.first { $0.pid == first.pid }?.isFocused == false)
         }
 
+        @Test("fixture minimizes and restores the selected mocked window")
+        @MainActor
+        func minimizeAndRestoreWindow() {
+            let provider = DebugFixtureWindowSnapshotProvider(fixture: .normal)
+            let initial = provider.snapshot()
+            guard let selected = initial.candidates.first else {
+                Issue.record("normal fixture did not create a window")
+                return
+            }
+            let item = TaskbarItem(
+                id: "fixture-minimize",
+                pid: selected.pid,
+                applicationName: selected.applicationName,
+                title: selected.title,
+                displayIdentifier: initial.displays[0].identifier,
+                cgWindowNumber: nil,
+                isActive: true
+            )
+
+            provider.minimize(item)
+            let minimized = provider.snapshot()
+            #expect(minimized.candidates.first { $0.pid == selected.pid }?.isMinimized == true)
+            #expect(!minimized.cgWindows.contains { $0.ownerPID == selected.pid })
+
+            provider.activate(item)
+            let restored = provider.snapshot()
+            #expect(restored.candidates.first { $0.pid == selected.pid }?.isMinimized == false)
+            #expect(restored.frontmostPID == selected.pid)
+        }
+
         @Test("fixture close removes only the selected mocked window")
         @MainActor
         func closeRemovesSelectedWindow() {

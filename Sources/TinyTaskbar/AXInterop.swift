@@ -9,6 +9,7 @@ protocol WindowSnapshotProvider: AnyObject {
     var onChange: (@MainActor @Sendable () -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
+    func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
 }
 
@@ -43,12 +44,68 @@ enum AXMessagingPolicy {
     static let timeoutSeconds: Float = 0.25
 }
 
+struct WindowElementIdentityRegistry<Element> {
+    private struct Entry {
+        let element: Element
+        let identifier: String
+        var lastSeenGeneration: UInt64
+    }
+
+    private var entriesByNamespace: [String: [Entry]] = [:]
+    private var generation: UInt64 = 0
+    private var nextIdentifier: UInt64 = 0
+    private let elementsEqual: (Element, Element) -> Bool
+
+    init(elementsEqual: @escaping (Element, Element) -> Bool) {
+        self.elementsEqual = elementsEqual
+    }
+
+    mutating func beginSnapshot() {
+        generation &+= 1
+    }
+
+    mutating func identifier(for element: Element, namespace: String) -> String {
+        var entries = entriesByNamespace[namespace] ?? []
+        if let index = entries.firstIndex(where: { elementsEqual($0.element, element) }) {
+            entries[index].lastSeenGeneration = generation
+            let identifier = entries[index].identifier
+            entriesByNamespace[namespace] = entries
+            return identifier
+        }
+
+        nextIdentifier &+= 1
+        let identifier = "ax-window:\(namespace):\(nextIdentifier)"
+        entries.append(
+            Entry(
+                element: element,
+                identifier: identifier,
+                lastSeenGeneration: generation
+            )
+        )
+        entriesByNamespace[namespace] = entries
+        return identifier
+    }
+
+    mutating func endSnapshot() {
+        let oldestRetainedGeneration = generation > 1 ? generation - 1 : 0
+        entriesByNamespace = entriesByNamespace.compactMapValues { entries in
+            let retained = entries.filter {
+                $0.lastSeenGeneration >= oldestRetainedGeneration
+            }
+            return retained.isEmpty ? nil : retained
+        }
+    }
+}
+
 @MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
     private lazy var inspector = AXWindowInspector(logger: logger)
     private lazy var observerRegistry = AXObserverRegistry(logger: logger) { [weak self] in
         self?.onChange?()
+    }
+    private var identityRegistry = WindowElementIdentityRegistry<AXUIElement> {
+        CFEqual($0, $1)
     }
     private var axElementsByStableKey: [String: AXUIElement] = [:]
 
@@ -67,6 +124,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func snapshot() -> RawWindowSnapshot {
+        identityRegistry.beginSnapshot()
+        defer { identityRegistry.endSnapshot() }
         let cgWindows = CGWindowReader.onScreenWindows()
         let displays = DisplayReader.current()
         let applications = NSWorkspace.shared.runningApplications.filter { application in
@@ -80,7 +139,10 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         var nextElements: [String: AXUIElement] = [:]
 
         for application in applications {
-            let records = inspector.enumerate(application)
+            let namespace = String(application.processIdentifier)
+            let records = inspector.enumerate(application) { [unowned self] element in
+                identityRegistry.identifier(for: element, namespace: namespace)
+            }
             let startIndex = allRecords.count
             allRecords.append(contentsOf: records)
             candidates.append(contentsOf: records.map(\.candidate))
@@ -99,9 +161,17 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             cgWindows: cgWindows,
             selfPID: ProcessInfo.processInfo.processIdentifier
         )
+        let eligibility = WindowEligibility()
         for (candidateIndex, record) in allRecords.enumerated() {
-            guard let cgWindowIndex = assignments[candidateIndex] else { continue }
-            let cgWindow = cgWindows[cgWindowIndex]
+            let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
+            guard cgWindow != nil || record.candidate.isMinimized,
+                eligibility.isEligible(
+                    record.candidate,
+                    selfPID: ProcessInfo.processInfo.processIdentifier
+                )
+            else {
+                continue
+            }
             let key = WindowObservationKey.itemKey(
                 candidate: record.candidate,
                 cgWindow: cgWindow
@@ -185,6 +255,27 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         onChange?()
     }
 
+    func minimize(_ item: TaskbarItem) {
+        guard let element = axElementsByStableKey[item.id] else {
+            logger.debug(
+                "Minimize skipped because AX reference is stale for \(item.id, privacy: .public)"
+            )
+            return
+        }
+
+        let error = AXUIElementSetAttributeValue(
+            element,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        if error != .success {
+            logger.debug(
+                "Minimize failed pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
+            )
+        }
+        onChange?()
+    }
+
     func close(_ item: TaskbarItem) {
         guard let element = axElementsByStableKey[item.id] else {
             logger.debug(
@@ -244,7 +335,10 @@ private final class AXWindowInspector {
         self.logger = logger
     }
 
-    func enumerate(_ application: NSRunningApplication) -> [AXWindowRecord] {
+    func enumerate(
+        _ application: NSRunningApplication,
+        stableKeyForElement: (AXUIElement) -> String
+    ) -> [AXWindowRecord] {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         var rawWindows: CFTypeRef?
         let windowListError = AXUIElementCopyAttributeValue(
@@ -312,6 +406,7 @@ private final class AXWindowInspector {
 
             let axFrame = CGRect(origin: position, size: size)
             let candidate = WindowCandidate(
+                stableKey: stableKeyForElement(element),
                 pid: application.processIdentifier,
                 applicationName: applicationName,
                 applicationIdentity: applicationIdentity,

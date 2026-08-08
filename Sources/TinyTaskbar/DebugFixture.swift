@@ -29,6 +29,7 @@
         var onChange: (@MainActor @Sendable () -> Void)?
         private var activePID: Int32?
         private var closedPIDs: Set<Int32> = []
+        private var minimizedPIDs: Set<Int32> = []
 
         init(fixture: DebugFixture) {
             self.fixture = fixture
@@ -38,7 +39,8 @@
             let displays = DisplayReader.current()
             let resolvedDisplays = displays.isEmpty ? [syntheticDisplay] : displays
             let candidates = makeCandidates(displays: resolvedDisplays)
-            let cgWindows = candidates.enumerated().map { index, candidate in
+            let cgWindows = candidates.filter { !$0.isMinimized }.enumerated().map {
+                index, candidate in
                 CGWindowMetadata(
                     windowNumber: UInt32(50_000 + index),
                     ownerPID: candidate.pid,
@@ -55,7 +57,16 @@
         }
 
         func activate(_ item: TaskbarItem) {
+            minimizedPIDs.remove(item.pid)
             activePID = item.pid
+            onChange?()
+        }
+
+        func minimize(_ item: TaskbarItem) {
+            minimizedPIDs.insert(item.pid)
+            if activePID == item.pid {
+                activePID = nil
+            }
             onChange?()
         }
 
@@ -95,15 +106,20 @@
                     let applicationName = "Fixture App \(globalIndex + 1)"
                     let title = "Window \(globalIndex + 1) — 文書 🚀"
                     if !closedPIDs.contains(pid) {
-                        let isActive = activePID.map { $0 == pid } ?? !assignedFallbackActiveWindow
+                        let isMinimized = minimizedPIDs.contains(pid)
+                        let isActive =
+                            !isMinimized
+                            && (activePID.map { $0 == pid } ?? !assignedFallbackActiveWindow)
                         assignedFallbackActiveWindow = assignedFallbackActiveWindow || isActive
                         candidates.append(
                             WindowCandidate(
+                                stableKey: "fixture-window:\(pid)",
                                 pid: pid,
                                 applicationName: applicationName,
                                 localizedApplicationName: applicationName,
                                 title: title,
                                 frame: CGRect(x: x, y: y, width: width, height: height),
+                                isMinimized: isMinimized,
                                 isFocused: isActive,
                                 isMain: isActive
                             )

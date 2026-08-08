@@ -43,11 +43,12 @@ struct PermissionTests {
             cgWindowNumber: 7,
             isActive: false
         )
+        var activatedItem: TaskbarItem?
         var closedItem: TaskbarItem?
         let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
         let panel = TaskbarPanel(
             frame: frame,
-            onActivate: { _ in },
+            onActivate: { activatedItem = $0 },
             onClose: { closedItem = $0 }
         )
         defer { panel.close() }
@@ -55,24 +56,27 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
 
         var pendingViews = panel.contentView.map { [$0] } ?? []
-        var itemButton: NSButton?
+        var itemButton: TaskbarButton?
         while let view = pendingViews.popLast() {
-            if let button = view as? NSButton, button.menu != nil {
+            if let button = view as? TaskbarButton {
                 itemButton = button
                 break
             }
             pendingViews.append(contentsOf: view.subviews)
         }
-        guard let closeItem = itemButton?.menu?.items.first,
+        guard let closeItem = itemButton?.contextualMenu?.items.first,
             let action = closeItem.action
         else {
             Issue.record("taskbar Close context command was not rendered")
             return
         }
 
-        #expect(itemButton?.menu?.items.map(\.title) == ["Close"])
+        #expect(itemButton?.menu == nil)
+        #expect(itemButton?.contextualMenu?.items.map(\.title) == ["Close"])
         #expect(closeItem.image?.isTemplate == true)
         #expect(closeItem.image?.size == NSSize(width: 13, height: 13))
+        itemButton?.performClick(nil)
+        #expect(activatedItem?.id == item.id)
         #expect(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
         #expect(closedItem?.id == item.id)
     }
@@ -279,7 +283,8 @@ struct PermissionTests {
 
         provider.snapshotValue = snapshot(frame: rightFrame, minimized: true)
         store.refreshNow()
-        #expect(store.state.itemsByDisplay.isEmpty)
+        #expect(store.state.itemsByDisplay["right"]?.first?.isMinimized == true)
+        #expect(store.state.itemsByDisplay["right"]?.first?.isActive == false)
 
         provider.snapshotValue = snapshot(frame: rightFrame)
         store.refreshNow()
@@ -311,14 +316,30 @@ struct PermissionTests {
         }
 
         store.activate(item)
+        #expect(provider.minimizeCount == 1)
+        let inactiveItem = TaskbarItem(
+            id: item.id,
+            pid: item.pid,
+            applicationName: item.applicationName,
+            applicationIdentity: item.applicationIdentity,
+            title: item.title,
+            displayIdentifier: item.displayIdentifier,
+            cgWindowNumber: item.cgWindowNumber,
+            stableOrderKey: item.stableOrderKey,
+            isMinimized: true,
+            isActive: false
+        )
+        store.activate(inactiveItem)
         #expect(provider.activationCount == 1)
         store.close(item)
         #expect(provider.closeCount == 1)
 
         store.setAccessibilityAvailable(false)
         store.activate(item)
+        store.activate(inactiveItem)
         store.close(item)
         #expect(provider.activationCount == 1)
+        #expect(provider.minimizeCount == 1)
         #expect(provider.closeCount == 1)
     }
 
@@ -383,6 +404,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
         candidates: [], cgWindows: [], displays: [], frontmostPID: nil)
     var snapshotCount = 0
     var activationCount = 0
+    var minimizeCount = 0
     var closeCount = 0
     var onChange: (@MainActor @Sendable () -> Void)?
 
@@ -399,6 +421,10 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
 
     func activate(_: TaskbarItem) {
         activationCount += 1
+    }
+
+    func minimize(_: TaskbarItem) {
+        minimizeCount += 1
     }
 
     func close(_: TaskbarItem) {

@@ -9,7 +9,7 @@ in `WindowModel.swift` keep policy deterministic and testable:
 
 | Seam | Responsibility |
 | --- | --- |
-| `WindowEligibility` | running regular app, AX role/subrole, hidden/minimized, usable-size policy |
+| `WindowEligibility` | running regular app, AX role/subrole, hidden-state, usable-size policy |
 | `CGWindowMatcher` | conservative PID/layer/on-screen/bounds/title match |
 | `WindowCGAssignment` | deterministic one-to-one consumption of CG records per snapshot |
 | `WindowObservationKey` | shared projected/activation and unique observer key derivation |
@@ -123,8 +123,9 @@ Taskbar panels remain non-activating and never use the settings-window activatio
 For each running regular GUI application other than TinyTaskbar, AX enumeration
 requires role `AXWindow` and subrole `AXStandardWindow` or `AXDialog`. Sheets,
 popovers, menus, toolbars, floating/utility/system/panel/transient surfaces are not
-accepted by that subrole rule. Hidden and minimized applications/windows are
-excluded, as are malformed frames and surfaces smaller than 80 × 40 points. That
+accepted by that subrole rule. Hidden applications/windows are excluded, as are
+malformed frames and surfaces smaller than 80 × 40 points. Minimized AX windows
+remain eligible so their taskbar item can restore them. That
 size is a conservative v1 guard against tiny/transient surfaces, not a claim that
 all applications use the same minimum window size.
 
@@ -156,9 +157,11 @@ does the projection use a containing center and then nearest-screen distance.
 `CGWindowListCopyWindowInfo(.optionOnScreenOnly, .excludeDesktopElements, ...)`
 represents the active Space conservatively. This includes a current fullscreen
 window when CG reports it on-screen and excludes other-Space/off-screen windows.
-Stage Manager background sets are omitted for the same reason. Exact arbitrary
-Space IDs, minimized membership, and cross-Space movement are intentionally not
-attempted because the supported public API surface does not provide them.
+Stage Manager background sets are omitted for the same reason. A minimized window
+keeps its last AX frame/display association and stable AX element key while it is
+absent from the on-screen CG list. Exact arbitrary Space IDs and cross-Space movement
+are intentionally not attempted because the supported public API surface does not
+provide them.
 
 ## Observation and failure isolation
 
@@ -191,11 +194,17 @@ Activation defensively tries to clear `AXMinimized`, activates the owning
 path schedules a refresh.
 
 Window order is stable across focus changes: items use their numeric Core Graphics
-window identity as creation-style order, with stable application/item keys as the
-fallback. Active state changes only presentation, so clicking never moves the target
-out from under the pointer. Each item has one
-native context command, Close, paired with AppKit's standard `xmark` symbol so the
-menu's symbol column is intentional rather than empty. The command reads the window's public
+window identity as creation-style order in synthetic/test data and generated AX
+element identities in production. The production registry compares elements with
+`CFEqual`; it never treats non-unique `CFHash` values as identity. Entries survive one
+missed snapshot and are then pruned. Focus, minimize, and restore therefore do not move the target out from
+under the pointer. A left click activates/restores an inactive item and minimizes the
+currently active item, matching conventional taskbar toggling. Each item has one
+right-click-only native context command, Close, paired with AppKit's standard `xmark`
+symbol so the menu's symbol column is intentional rather than empty. The menu is
+returned from `NSView.menu(for:)` instead of assigned as the button's primary menu,
+keeping ordinary left-click activation independent from AppKit's click-and-hold menu
+path. The command reads the window's public
 `kAXCloseButtonAttribute` and performs `kAXPressAction`, matching the semantic red
 window control and preserving any save-confirmation UI owned by the target app.
 Missing, stale, or unsupported close controls are isolated to that item.

@@ -104,7 +104,11 @@ final class TaskbarStore {
 
     func activate(_ item: TaskbarItem) {
         guard accessibilityAvailable else { return }
-        provider.activate(item)
+        if item.isActive {
+            provider.minimize(item)
+        } else {
+            provider.activate(item)
+        }
         requestRefresh()
     }
 
@@ -598,6 +602,15 @@ final class TaskbarPanel: NSPanel {
 }
 
 @MainActor
+final class TaskbarButton: NSButton {
+    var contextualMenu: NSMenu?
+
+    override func menu(for _: NSEvent) -> NSMenu? {
+        contextualMenu
+    }
+}
+
+@MainActor
 private final class TaskbarBarView: NSView {
     private struct ApplicationIconKey: Hashable {
         let stableIdentity: String
@@ -691,7 +704,7 @@ private final class TaskbarBarView: NSView {
     }
 
     private func makeButton(for item: TaskbarItem, showsWindowTitles: Bool) -> NSButton {
-        let button = NSButton(
+        let button = TaskbarButton(
             title: item.buttonTitle(showsWindowTitles: showsWindowTitles),
             target: self,
             action: #selector(activateButton(_:))
@@ -704,6 +717,7 @@ private final class TaskbarBarView: NSView {
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
         button.contentTintColor = .labelColor
+        button.alphaValue = item.isMinimized ? 0.65 : 1
         button.toolTip = item.tooltip
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
@@ -725,7 +739,7 @@ private final class TaskbarBarView: NSView {
             closeItem.image = closeImage
         }
         menu.addItem(closeItem)
-        button.menu = menu
+        button.contextualMenu = menu
         button.translatesAutoresizingMaskIntoConstraints = false
         let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: widthRange.lowerBound)

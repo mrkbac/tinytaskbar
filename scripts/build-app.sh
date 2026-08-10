@@ -9,16 +9,22 @@ APP_ICON="$PROJECT_DIR/Resources/AppIcon.icns"
 DIST_DIR="$PROJECT_DIR/dist"
 
 usage() {
-    echo "Usage: $0 --adhoc | --identity <Developer ID Application identity> [--configuration debug|release] [--output <app path>]" >&2
+    echo "Usage: $0 [--local | --adhoc | --identity <Developer ID Application identity>] [--configuration debug|release] [--output <app path>]" >&2
 }
 
 SIGNING_MODE=""
 SIGNING_IDENTITY=""
+LOCAL_SIGNING_IDENTITY="${TINYTASKBAR_LOCAL_SIGNING_IDENTITY:-TinyTaskbar Local Development}"
 OUTPUT_APP=""
 CONFIGURATION="release"
 
 while (($# > 0)); do
     case "$1" in
+        --local)
+            SIGNING_MODE="local"
+            SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
+            shift
+            ;;
         --adhoc)
             SIGNING_MODE="adhoc"
             shift
@@ -70,9 +76,8 @@ while (($# > 0)); do
 done
 
 if [[ -z "$SIGNING_MODE" ]]; then
-    echo "Choose --adhoc for local verification or --identity for Developer ID signing." >&2
-    usage
-    exit 2
+    SIGNING_MODE="local"
+    SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
 fi
 
 if [[ ! -f "$INFO_PLIST" || ! -f "$ENTITLEMENTS" || ! -f "$APP_ICON" ]]; then
@@ -153,6 +158,20 @@ cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
 
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
     codesign --force --deep --sign - "$STAGED_APP"
+elif [[ "$SIGNING_MODE" == "local" ]]; then
+    if ! security find-identity -v -p codesigning \
+        | grep -Fq "\"$SIGNING_IDENTITY\""; then
+        echo "Local signing identity was not found: $SIGNING_IDENTITY" >&2
+        echo "Run: bash scripts/setup-local-signing.sh" >&2
+        exit 1
+    fi
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp=none \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGNING_IDENTITY" \
+        "$STAGED_APP"
 else
     if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
         echo "Developer ID signing identity was not found: $SIGNING_IDENTITY" >&2
@@ -191,3 +210,6 @@ REPLACEMENT_COMMITTED=true
 echo "Built $OUTPUT_APP"
 echo "Version $VERSION ($BUILD_NUMBER)"
 echo "Signing mode: $SIGNING_MODE"
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    echo "Signing identity: $SIGNING_IDENTITY"
+fi

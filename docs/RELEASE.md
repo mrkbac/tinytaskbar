@@ -24,6 +24,23 @@ The ad-hoc path is suitable for local bundle structure and launch experiments. I
 is not a distribution signature and cannot establish notarization or Gatekeeper
 acceptance.
 
+For repeated installed Accessibility testing, create and reuse the local-only
+signing identity instead:
+
+```sh
+bash scripts/setup-local-signing.sh
+bash scripts/build-app.sh
+```
+
+The setup script is idempotent, imports the private key into the user's login
+keychain, grants key access only to `/usr/bin/codesign`, and adds a user-domain trust
+entry limited to the Code Signing policy for that certificate. The resulting stable
+designated requirement lets macOS recognize rebuilt versions as the same local app.
+It does not add system-wide, TLS, or unrestricted trust and must never replace
+Developer ID signing for a distributed build.
+Passing `--local` selects the same mode explicitly; `--adhoc` remains available for
+structural tests that do not access privacy-protected resources.
+
 `build-app.sh` performs the selected Swift build before resolving the executable
 path. Its default is Release; Debug is available only for local fixture QA:
 

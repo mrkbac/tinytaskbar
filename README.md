@@ -39,7 +39,23 @@ Spaces, fullscreen, or Stage Manager session.
 
 ## Local app bundle
 
-Build and verify an ad-hoc bundle with:
+Create one persistent local code-signing identity, then reuse it for installed
+development builds:
+
+```sh
+bash scripts/setup-local-signing.sh
+bash scripts/build-app.sh
+```
+
+The setup is idempotent, stores the private key only in the user's login keychain,
+and adds a user-domain trust entry scoped to the Code Signing policy for that one
+certificate. Reusing this identity with the unchanged bundle identifier gives
+rebuilt versions the same designated requirement, so macOS can preserve the
+existing Accessibility decision. This self-signed identity is for local development
+only; it is not suitable for distribution, Gatekeeper, or notarization.
+Passing `--local` selects the same mode explicitly.
+
+Build and verify an ad-hoc bundle when only bundle structure matters:
 
 ```sh
 bash scripts/build-app.sh --adhoc
@@ -47,7 +63,9 @@ codesign --verify --deep --strict --verbose=2 dist/TinyTaskbar.app
 plutil -lint dist/TinyTaskbar.app/Contents/Info.plist
 ```
 
-`dist/` is generated and ignored. Developer ID signing is opt-in:
+Ad-hoc code identity changes whenever the executable changes, so do not use it for
+installed Accessibility testing. `dist/` is generated and ignored. Developer ID
+signing is opt-in:
 
 ```sh
 bash scripts/build-app.sh --identity "Developer ID Application: Example (TEAMID)"
@@ -126,7 +144,7 @@ included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: 41 automated tests, debug and release package
+Validated in the local checkout: 51 automated tests, debug and release package
 builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
 verification, and plist syntax/structure checks. Computer QA covers the denied
 onboarding guide, Settings layout/reopen/close-without-quit, title preference, stable

@@ -413,6 +413,289 @@ struct PermissionTests {
         #expect(provider.snapshotCount == 1)
     }
 
+    @Test("repeated AX/CG gaps retain item identity and order for a long move")
+    func transientSnapshotContinuity() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let first = TaskbarItem(
+            id: "first", pid: 10, applicationName: "First", title: "First",
+            displayIdentifier: "main", cgWindowNumber: 10, stableOrderKey: "a",
+            isActive: true)
+        let middle = TaskbarItem(
+            id: "middle", pid: 20, applicationName: "Middle", title: "Middle",
+            displayIdentifier: "main", cgWindowNumber: 20, stableOrderKey: "b",
+            isActive: false)
+        let last = TaskbarItem(
+            id: "last", pid: 30, applicationName: "Last", title: "Last",
+            displayIdentifier: "main", cgWindowNumber: 30, stableOrderKey: "c",
+            isActive: false)
+        let initial = TaskbarState(
+            displays: [display],
+            itemsByDisplay: ["main": [first, middle, last]]
+        )
+        let transient = TaskbarState(
+            displays: [display],
+            itemsByDisplay: ["main": [first, last]]
+        )
+        let movingCandidate = WindowCandidate(
+            stableKey: "middle",
+            pid: 20,
+            applicationName: "Middle",
+            title: "Middle",
+            frame: CGRect(x: 400, y: 100, width: 500, height: 300)
+        )
+        let movingSnapshot = RawWindowSnapshot(
+            candidates: [movingCandidate],
+            cgWindows: [],
+            displays: [display],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [20],
+                axWindowListReadPIDs: [20],
+                observedAXWindowIDs: ["middle"]
+            )
+        )
+        let continuity = TaskbarStateContinuity()
+        var resolved = initial
+
+        // Twenty event-driven refreshes represent a multi-second drag. The
+        // same AX identity remains authoritative while CG matching is absent.
+        for _ in 0..<20 {
+            resolved = continuity.resolve(
+                previous: resolved,
+                incoming: transient,
+                snapshot: movingSnapshot
+            )
+        }
+
+        #expect(resolved.itemsByDisplay["main"]?.map(\.id) == ["first", "middle", "last"])
+    }
+
+    @Test("authoritative hidden and absent evidence removes items promptly")
+    func authoritativeRemovalEvidence() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let hiddenItem = TaskbarItem(
+            id: "hidden", pid: 10, applicationName: "Hidden", title: "Hidden",
+            displayIdentifier: "main", cgWindowNumber: 10, stableOrderKey: "hidden",
+            isActive: false)
+        let hiddenCandidate = WindowCandidate(
+            stableKey: "hidden",
+            pid: 10,
+            applicationName: "Hidden",
+            title: "Hidden",
+            frame: CGRect(x: 100, y: 100, width: 500, height: 300),
+            isHidden: true
+        )
+        let hiddenSnapshot = RawWindowSnapshot(
+            candidates: [hiddenCandidate],
+            cgWindows: [],
+            displays: [display],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["hidden"]
+            )
+        )
+        let emptyState = TaskbarState(displays: [display], itemsByDisplay: [:])
+        let continuity = TaskbarStateContinuity()
+
+        let hiddenResult = continuity.resolve(
+            previous: TaskbarState(displays: [display], itemsByDisplay: ["main": [hiddenItem]]),
+            incoming: emptyState,
+            snapshot: hiddenSnapshot
+        )
+        #expect(hiddenResult.itemsByDisplay.isEmpty)
+
+        let closedItem = TaskbarItem(
+            id: "closed", pid: 11, applicationName: "Closed", title: "Closed",
+            displayIdentifier: "main", cgWindowNumber: 11, stableOrderKey: "closed",
+            isActive: false)
+        let closedSnapshot = RawWindowSnapshot(
+            candidates: [],
+            cgWindows: [],
+            displays: [display],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [11],
+                axWindowListReadPIDs: [11]
+            )
+        )
+        let closedResult = continuity.resolve(
+            previous: TaskbarState(displays: [display], itemsByDisplay: ["main": [closedItem]]),
+            incoming: emptyState,
+            snapshot: closedSnapshot
+        )
+        #expect(closedResult.itemsByDisplay.isEmpty)
+    }
+
+    @Test("failed AX reads remain inconclusive but a complete AX list confirms absence")
+    func axEvidenceDistinguishesIncompleteReads() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let item = TaskbarItem(
+            id: "window", pid: 10, applicationName: "Window", title: "Window",
+            displayIdentifier: "main", cgWindowNumber: 10, stableOrderKey: "window",
+            isActive: false)
+        let previous = TaskbarState(displays: [display], itemsByDisplay: ["main": [item]])
+        let incoming = TaskbarState(displays: [display], itemsByDisplay: [:])
+        let continuity = TaskbarStateContinuity()
+
+        let failedRead = RawWindowSnapshot(
+            candidates: [], cgWindows: [], displays: [display], frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10]
+            )
+        )
+        let retainedAfterFailedRead = continuity.resolve(
+            previous: previous,
+            incoming: incoming,
+            snapshot: failedRead
+        )
+        #expect(retainedAfterFailedRead.itemsByDisplay["main"]?.map(\.id) == ["window"])
+
+        let attributesIncomplete = RawWindowSnapshot(
+            candidates: [], cgWindows: [], displays: [display], frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["window"]
+            )
+        )
+        let retainedAfterAttributeFailure = continuity.resolve(
+            previous: previous,
+            incoming: incoming,
+            snapshot: attributesIncomplete
+        )
+        #expect(retainedAfterAttributeFailure.itemsByDisplay["main"]?.map(\.id) == ["window"])
+
+        let completeAbsence = RawWindowSnapshot(
+            candidates: [], cgWindows: [], displays: [display], frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10]
+            )
+        )
+        let removedAfterCompleteRead = continuity.resolve(
+            previous: previous,
+            incoming: incoming,
+            snapshot: completeAbsence
+        )
+        #expect(removedAfterCompleteRead.itemsByDisplay.isEmpty)
+    }
+
+    @Test("moving an item between displays updates its display without a stale duplicate")
+    func crossDisplayContinuity() {
+        let left = DisplayDescriptor(
+            identifier: "left",
+            frame: CGRect(x: 0, y: 0, width: 1_000, height: 700)
+        )
+        let right = DisplayDescriptor(
+            identifier: "right",
+            frame: CGRect(x: 1_000, y: 0, width: 1_000, height: 700)
+        )
+        let leftItem = TaskbarItem(
+            id: "moving", pid: 10, applicationName: "Moving", title: "Moving",
+            displayIdentifier: "left", cgWindowNumber: 10, stableOrderKey: "moving",
+            isActive: true)
+        let rightItem = TaskbarItem(
+            id: "moving", pid: 10, applicationName: "Moving", title: "Moving",
+            displayIdentifier: "right", cgWindowNumber: 10, stableOrderKey: "moving",
+            isActive: true)
+        let previous = TaskbarState(
+            displays: [left, right], itemsByDisplay: ["left": [leftItem]])
+        let incoming = TaskbarState(
+            displays: [left, right], itemsByDisplay: [:])
+        let movingCandidate = WindowCandidate(
+            stableKey: "moving",
+            pid: 10,
+            applicationName: "Moving",
+            title: "Moving",
+            frame: CGRect(x: 1_200, y: 100, width: 500, height: 300),
+            isFocused: true,
+            isMain: true
+        )
+        let movingSnapshot = RawWindowSnapshot(
+            candidates: [movingCandidate],
+            cgWindows: [],
+            displays: [left, right],
+            frontmostPID: 10,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["moving"]
+            )
+        )
+        let continuity = TaskbarStateContinuity()
+
+        let resolved = continuity.resolve(
+            previous: previous,
+            incoming: incoming,
+            snapshot: movingSnapshot
+        )
+
+        #expect(resolved.itemsByDisplay["left"] == nil)
+        #expect(resolved.itemsByDisplay["right"]?.map(\.id) == ["moving"])
+        #expect(resolved.itemsByDisplay.values.joined().map(\.id) == ["moving"])
+        #expect(resolved.itemsByDisplay["right"]?.first == rightItem)
+    }
+
+    @Test("active Space refresh removes AX-only items from the prior Space")
+    func activeSpaceChangeInvalidatesAXOnlyItems() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let item = TaskbarItem(
+            id: "prior-space", pid: 10, applicationName: "Prior", title: "Prior",
+            displayIdentifier: "main", cgWindowNumber: 10, stableOrderKey: "prior-space",
+            isActive: false)
+        let candidate = WindowCandidate(
+            stableKey: "prior-space",
+            pid: 10,
+            applicationName: "Prior",
+            title: "Prior",
+            frame: CGRect(x: 100, y: 100, width: 500, height: 300)
+        )
+        let snapshot = RawWindowSnapshot(
+            candidates: [candidate],
+            cgWindows: [],
+            displays: [display],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["prior-space"]
+            )
+        )
+        let previous = TaskbarState(displays: [display], itemsByDisplay: ["main": [item]])
+        let incoming = TaskbarState(displays: [display], itemsByDisplay: [:])
+
+        let resolved = TaskbarStateContinuity().resolve(
+            previous: previous,
+            incoming: incoming,
+            snapshot: snapshot,
+            cause: .activeSpaceChanged
+        )
+
+        #expect(resolved.itemsByDisplay.isEmpty)
+    }
+
     @Test("malformed and empty provider snapshots remain safe")
     @MainActor
     func malformedSnapshotsAreIsolated() {
@@ -468,6 +751,7 @@ struct PermissionTests {
 
         func snapshot(frame: CGRect, minimized: Bool = false) -> RawWindowSnapshot {
             let candidate = WindowCandidate(
+                stableKey: "fixture-window",
                 pid: fixturePID,
                 applicationName: "Fixture",
                 title: "Document",
@@ -487,7 +771,13 @@ struct PermissionTests {
                         )
                     ],
                 displays: [left, right],
-                frontmostPID: minimized ? nil : fixturePID
+                frontmostPID: minimized ? nil : fixturePID,
+                evidence: WindowSnapshotEvidence(
+                    isComplete: true,
+                    knownApplicationPIDs: [fixturePID],
+                    axWindowListReadPIDs: [fixturePID],
+                    observedAXWindowIDs: ["fixture-window"]
+                )
             )
         }
 
@@ -514,7 +804,12 @@ struct PermissionTests {
             candidates: [],
             cgWindows: [],
             displays: [left, right],
-            frontmostPID: nil
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [fixturePID],
+                axWindowListReadPIDs: [fixturePID]
+            )
         )
         store.refreshNow()
         #expect(store.state.itemsByDisplay.isEmpty)

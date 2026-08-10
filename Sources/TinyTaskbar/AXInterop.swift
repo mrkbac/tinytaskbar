@@ -31,11 +31,47 @@ final class SystemAccessibilityPermissionProvider: AccessibilityPermissionProvid
     }
 }
 
+struct WindowSnapshotEvidence: Equatable, Sendable {
+    let isComplete: Bool
+    let knownApplicationPIDs: Set<Int32>
+    let axWindowListReadPIDs: Set<Int32>
+    let observedAXWindowIDs: Set<String>
+
+    init(
+        isComplete: Bool = false,
+        knownApplicationPIDs: Set<Int32> = [],
+        axWindowListReadPIDs: Set<Int32> = [],
+        observedAXWindowIDs: Set<String> = []
+    ) {
+        self.isComplete = isComplete
+        self.knownApplicationPIDs = knownApplicationPIDs
+        self.axWindowListReadPIDs = axWindowListReadPIDs
+        self.observedAXWindowIDs = observedAXWindowIDs
+    }
+
+    static let unknown = WindowSnapshotEvidence()
+}
+
 struct RawWindowSnapshot: Equatable, Sendable {
     let candidates: [WindowCandidate]
     let cgWindows: [CGWindowMetadata]
     let displays: [DisplayDescriptor]
     let frontmostPID: Int32?
+    let evidence: WindowSnapshotEvidence
+
+    init(
+        candidates: [WindowCandidate],
+        cgWindows: [CGWindowMetadata],
+        displays: [DisplayDescriptor],
+        frontmostPID: Int32?,
+        evidence: WindowSnapshotEvidence = .unknown
+    ) {
+        self.candidates = candidates
+        self.cgWindows = cgWindows
+        self.displays = displays
+        self.frontmostPID = frontmostPID
+        self.evidence = evidence
+    }
 }
 
 enum AXMessagingPolicy {
@@ -132,17 +168,25 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             application.activationPolicy == .regular && !application.isTerminated
                 && application.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }
+        let knownApplicationPIDs = Set(applications.map(\.processIdentifier))
 
         var candidates: [WindowCandidate] = []
         var applicationInputs: [AXApplicationInput] = []
         var allRecords: [AXWindowRecord] = []
         var nextElements: [String: AXUIElement] = [:]
+        var axWindowListReadPIDs: Set<Int32> = []
+        var observedAXWindowIDs: Set<String> = []
 
         for application in applications {
             let namespace = String(application.processIdentifier)
-            let records = inspector.enumerate(application) { [unowned self] element in
+            let enumeration = inspector.enumerate(application) { [unowned self] element in
                 identityRegistry.identifier(for: element, namespace: namespace)
             }
+            if enumeration.didReadWindowList {
+                axWindowListReadPIDs.insert(application.processIdentifier)
+            }
+            observedAXWindowIDs.formUnion(enumeration.observedWindowIDs)
+            let records = enumeration.records
             let startIndex = allRecords.count
             allRecords.append(contentsOf: records)
             candidates.append(contentsOf: records.map(\.candidate))
@@ -205,7 +249,13 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             candidates: candidates,
             cgWindows: cgWindows,
             displays: displays,
-            frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier
+            frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: knownApplicationPIDs,
+                axWindowListReadPIDs: axWindowListReadPIDs,
+                observedAXWindowIDs: observedAXWindowIDs
+            )
         )
     }
 
@@ -372,7 +422,7 @@ private final class AXWindowInspector {
     func enumerate(
         _ application: NSRunningApplication,
         stableKeyForElement: (AXUIElement) -> String
-    ) -> [AXWindowRecord] {
+    ) -> AXWindowEnumerationResult {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         var rawWindows: CFTypeRef?
         let windowListError = AXUIElementCopyAttributeValue(
@@ -384,7 +434,8 @@ private final class AXWindowInspector {
             logger.debug(
                 "AX window list unavailable pid=\(application.processIdentifier, privacy: .public) error=\(windowListError.rawValue, privacy: .public)"
             )
-            return []
+            return AXWindowEnumerationResult(
+                records: [], observedWindowIDs: [], didReadWindowList: false)
         }
 
         let windows: [AXUIElement]
@@ -400,7 +451,8 @@ private final class AXWindowInspector {
                 return (cfValue as! AXUIElement)
             }
         } else {
-            return []
+            return AXWindowEnumerationResult(
+                records: [], observedWindowIDs: [], didReadWindowList: false)
         }
 
         let applicationName =
@@ -410,10 +462,13 @@ private final class AXWindowInspector {
             ?? application.bundleURL?.standardizedFileURL.path
             ?? application.executableURL?.standardizedFileURL.path
         var records: [AXWindowRecord] = []
+        var observedWindowIDs: Set<String> = []
         var batchFailures: [Int32: Int] = [:]
         var malformedCount = 0
 
         for element in windows {
+            let stableKey = stableKeyForElement(element)
+            observedWindowIDs.insert(stableKey)
             var rawValues: CFArray?
             let error = AXUIElementCopyMultipleAttributeValues(
                 element,
@@ -440,7 +495,7 @@ private final class AXWindowInspector {
 
             let axFrame = CGRect(origin: position, size: size)
             let candidate = WindowCandidate(
-                stableKey: stableKeyForElement(element),
+                stableKey: stableKey,
                 pid: application.processIdentifier,
                 applicationName: applicationName,
                 applicationIdentity: applicationIdentity,
@@ -468,7 +523,11 @@ private final class AXWindowInspector {
                 "AX window attributes skipped pid=\(application.processIdentifier, privacy: .public) batch_errors=\(errors, privacy: .public) malformed=\(malformedCount, privacy: .public)"
             )
         }
-        return records
+        return AXWindowEnumerationResult(
+            records: records,
+            observedWindowIDs: observedWindowIDs,
+            didReadWindowList: true
+        )
     }
 
     private func stringValue(_ value: Any) -> String? {
@@ -506,6 +565,13 @@ private final class AXWindowInspector {
         guard AXValueGetValue(axValue, .cgSize, &size) else { return nil }
         return size
     }
+}
+
+@MainActor
+private struct AXWindowEnumerationResult {
+    let records: [AXWindowRecord]
+    let observedWindowIDs: Set<String>
+    let didReadWindowList: Bool
 }
 
 @MainActor

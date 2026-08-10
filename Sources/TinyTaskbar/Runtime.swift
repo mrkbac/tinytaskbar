@@ -11,11 +11,227 @@ struct RefreshMetrics: Equatable, Sendable {
     fileprivate(set) var lastDurationMilliseconds = 0.0
 }
 
+/// AX and Core Graphics can disagree while a window is moving. Preserve an already-
+/// rendered identity for as long as either authoritative source still reports it,
+/// rather than making a time-based guess about whether the window was closed.
+enum TaskbarRefreshCause: Equatable, Sendable {
+    case ordinary
+    case activeSpaceChanged
+}
+
+struct TaskbarStateContinuity {
+    func resolve(
+        previous: TaskbarState,
+        incoming: TaskbarState,
+        snapshot: RawWindowSnapshot,
+        cause: TaskbarRefreshCause = .ordinary
+    ) -> TaskbarState {
+        let incomingIDs = Set(incoming.itemsByDisplay.values.joined().map(\.id))
+        var resolvedItemsByDisplay = incoming.itemsByDisplay
+
+        for item in previous.itemsByDisplay.values.joined() where !incomingIDs.contains(item.id) {
+            guard
+                let retained = retainedItem(
+                    for: item,
+                    snapshot: snapshot,
+                    cause: cause
+                ),
+                !incomingIDs.contains(retained.id)
+            else {
+                continue
+            }
+            resolvedItemsByDisplay[retained.displayIdentifier, default: []].append(retained)
+        }
+
+        resolvedItemsByDisplay = resolvedItemsByDisplay.mapValues { items in
+            WindowOrdering.sorted(WindowDeduplicator.deduplicate(items))
+        }
+        return TaskbarState(
+            displays: incoming.displays,
+            itemsByDisplay: resolvedItemsByDisplay
+        )
+    }
+
+    private func retainedItem(
+        for item: TaskbarItem,
+        snapshot: RawWindowSnapshot,
+        cause: TaskbarRefreshCause
+    ) -> TaskbarItem? {
+        let candidate = matchingCandidate(for: item, candidates: snapshot.candidates)
+        if let candidate, hasAuthoritativeIneligibility(candidate) {
+            return nil
+        }
+
+        if let cgWindow = matchingCGWindow(for: item, windows: snapshot.cgWindows) {
+            let displayIdentifier = displayIdentifier(
+                for: cgWindow.bounds,
+                fallback: item.displayIdentifier,
+                displays: snapshot.displays
+            )
+            return refreshedItem(
+                item,
+                candidate: candidate,
+                cgWindow: cgWindow,
+                displayIdentifier: displayIdentifier,
+                frontmostPID: snapshot.frontmostPID
+            )
+        }
+
+        // A Space change makes the current on-screen CG list authoritative for
+        // membership. Do not let an AX-only candidate from the prior Space leak
+        // into the new one.
+        guard cause != .activeSpaceChanged else { return nil }
+
+        if let candidate {
+            let displayIdentifier = displayIdentifier(
+                for: candidate.frame,
+                fallback: item.displayIdentifier,
+                displays: snapshot.displays
+            )
+            return refreshedItem(
+                item,
+                candidate: candidate,
+                cgWindow: nil,
+                displayIdentifier: displayIdentifier,
+                frontmostPID: snapshot.frontmostPID
+            )
+        }
+
+        // A successful AX window-list read may still have an element whose
+        // attributes could not be decoded. Its stable ID is positive existence
+        // evidence even though no WindowCandidate was projected.
+        if snapshot.evidence.observedAXWindowIDs.contains(item.id) {
+            return item
+        }
+
+        // If the provider could not read this application's AX window list, the
+        // omission is inconclusive. Keep the rendered item until a later event
+        // yields authoritative evidence; this is deliberately not a timer.
+        guard snapshot.evidence.isComplete else { return item }
+        guard snapshot.evidence.knownApplicationPIDs.contains(item.pid) else {
+            return nil
+        }
+        guard snapshot.evidence.axWindowListReadPIDs.contains(item.pid) else {
+            return item
+        }
+
+        // The application's AX window list was read successfully, and neither
+        // that list nor the current CG list contains this identity.
+        return nil
+    }
+
+    private func matchingCandidate(
+        for item: TaskbarItem,
+        candidates: [WindowCandidate]
+    ) -> WindowCandidate? {
+        let stableMatches = candidates.filter { candidate in
+            candidate.stableKey == item.id
+                || (candidate.stableKey != nil && candidate.stableKey == item.stableOrderKey)
+        }
+        if stableMatches.count == 1 {
+            return stableMatches[0]
+        }
+        guard stableMatches.isEmpty, item.stableOrderKey == nil else { return nil }
+
+        // Older/fallback identities are based on a CG window number. If AX has
+        // temporarily omitted that identity, only a unique same-title candidate
+        // from the owning process is safe to associate; another window from the
+        // same process alone is not positive identity evidence.
+        let processMatches = candidates.filter {
+            $0.pid == item.pid
+                && CGWindowMatcher.normalized($0.title)
+                    == CGWindowMatcher.normalized(item.title)
+        }
+        return processMatches.count == 1 ? processMatches[0] : nil
+    }
+
+    private func matchingCGWindow(
+        for item: TaskbarItem,
+        windows: [CGWindowMetadata]
+    ) -> CGWindowMetadata? {
+        guard let windowNumber = item.cgWindowNumber else { return nil }
+        let matches = windows.filter {
+            $0.windowNumber == windowNumber
+                && $0.ownerPID == item.pid
+                && $0.layer == 0
+                && $0.isOnScreen
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func hasAuthoritativeIneligibility(_ candidate: WindowCandidate) -> Bool {
+        guard candidate.applicationIsRunning,
+            candidate.applicationIsRegular,
+            !candidate.applicationIsHidden,
+            candidate.role == "AXWindow",
+            candidate.subrole == "AXStandardWindow" || candidate.subrole == "AXDialog",
+            !candidate.isHidden
+        else {
+            return true
+        }
+
+        // A missing or malformed frame is an incomplete AX read, not proof that
+        // the window was closed. A finite frame below the normal eligibility
+        // threshold is authoritative ineligibility.
+        guard let frame = candidate.frame, frame.isFiniteGeometry else { return false }
+        return frame.width < WindowEligibility.defaultMinimumSize.width
+            || frame.height < WindowEligibility.defaultMinimumSize.height
+            || frame.width <= 0
+            || frame.height <= 0
+    }
+
+    private func displayIdentifier(
+        for frame: CGRect?,
+        fallback: String,
+        displays: [DisplayDescriptor]
+    ) -> String {
+        guard let frame, let identifier = DisplayMapper.identifier(for: frame, displays: displays)
+        else {
+            return fallback
+        }
+        return identifier
+    }
+
+    private func refreshedItem(
+        _ item: TaskbarItem,
+        candidate: WindowCandidate?,
+        cgWindow: CGWindowMetadata?,
+        displayIdentifier: String,
+        frontmostPID: Int32?
+    ) -> TaskbarItem {
+        let isMinimized = candidate?.isMinimized ?? item.isMinimized
+        let isActive: Bool
+        if let candidate {
+            isActive =
+                !candidate.isMinimized
+                && frontmostPID == candidate.pid
+                && (candidate.isFocused || candidate.isMain)
+        } else {
+            isActive = item.isActive
+        }
+        return TaskbarItem(
+            id: item.id,
+            pid: candidate?.pid ?? item.pid,
+            applicationName: candidate?.localizedApplicationName ?? item.applicationName,
+            applicationIdentity: candidate?.applicationIdentity ?? item.applicationIdentity,
+            title: candidate?.title ?? item.title,
+            displayIdentifier: displayIdentifier,
+            cgWindowNumber: cgWindow?.windowNumber ?? item.cgWindowNumber,
+            stableOrderKey: item.stableOrderKey ?? candidate?.stableKey,
+            isMinimized: isMinimized,
+            isActive: isActive
+        )
+    }
+}
+
 @MainActor
 final class TaskbarStore {
     private let provider: any WindowSnapshotProvider
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "refresh")
     private var pendingRefresh: Task<Void, Never>?
+    private var continuity = TaskbarStateContinuity()
+    private var pendingRefreshCause: TaskbarRefreshCause = .ordinary
+    private var activeSpaceNotificationToken: NSObjectProtocol?
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
     private(set) var accessibilityAvailable = false
@@ -34,6 +250,7 @@ final class TaskbarStore {
         )
         accessibilityAvailable = accessibilityTrusted
         if accessibilityTrusted {
+            observeActiveSpaceChanges()
             requestRefresh()
         }
     }
@@ -48,6 +265,8 @@ final class TaskbarStore {
         guard available else {
             pendingRefresh?.cancel()
             pendingRefresh = nil
+            pendingRefreshCause = .ordinary
+            removeActiveSpaceObserver()
             if state != .empty {
                 state = .empty
                 onStateChange?(state)
@@ -55,11 +274,16 @@ final class TaskbarStore {
             return
         }
 
+        observeActiveSpaceChanges()
         requestRefresh()
     }
 
-    func requestRefresh() {
-        guard accessibilityAvailable, pendingRefresh == nil else { return }
+    func requestRefresh(cause: TaskbarRefreshCause = .ordinary) {
+        guard accessibilityAvailable else { return }
+        if cause == .activeSpaceChanged {
+            pendingRefreshCause = .activeSpaceChanged
+        }
+        guard pendingRefresh == nil else { return }
 
         pendingRefresh = Task { @MainActor [weak self] in
             do {
@@ -85,19 +309,27 @@ final class TaskbarStore {
             selfPID: ProcessInfo.processInfo.processIdentifier,
             frontmostPID: snapshot.frontmostPID
         )
+        let cause = pendingRefreshCause
+        pendingRefreshCause = .ordinary
+        let resolved = continuity.resolve(
+            previous: state,
+            incoming: projected,
+            snapshot: snapshot,
+            cause: cause
+        )
         let elapsed = DispatchTime.now().uptimeNanoseconds - start
         let durationMilliseconds = Double(elapsed) / 1_000_000
 
         metrics.refreshCount += 1
         metrics.lastCandidateCount = snapshot.candidates.count
-        metrics.lastVisibleWindowCount = projected.itemsByDisplay.values.reduce(0) { $0 + $1.count }
+        metrics.lastVisibleWindowCount = resolved.itemsByDisplay.values.reduce(0) { $0 + $1.count }
         metrics.lastDurationMilliseconds = durationMilliseconds
         logger.debug(
             "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(self.metrics.lastVisibleWindowCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
         )
 
-        if projected != state {
-            state = projected
+        if resolved != state {
+            state = resolved
             onStateChange?(state)
         }
     }
@@ -134,6 +366,8 @@ final class TaskbarStore {
     func stop() {
         pendingRefresh?.cancel()
         pendingRefresh = nil
+        pendingRefreshCause = .ordinary
+        removeActiveSpaceObserver()
         lifecycleState = LifecycleReducer.reduce(state: lifecycleState, event: .stopped)
         accessibilityAvailable = false
         if state != .empty {
@@ -141,6 +375,29 @@ final class TaskbarStore {
             onStateChange?(state)
         }
     }
+
+    private func observeActiveSpaceChanges() {
+        guard activeSpaceNotificationToken == nil else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        activeSpaceNotificationToken = center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.accessibilityAvailable else { return }
+                self.requestRefresh(cause: .activeSpaceChanged)
+            }
+        }
+    }
+
+    private func removeActiveSpaceObserver() {
+        if let token = activeSpaceNotificationToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+            activeSpaceNotificationToken = nil
+        }
+    }
+
 }
 
 enum AccessibilityPermissionRequestDecision: Equatable, Sendable {

@@ -660,9 +660,10 @@ private final class TaskbarBarView: NSView {
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = true
+        // Keep the horizontal document scrollable without allowing a legacy
+        // scroller to reserve 17pt of the 30pt taskbar viewport.
+        scrollView.hasHorizontalScroller = false
         scrollView.horizontalScrollElasticity = .allowed
-        scrollView.scrollerStyle = .overlay
         visualEffectView.addSubview(scrollView)
 
         stackView.orientation = .horizontal

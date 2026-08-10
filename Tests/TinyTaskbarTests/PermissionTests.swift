@@ -239,6 +239,8 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.contentView?.displayIfNeeded()
         panel.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        panel.contentView?.layoutSubtreeIfNeeded()
 
         guard let contentView = panel.contentView,
             let scrollView = allSubviews(of: contentView).compactMap({ $0 as? NSScrollView }).first,
@@ -258,6 +260,7 @@ struct PermissionTests {
         let buttonFrame = contentView.convert(button.bounds, from: button)
         let contentMidpoint = contentFrame.midY
 
+        #expect(abs(scrollView.contentView.bounds.height - contentFrame.height) <= 1)
         #expect(abs(documentFrame.midY - contentMidpoint) <= 1)
         #expect(abs(stackFrame.midY - contentMidpoint) <= 1)
         #expect(abs(buttonFrame.midY - contentMidpoint) <= 1)

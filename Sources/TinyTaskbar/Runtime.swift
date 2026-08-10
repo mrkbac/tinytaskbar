@@ -104,10 +104,23 @@ final class TaskbarStore {
 
     func activate(_ item: TaskbarItem) {
         guard accessibilityAvailable else { return }
-        if item.isActive {
-            provider.minimize(item)
+
+        // A rendered item can be one event behind the actual frontmost window.
+        // Refresh synchronously so a second click toggles the window that is truly
+        // focused now, rather than trusting stale button presentation state.
+        refreshNow()
+        guard
+            let currentItem = state.itemsByDisplay.values
+                .joined()
+                .first(where: { $0.id == item.id })
+        else {
+            return
+        }
+
+        if currentItem.isActive {
+            provider.minimize(currentItem)
         } else {
-            provider.activate(item)
+            provider.activate(currentItem)
         }
         requestRefresh()
     }

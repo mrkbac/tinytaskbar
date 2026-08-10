@@ -224,6 +224,13 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         if minimizeError != .success {
             failures.append("unminimize=\(minimizeError.rawValue)")
         }
+
+        let mainError = AXUIElementSetAttributeValue(
+            element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        if mainError != .success {
+            failures.append("main=\(mainError.rawValue)")
+        }
+
         if let application = NSRunningApplication(processIdentifier: item.pid) {
             if !application.activate(options: []) {
                 failures.append("activate=false")
@@ -231,11 +238,38 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         } else {
             failures.append("application=missing")
         }
-        let mainError = AXUIElementSetAttributeValue(
-            element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        if mainError != .success {
-            failures.append("main=\(mainError.rawValue)")
+
+        let applicationElement = AXUIElementCreateApplication(item.pid)
+        let frontmostError = AXUIElementSetAttributeValue(
+            applicationElement,
+            kAXFrontmostAttribute as CFString,
+            kCFBooleanTrue
+        )
+        if frontmostError != .success {
+            failures.append("frontmost=\(frontmostError.rawValue)")
         }
+
+        var focusedWindowIsSettable = DarwinBoolean(false)
+        let focusedWindowSettableError = AXUIElementIsAttributeSettable(
+            applicationElement,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedWindowIsSettable
+        )
+        if focusedWindowSettableError == .success, focusedWindowIsSettable.boolValue {
+            let focusedWindowError = AXUIElementSetAttributeValue(
+                applicationElement,
+                kAXFocusedWindowAttribute as CFString,
+                element
+            )
+            if focusedWindowError != .success {
+                failures.append("focused_window=\(focusedWindowError.rawValue)")
+            }
+        } else if focusedWindowSettableError != .success {
+            failures.append("focused_window_settable=\(focusedWindowSettableError.rawValue)")
+        } else {
+            failures.append("focused_window=not_settable")
+        }
+
         let focusError = AXUIElementSetAttributeValue(
             element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         if focusError != .success {

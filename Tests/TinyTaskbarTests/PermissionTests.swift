@@ -521,7 +521,7 @@ struct PermissionTests {
         #expect(emittedStates.count == 5)
     }
 
-    @Test("stale window operations are ignored after Accessibility revocation")
+    @Test("window toggle refreshes actual focus and stops after Accessibility revocation")
     @MainActor
     func staleActivationIsSafe() {
         let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
@@ -537,20 +537,24 @@ struct PermissionTests {
 
         store.activate(item)
         #expect(provider.minimizeCount == 1)
-        let inactiveItem = TaskbarItem(
-            id: item.id,
-            pid: item.pid,
-            applicationName: item.applicationName,
-            applicationIdentity: item.applicationIdentity,
-            title: item.title,
-            displayIdentifier: item.displayIdentifier,
-            cgWindowNumber: item.cgWindowNumber,
-            stableOrderKey: item.stableOrderKey,
-            isMinimized: true,
-            isActive: false
-        )
-        store.activate(inactiveItem)
+
+        // The button still says active, but the system snapshot has moved focus.
+        // The click must activate, not minimize based on stale presentation state.
+        provider.snapshotValue = makeFixtureSnapshot(isActive: false)
+        store.activate(item)
         #expect(provider.activationCount == 1)
+
+        guard let inactiveItem = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("inactive fixture item was not projected")
+            return
+        }
+        #expect(!inactiveItem.isActive)
+
+        // The inverse race must also toggle from the fresh system focus.
+        provider.snapshotValue = makeFixtureSnapshot()
+        store.activate(inactiveItem)
+        #expect(provider.minimizeCount == 2)
+
         store.close(item)
         #expect(provider.closeCount == 1)
 
@@ -559,7 +563,7 @@ struct PermissionTests {
         store.activate(inactiveItem)
         store.close(item)
         #expect(provider.activationCount == 1)
-        #expect(provider.minimizeCount == 1)
+        #expect(provider.minimizeCount == 2)
         #expect(provider.closeCount == 1)
     }
 
@@ -573,14 +577,14 @@ struct PermissionTests {
         #expect(provider.requestCount == 1)
     }
 
-    private func makeFixtureSnapshot() -> RawWindowSnapshot {
+    private func makeFixtureSnapshot(isActive: Bool = true) -> RawWindowSnapshot {
         let candidate = WindowCandidate(
             pid: fixturePID,
             applicationName: "Fixture",
             title: "Document",
             frame: CGRect(x: 100, y: 100, width: 500, height: 300),
-            isFocused: true,
-            isMain: true
+            isFocused: isActive,
+            isMain: isActive
         )
         return RawWindowSnapshot(
             candidates: [candidate],
@@ -593,7 +597,7 @@ struct PermissionTests {
                 )
             ],
             displays: [fixtureDisplay],
-            frontmostPID: fixturePID
+            frontmostPID: isActive ? fixturePID : nil
         )
     }
 

@@ -81,6 +81,148 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
+    @Test("retained taskbar buttons update active and minimized state in place")
+    @MainActor
+    func retainedButtonsUpdateInPlace() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        let first = makeTaskbarItem(id: "first", title: "First")
+        let second = makeTaskbarItem(id: "second", title: "Second")
+        panel.update(frame: frame, items: [first, second], showsWindowTitles: true)
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        let initialButtons = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0) })
+        guard let initialFirst = initialButtons["first"],
+            let initialSecond = initialButtons["second"]
+        else {
+            Issue.record("initial taskbar buttons were not rendered")
+            return
+        }
+
+        let activeFirst = makeTaskbarItem(
+            id: "first", title: "Renamed", isActive: true)
+        let minimizedSecond = makeTaskbarItem(
+            id: "second", title: "Second", isMinimized: true)
+        panel.update(
+            frame: frame,
+            items: [activeFirst, minimizedSecond],
+            showsWindowTitles: true
+        )
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        let updatedButtons = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0) })
+        guard let updatedFirst = updatedButtons["first"],
+            let updatedSecond = updatedButtons["second"]
+        else {
+            Issue.record("updated taskbar buttons were not rendered")
+            return
+        }
+
+        #expect(ObjectIdentifier(updatedFirst) == ObjectIdentifier(initialFirst))
+        #expect(ObjectIdentifier(updatedSecond) == ObjectIdentifier(initialSecond))
+        #expect(updatedFirst.title == "Renamed")
+        #expect(updatedFirst.toolTip == activeFirst.tooltip)
+        #expect(updatedFirst.accessibilityLabel() == activeFirst.accessibilityLabel)
+        #expect(updatedFirst.alphaValue == 1)
+        #expect(abs(updatedSecond.alphaValue - 0.65) < 0.001)
+        #expect(updatedFirst.contextualMenu === initialFirst.contextualMenu)
+        #expect(
+            updatedFirst.contextualMenu?.items.first?.representedObject as? String
+                == activeFirst.id)
+
+        panel.update(frame: frame, items: [activeFirst, minimizedSecond], showsWindowTitles: false)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        #expect(
+            updatedFirst.minimumWidthConstraint?.constant
+                == TaskbarButtonLayout.titleOffMinimumWidth)
+        #expect(
+            updatedFirst.maximumWidthConstraint?.constant
+                == TaskbarButtonLayout.titleOffMaximumWidth)
+    }
+
+    @Test("taskbar reconciliation removes stale items, adds new items, and follows requested order")
+    @MainActor
+    func taskbarReconciliationPreservesRetainedOrder() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        let first = makeTaskbarItem(id: "first")
+        let second = makeTaskbarItem(id: "second")
+        let third = makeTaskbarItem(id: "third")
+        panel.update(frame: frame, items: [first, second, third], showsWindowTitles: true)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let initialButtons = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0) })
+
+        let replacement = makeTaskbarItem(id: "replacement")
+        panel.update(
+            frame: frame,
+            items: [third, first, replacement],
+            showsWindowTitles: true
+        )
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let reconciledButtons = taskbarButtons(in: panel)
+
+        #expect(reconciledButtons.map(\.itemID) == ["third", "first", "replacement"])
+        #expect(
+            reconciledButtons.first { $0.itemID == "third" }.map(ObjectIdentifier.init)
+                == initialButtons["third"].map(ObjectIdentifier.init))
+        #expect(
+            reconciledButtons.first { $0.itemID == "first" }.map(ObjectIdentifier.init)
+                == initialButtons["first"].map(ObjectIdentifier.init))
+        #expect(!reconciledButtons.contains { $0.itemID == "second" })
+        #expect(
+            !reconciledButtons.contains {
+                guard let initialSecond = initialButtons["second"] else { return false }
+                return ObjectIdentifier($0) == ObjectIdentifier(initialSecond)
+            })
+    }
+
+    @Test("taskbar content stays finite and inset below a visible top separator")
+    @MainActor
+    func taskbarContentGeometry() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        panel.update(
+            frame: frame,
+            items: [makeTaskbarItem(id: "geometry")],
+            showsWindowTitles: true
+        )
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let contentView = panel.contentView,
+            let separator = allSubviews(of: contentView).first(where: {
+                $0.identifier?.rawValue == TaskbarPanelLayout.topSeparatorIdentifier
+            }),
+            let button = taskbarButtons(in: panel).first
+        else {
+            Issue.record("taskbar separator or button was not rendered")
+            return
+        }
+
+        let buttonFrame = contentView.convert(button.bounds, from: button)
+        #expect(buttonFrame.isFiniteGeometry)
+        #expect(buttonFrame.minY >= contentView.bounds.minY)
+        #expect(buttonFrame.maxY <= separator.frame.minY)
+        #expect(separator.frame.isFiniteGeometry)
+        #expect(separator.frame.minX == contentView.bounds.minX)
+        #expect(separator.frame.width == contentView.bounds.width)
+        #expect(separator.frame.maxY == contentView.bounds.maxY)
+        #expect(separator.frame.height == TaskbarPanelLayout.topSeparatorHeight)
+        #expect(separator.layer?.backgroundColor != nil)
+        #expect(
+            separator.frame.minY - buttonFrame.maxY
+                >= TaskbarPanelLayout.contentVerticalInset
+        )
+    }
+
     @Test("explicit Accessibility requests are offered at most once per launch")
     func requestDecisionIsOneShot() {
         var state = AccessibilityPermissionRequestState()
@@ -395,6 +537,39 @@ struct PermissionTests {
 
     private var fixturePID: Int32 {
         Int32(ProcessInfo.processInfo.processIdentifier + 1)
+    }
+
+    @MainActor
+    private func makeTaskbarItem(
+        id: String,
+        title: String? = nil,
+        isMinimized: Bool = false,
+        isActive: Bool = false
+    ) -> TaskbarItem {
+        TaskbarItem(
+            id: id,
+            pid: Int32(id.hashValue & 0x7fff) + 1,
+            applicationName: "App " + id,
+            title: title ?? id,
+            displayIdentifier: "main",
+            cgWindowNumber: nil,
+            isMinimized: isMinimized,
+            isActive: isActive
+        )
+    }
+
+    @MainActor
+    private func taskbarButtons(in panel: TaskbarPanel) -> [TaskbarButton] {
+        guard let contentView = panel.contentView else { return [] }
+        return allSubviews(of: contentView).compactMap { $0 as? TaskbarButton }
+    }
+
+    @MainActor
+    private func allSubviews(of view: NSView) -> [NSView] {
+        view.subviews.reduce(into: []) { result, subview in
+            result.append(subview)
+            result.append(contentsOf: allSubviews(of: subview))
+        }
     }
 }
 

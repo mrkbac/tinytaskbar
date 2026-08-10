@@ -319,6 +319,13 @@ enum TaskbarPanelLayout {
     static let defaultHeight: CGFloat = 30
     static let defaultHorizontalInset: CGFloat = 0
     static let defaultBottomInset: CGFloat = 0
+    static let topSeparatorHeight: CGFloat = 1
+    static let contentVerticalInset: CGFloat = 1
+    static let topSeparatorIdentifier = "TinyTaskbar.TaskbarPanel.topSeparator"
+
+    static var contentHeight: CGFloat {
+        max(0, defaultHeight - topSeparatorHeight - contentVerticalInset * 2)
+    }
 
     static func frame(
         for display: DisplayDescriptor,

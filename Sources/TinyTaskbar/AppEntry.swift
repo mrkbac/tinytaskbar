@@ -142,7 +142,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 items: state.itemsByDisplay[display.identifier] ?? [],
                 showsWindowTitles: preferencesStore.values.showsWindowTitles
             )
-            panel.orderFrontRegardless()
+            if !panel.isVisible {
+                panel.orderFrontRegardless()
+            }
         }
 
         for (identifier, panel) in panels where !displayIDs.contains(identifier) {

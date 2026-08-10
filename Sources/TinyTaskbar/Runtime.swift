@@ -596,7 +596,9 @@ final class TaskbarPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     func update(frame: NSRect, items: [TaskbarItem], showsWindowTitles: Bool) {
-        setFrame(frame, display: false)
+        if self.frame != frame {
+            setFrame(frame, display: false)
+        }
         barView.update(items: items, showsWindowTitles: showsWindowTitles)
     }
 }
@@ -604,6 +606,10 @@ final class TaskbarPanel: NSPanel {
 @MainActor
 final class TaskbarButton: NSButton {
     var contextualMenu: NSMenu?
+    var itemID = ""
+    var minimumWidthConstraint: NSLayoutConstraint?
+    var maximumWidthConstraint: NSLayoutConstraint?
+    var heightConstraint: NSLayoutConstraint?
 
     override func menu(for _: NSEvent) -> NSMenu? {
         contextualMenu
@@ -623,9 +629,11 @@ private final class TaskbarBarView: NSView {
     private let visualEffectView = NSVisualEffectView()
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
+    private let separatorView = NSView()
     private var currentItems: [TaskbarItem] = []
     private var currentShowsWindowTitles = true
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
+    private var buttonsByID: [String: TaskbarButton] = [:]
     private var iconCache: [ApplicationIconKey: NSImage] = [:]
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
@@ -663,6 +671,13 @@ private final class TaskbarBarView: NSView {
         stackView.edgeInsets = NSEdgeInsets()
         stackView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = stackView
+
+        separatorView.identifier = NSUserInterfaceItemIdentifier(
+            TaskbarPanelLayout.topSeparatorIdentifier)
+        separatorView.wantsLayer = true
+        separatorView.layer?.backgroundColor =
+            NSColor.separatorColor.withAlphaComponent(0.65).cgColor
+        addSubview(separatorView)
     }
 
     required init?(coder: NSCoder) {
@@ -672,7 +687,35 @@ private final class TaskbarBarView: NSView {
     override func layout() {
         super.layout()
         visualEffectView.frame = bounds
-        scrollView.frame = visualEffectView.bounds
+        let availableHeight = max(0, bounds.height)
+        let separatorHeight = min(TaskbarPanelLayout.topSeparatorHeight, availableHeight)
+        let verticalInset = min(
+            TaskbarPanelLayout.contentVerticalInset,
+            max(0, (availableHeight - separatorHeight) / 2)
+        )
+        separatorView.frame = NSRect(
+            x: bounds.minX,
+            y: bounds.maxY - separatorHeight,
+            width: max(0, bounds.width),
+            height: separatorHeight
+        )
+
+        let contentMinY = bounds.minY + verticalInset
+        let contentMaxY = max(
+            contentMinY,
+            bounds.maxY - separatorHeight - verticalInset
+        )
+        let contentFrame = NSRect(
+            x: bounds.minX,
+            y: contentMinY,
+            width: max(0, bounds.width),
+            height: max(0, contentMaxY - contentMinY)
+        )
+        scrollView.frame = contentFrame
+        let buttonHeight = min(TaskbarPanelLayout.contentHeight, contentFrame.height)
+        for button in buttonsByID.values {
+            button.heightConstraint?.constant = buttonHeight
+        }
         let fittingSize = stackView.fittingSize
         stackView.frame.size = CGSize(
             width: max(fittingSize.width, scrollView.contentView.bounds.width),
@@ -689,38 +732,99 @@ private final class TaskbarBarView: NSView {
         currentShowsWindowTitles = showsWindowTitles
         let currentIconKeys = Set(items.map(ApplicationIconKey.init))
         iconCache = iconCache.filter { currentIconKeys.contains($0.key) }
-        buttons.removeAll()
-        for view in stackView.arrangedSubviews {
-            stackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
+
+        let desiredIDs = items.map(\.id)
+        let desiredIDSet = Set(desiredIDs)
+        let staleIDs = buttonsByID.keys.filter { !desiredIDSet.contains($0) }
+        for itemID in staleIDs {
+            guard let button = buttonsByID.removeValue(forKey: itemID) else { continue }
+            stackView.removeArrangedSubview(button)
+            button.removeFromSuperview()
         }
 
         for item in items {
-            let button = makeButton(for: item, showsWindowTitles: showsWindowTitles)
-            buttons[ObjectIdentifier(button)] = item
-            stackView.addArrangedSubview(button)
+            if let button = buttonsByID[item.id] {
+                updateButton(button, for: item, showsWindowTitles: showsWindowTitles)
+            } else {
+                let button = makeButton(for: item, showsWindowTitles: showsWindowTitles)
+                buttonsByID[item.id] = button
+                stackView.addArrangedSubview(button)
+            }
         }
+
+        buttons = items.reduce(into: [ObjectIdentifier: TaskbarItem]()) { result, item in
+            guard let button = buttonsByID[item.id] else { return }
+            result[ObjectIdentifier(button)] = item
+        }
+        reorderButtonsIfNeeded(to: desiredIDs)
         needsLayout = true
     }
 
-    private func makeButton(for item: TaskbarItem, showsWindowTitles: Bool) -> NSButton {
+    private func makeButton(for item: TaskbarItem, showsWindowTitles: Bool) -> TaskbarButton {
         let button = TaskbarButton(
             title: item.buttonTitle(showsWindowTitles: showsWindowTitles),
             target: self,
             action: #selector(activateButton(_:))
         )
+        button.itemID = item.id
         button.isBordered = false
         button.setButtonType(.momentaryPushIn)
-        button.font = .systemFont(ofSize: 12, weight: item.isActive ? .semibold : .regular)
         button.lineBreakMode = .byTruncatingTail
         button.alignment = .left
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
+        button.setAccessibilityRole(.button)
+        button.contextualMenu = makeContextualMenu(for: item)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
+        button.minimumWidthConstraint = button.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: widthRange.lowerBound)
+        button.minimumWidthConstraint?.isActive = true
+        button.maximumWidthConstraint = button.widthAnchor.constraint(
+            lessThanOrEqualToConstant: widthRange.upperBound)
+        button.maximumWidthConstraint?.isActive = true
+        button.heightConstraint = button.heightAnchor.constraint(
+            equalToConstant: TaskbarPanelLayout.contentHeight)
+        button.heightConstraint?.isActive = true
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 0
+        updateButton(button, for: item, showsWindowTitles: showsWindowTitles)
+        return button
+    }
+
+    private func updateButton(
+        _ button: TaskbarButton,
+        for item: TaskbarItem,
+        showsWindowTitles: Bool
+    ) {
+        button.itemID = item.id
+        button.title = item.buttonTitle(showsWindowTitles: showsWindowTitles)
+        button.font = .systemFont(ofSize: 12, weight: item.isActive ? .semibold : .regular)
         button.contentTintColor = .labelColor
         button.alphaValue = item.isMinimized ? 0.65 : 1
         button.toolTip = item.tooltip
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
+        button.image = icon(for: item)
+
+        let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
+        if button.minimumWidthConstraint?.constant != widthRange.lowerBound {
+            button.minimumWidthConstraint?.constant = widthRange.lowerBound
+        }
+        if button.maximumWidthConstraint?.constant != widthRange.upperBound {
+            button.maximumWidthConstraint?.constant = widthRange.upperBound
+        }
+        button.contextualMenu = button.contextualMenu ?? makeContextualMenu(for: item)
+        button.contextualMenu?.items.first?.representedObject = item.id
+        button.layer?.backgroundColor =
+            item.isActive
+            ? NSColor.labelColor.withAlphaComponent(0.10).cgColor
+            : NSColor.clear.cgColor
+    }
+
+    private func makeContextualMenu(for item: TaskbarItem) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let closeItem = NSMenuItem(
@@ -739,28 +843,23 @@ private final class TaskbarBarView: NSView {
             closeItem.image = closeImage
         }
         menu.addItem(closeItem)
-        button.contextualMenu = menu
-        button.translatesAutoresizingMaskIntoConstraints = false
-        let widthRange = TaskbarButtonLayout.widthRange(showsWindowTitles: showsWindowTitles)
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: widthRange.lowerBound)
-            .isActive =
-            true
-        button.widthAnchor.constraint(lessThanOrEqualToConstant: widthRange.upperBound).isActive =
-            true
-        button.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 0
-        button.layer?.backgroundColor =
-            item.isActive
-            ? NSColor.labelColor.withAlphaComponent(0.10).cgColor
-            : NSColor.clear.cgColor
+        return menu
+    }
 
-        if let icon = icon(for: item) {
-            button.image = icon
+    private func reorderButtonsIfNeeded(to desiredIDs: [String]) {
+        let currentIDs = stackView.arrangedSubviews.compactMap { view in
+            (view as? TaskbarButton)?.itemID
         }
-        return button
+        guard currentIDs != desiredIDs else { return }
+
+        let desiredButtons = desiredIDs.compactMap { buttonsByID[$0] }
+        for view in stackView.arrangedSubviews {
+            stackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for button in desiredButtons {
+            stackView.addArrangedSubview(button)
+        }
     }
 
     private func icon(for item: TaskbarItem) -> NSImage? {

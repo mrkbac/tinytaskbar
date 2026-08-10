@@ -223,6 +223,81 @@ struct PermissionTests {
         )
     }
 
+    @Test("ordered taskbar document, stack, and button stay vertically centered")
+    @MainActor
+    func taskbarDocumentAndButtonMidpoints() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        panel.update(
+            frame: frame,
+            items: [makeTaskbarItem(id: "midpoint")],
+            showsWindowTitles: true
+        )
+        panel.orderFrontRegardless()
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.contentView?.displayIfNeeded()
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let contentView = panel.contentView,
+            let scrollView = allSubviews(of: contentView).compactMap({ $0 as? NSScrollView }).first,
+            let documentView = scrollView.documentView,
+            let stackView = documentView as? NSStackView,
+            let button = taskbarButtons(in: panel).first
+        else {
+            Issue.record("taskbar scroll/document hierarchy was not rendered")
+            return
+        }
+
+        scrollView.layoutSubtreeIfNeeded()
+        stackView.layoutSubtreeIfNeeded()
+        let contentFrame = contentView.convert(scrollView.bounds, from: scrollView)
+        let documentFrame = contentView.convert(documentView.bounds, from: documentView)
+        let stackFrame = contentView.convert(stackView.bounds, from: stackView)
+        let buttonFrame = contentView.convert(button.bounds, from: button)
+        let contentMidpoint = contentFrame.midY
+
+        #expect(abs(documentFrame.midY - contentMidpoint) <= 1)
+        #expect(abs(stackFrame.midY - contentMidpoint) <= 1)
+        #expect(abs(buttonFrame.midY - contentMidpoint) <= 1)
+    }
+
+    @Test("first layout after a zero-sized panel establishes the full content height")
+    @MainActor
+    func taskbarFirstLayoutAfterResize() {
+        let zeroFrame = NSRect.zero
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: zeroFrame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        panel.update(
+            frame: frame,
+            items: [makeTaskbarItem(id: "first-pass")],
+            showsWindowTitles: true
+        )
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let contentView = panel.contentView,
+            let scrollView = allSubviews(of: contentView).compactMap({ $0 as? NSScrollView }).first,
+            let stackView = scrollView.documentView as? NSStackView,
+            let button = taskbarButtons(in: panel).first
+        else {
+            Issue.record("taskbar first-pass hierarchy was not rendered")
+            return
+        }
+
+        let contentFrame = contentView.convert(scrollView.bounds, from: scrollView)
+        let stackFrame = contentView.convert(stackView.bounds, from: stackView)
+        let buttonFrame = contentView.convert(button.bounds, from: button)
+        let expectedHeight = TaskbarPanelLayout.contentHeight
+
+        #expect(abs(stackFrame.height - expectedHeight) <= 1)
+        #expect(abs(buttonFrame.height - expectedHeight) <= 1)
+        #expect(abs(stackFrame.midY - contentFrame.midY) <= 1)
+        #expect(abs(buttonFrame.midY - contentFrame.midY) <= 1)
+    }
+
     @Test("explicit Accessibility requests are offered at most once per launch")
     func requestDecisionIsOneShot() {
         var state = AccessibilityPermissionRequestState()

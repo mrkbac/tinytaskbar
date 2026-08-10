@@ -669,7 +669,11 @@ private final class TaskbarBarView: NSView {
         stackView.alignment = .centerY
         stackView.spacing = 1
         stackView.edgeInsets = NSEdgeInsets()
-        stackView.translatesAutoresizingMaskIntoConstraints = false
+        // The document view is positioned by the scroll view's clip view and by the
+        // explicit frame in layout(). It must remain frame-managed; disabling
+        // autoresizing here lets AppKit's document-view constraints pin it to the
+        // clip view's top edge after the parent layout pass.
+        stackView.translatesAutoresizingMaskIntoConstraints = true
         scrollView.documentView = stackView
 
         separatorView.identifier = NSUserInterfaceItemIdentifier(
@@ -712,16 +716,21 @@ private final class TaskbarBarView: NSView {
             height: max(0, contentMaxY - contentMinY)
         )
         scrollView.frame = contentFrame
+        // Refresh the clip view after changing the viewport, but do not use its
+        // bounds for document sizing: on a first pass or display resize those
+        // bounds can still describe the previous viewport.
+        scrollView.layoutSubtreeIfNeeded()
         let buttonHeight = min(TaskbarPanelLayout.contentHeight, contentFrame.height)
         for button in buttonsByID.values {
             button.heightConstraint?.constant = buttonHeight
         }
         let fittingSize = stackView.fittingSize
         stackView.frame.size = CGSize(
-            width: max(fittingSize.width, scrollView.contentView.bounds.width),
-            height: scrollView.contentView.bounds.height
+            width: max(fittingSize.width, contentFrame.width),
+            height: contentFrame.height
         )
         stackView.frame.origin = .zero
+        stackView.layoutSubtreeIfNeeded()
     }
 
     func update(items: [TaskbarItem], showsWindowTitles: Bool) {

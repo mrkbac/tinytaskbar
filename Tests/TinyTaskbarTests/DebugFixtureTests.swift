@@ -1,4 +1,5 @@
 #if DEBUG
+    import Foundation
     import Testing
 
     @testable import TinyTaskbar
@@ -28,7 +29,7 @@
             let first = initial.candidates[0]
             let selected = initial.candidates[1]
             let item = TaskbarItem(
-                id: "fixture-selection",
+                id: selected.stableKey!,
                 pid: selected.pid,
                 applicationName: selected.applicationName,
                 title: selected.title,
@@ -55,7 +56,7 @@
                 return
             }
             let item = TaskbarItem(
-                id: "fixture-minimize",
+                id: selected.stableKey!,
                 pid: selected.pid,
                 applicationName: selected.applicationName,
                 title: selected.title,
@@ -85,7 +86,7 @@
                 return
             }
             let item = TaskbarItem(
-                id: "fixture-close",
+                id: selected.stableKey!,
                 pid: selected.pid,
                 applicationName: selected.applicationName,
                 title: selected.title,
@@ -101,6 +102,73 @@
             #expect(!closed.candidates.contains { $0.pid == selected.pid })
             #expect(closed.frontmostPID == closed.candidates.first?.pid)
             #expect(closed.candidates.first?.isFocused == true)
+        }
+
+        @Test("fixture store executes semantic window commands end to end")
+        @MainActor
+        func storeCommandRoundTrip() {
+            let provider = DebugFixtureWindowSnapshotProvider(fixture: .normal)
+            let store = TaskbarStore(provider: provider)
+            store.start(accessibilityTrusted: true)
+            store.refreshNow()
+            defer { store.stop() }
+
+            guard let initialItem = store.state.itemsByDisplay.values.joined().first else {
+                Issue.record("normal fixture did not project a taskbar item")
+                return
+            }
+            store.execute(.minimize(initialItem))
+            store.refreshNow()
+            #expect(
+                store.state.itemsByDisplay.values.joined().first(where: {
+                    $0.id == initialItem.id
+                })?.isMinimized == true)
+
+            store.execute(.restore(initialItem))
+            store.refreshNow()
+            #expect(
+                store.state.itemsByDisplay.values.joined().first(where: {
+                    $0.id == initialItem.id
+                })?.isMinimized == false)
+
+            store.execute(.close(initialItem))
+            store.refreshNow()
+            #expect(
+                !store.state.itemsByDisplay.values.joined().contains(where: {
+                    $0.id == initialItem.id
+                }))
+        }
+
+        @Test("normal fixture provides stable app identities and multiple windows")
+        @MainActor
+        func applicationIdentityCoverage() {
+            let snapshot = DebugFixtureWindowSnapshotProvider(fixture: .normal).snapshot()
+            #expect(snapshot.candidates.allSatisfy { $0.applicationIdentity != nil })
+            #expect(snapshot.candidates.allSatisfy { $0.applicationBundlePath != nil })
+            let grouped = Dictionary(grouping: snapshot.candidates) { $0.applicationIdentity }
+            #expect(grouped.values.contains { $0.count > 1 })
+            #expect(
+                Set(snapshot.candidates.compactMap(\.stableKey)).count == snapshot.candidates.count)
+        }
+
+        @Test("overflow fixture retains numeric creation order")
+        @MainActor
+        func overflowCreationOrder() {
+            let provider = DebugFixtureWindowSnapshotProvider(fixture: .overflow)
+            let snapshot = provider.snapshot()
+            let state = WindowProjection.project(
+                candidates: snapshot.candidates,
+                cgWindows: snapshot.cgWindows,
+                displays: snapshot.displays,
+                selfPID: Int32(ProcessInfo.processInfo.processIdentifier),
+                frontmostPID: snapshot.frontmostPID)
+            guard let displayID = snapshot.displays.first?.identifier else {
+                Issue.record("overflow fixture did not provide a display")
+                return
+            }
+            #expect(
+                state.itemsByDisplay[displayID]?.prefix(12).map(\.id)
+                    == (1...12).map { String(format: "fixture-window:%03d", $0) })
         }
     }
 #endif

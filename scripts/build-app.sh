@@ -95,8 +95,8 @@ if [[ "$OUTPUT_APP" != *.app ]]; then
     exit 2
 fi
 
-swift build -c "$CONFIGURATION" --product TinyTaskbar
-BIN_PATH="$(swift build -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
+swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar
+BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
 EXECUTABLE="$BIN_PATH/TinyTaskbar"
 if [[ ! -x "$EXECUTABLE" ]]; then
     echo "$CONFIGURATION executable was not produced at $EXECUTABLE" >&2

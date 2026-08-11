@@ -27,9 +27,11 @@
     final class DebugFixtureWindowSnapshotProvider: WindowSnapshotProvider {
         let fixture: DebugFixture
         var onChange: (@MainActor @Sendable () -> Void)?
-        private var activePID: Int32?
-        private var closedPIDs: Set<Int32> = []
-        private var minimizedPIDs: Set<Int32> = []
+        private var activeItemID: String?
+        private var closedItemIDs: Set<String> = []
+        private var minimizedItemIDs: Set<String> = []
+        private var knownApplicationPIDs: Set<Int32> = []
+        private var overriddenFramesByItemID: [String: CGRect] = [:]
 
         init(fixture: DebugFixture) {
             self.fixture = fixture
@@ -39,10 +41,13 @@
             let displays = DisplayReader.current()
             let resolvedDisplays = displays.isEmpty ? [syntheticDisplay] : displays
             let candidates = makeCandidates(displays: resolvedDisplays)
-            let cgWindows = candidates.filter { !$0.isMinimized }.enumerated().map {
-                index, candidate in
-                CGWindowMetadata(
-                    windowNumber: UInt32(50_000 + index),
+            knownApplicationPIDs.formUnion(candidates.map(\.pid))
+            let cgWindows = candidates.filter { !$0.isMinimized }.map { candidate in
+                let fixtureNumber =
+                    Int(
+                        candidate.stableKey?.split(separator: ":").last ?? "0") ?? 0
+                return CGWindowMetadata(
+                    windowNumber: UInt32(50_000 + max(0, fixtureNumber - 1)),
                     ownerPID: candidate.pid,
                     bounds: candidate.frame ?? .zero,
                     title: candidate.title
@@ -52,30 +57,51 @@
                 candidates: candidates,
                 cgWindows: cgWindows,
                 displays: resolvedDisplays,
-                frontmostPID: activePID ?? candidates.first?.pid
+                frontmostPID: candidates.first(where: { $0.stableKey == activeItemID })?.pid
+                    ?? candidates.first?.pid,
+                evidence: WindowSnapshotEvidence(
+                    isComplete: true,
+                    knownApplicationPIDs: knownApplicationPIDs,
+                    axWindowListReadPIDs: knownApplicationPIDs,
+                    observedAXWindowIDs: Set(candidates.compactMap(\.stableKey)))
             )
         }
 
         func activate(_ item: TaskbarItem) {
-            minimizedPIDs.remove(item.pid)
-            activePID = item.pid
+            minimizedItemIDs.remove(item.id)
+            activeItemID = item.id
             onChange?()
         }
 
         func minimize(_ item: TaskbarItem) {
-            minimizedPIDs.insert(item.pid)
-            if activePID == item.pid {
-                activePID = nil
+            minimizedItemIDs.insert(item.id)
+            if activeItemID == item.id {
+                activeItemID = nil
             }
             onChange?()
         }
 
         func close(_ item: TaskbarItem) {
-            closedPIDs.insert(item.pid)
-            if activePID == item.pid {
-                activePID = nil
+            closedItemIDs.insert(item.id)
+            if activeItemID == item.id {
+                activeItemID = nil
             }
             onChange?()
+        }
+
+        @discardableResult
+        func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool {
+            guard height.isFinite, height > 0 else { return false }
+            guard
+                let currentFrame = snapshot().candidates.first(where: {
+                    $0.stableKey == item.id
+                })?.frame
+            else { return false }
+            overriddenFramesByItemID[item.id] = CGRect(
+                origin: currentFrame.origin,
+                size: CGSize(width: currentFrame.width, height: height))
+            onChange?()
+            return true
         }
 
         private var syntheticDisplay: DisplayDescriptor {
@@ -102,23 +128,35 @@
                     let row = index / 6
                     let x = display.frame.minX + 40 + CGFloat(column * 24)
                     let y = display.frame.minY + 40 + CGFloat(row * 18)
-                    let pid = Int32(10_000 + globalIndex)
-                    let applicationName = "Fixture App \(globalIndex + 1)"
+                    let applicationIndex: Int
+                    if fixture == .normal {
+                        applicationIndex = globalIndex == 0 ? 0 : (globalIndex + 1) / 2
+                    } else {
+                        applicationIndex = globalIndex / 3
+                    }
+                    let pid = Int32(10_000 + applicationIndex)
+                    let applicationName = "Fixture App \(applicationIndex + 1)"
+                    let applicationIdentity = "com.tinytaskbar.fixture.app\(applicationIndex + 1)"
+                    let itemID = String(
+                        format: "fixture-window:%03d", globalIndex + 1)
                     let title = "Window \(globalIndex + 1) — 文書 🚀"
-                    if !closedPIDs.contains(pid) {
-                        let isMinimized = minimizedPIDs.contains(pid)
+                    if !closedItemIDs.contains(itemID) {
+                        let isMinimized = minimizedItemIDs.contains(itemID)
                         let isActive =
                             !isMinimized
-                            && (activePID.map { $0 == pid } ?? !assignedFallbackActiveWindow)
+                            && (activeItemID.map { $0 == itemID } ?? !assignedFallbackActiveWindow)
                         assignedFallbackActiveWindow = assignedFallbackActiveWindow || isActive
                         candidates.append(
                             WindowCandidate(
-                                stableKey: "fixture-window:\(pid)",
+                                stableKey: itemID,
                                 pid: pid,
                                 applicationName: applicationName,
+                                applicationIdentity: applicationIdentity,
+                                applicationBundlePath: "/Applications/\(applicationName).app",
                                 localizedApplicationName: applicationName,
                                 title: title,
-                                frame: CGRect(x: x, y: y, width: width, height: height),
+                                frame: overriddenFramesByItemID[itemID]
+                                    ?? CGRect(x: x, y: y, width: width, height: height),
                                 isMinimized: isMinimized,
                                 isFocused: isActive,
                                 isMain: isActive

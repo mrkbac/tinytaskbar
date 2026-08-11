@@ -20,6 +20,8 @@ in `WindowModel.swift` keep policy deterministic and testable:
 | `WindowDeduplicator` | one item per stable observation key |
 | `LifecycleReducer` | launch, permission change, and stop transitions |
 | `WindowProjection` | converts raw observations into the store’s display state |
+| `TaskbarPresentationBuilder` | filters exclusions and builds pinned, launcher, separator, and ordered entries per display |
+| `TinyTaskbarPreferencesStore` | typed defaults, legacy label migration, lossy record persistence, and pin/exclusion conflict rules |
 
 The runtime flow is event-driven:
 
@@ -31,7 +33,8 @@ flowchart LR
     D --> S[TaskbarStore on MainActor]
     S --> E[AX + CG snapshot]
     E --> P[pure projection and ordering]
-    P --> V[one panel per NSScreen]
+    P --> R[presentation entries and preferences]
+    R --> V[one panel per NSScreen]
     V --> A[activate / main / focus / AXRaise]
     A --> D
 ```
@@ -51,8 +54,8 @@ the manually assembled SwiftPM bundle. The local macOS 26 SDK exposes the
 need an `NSPrincipalClass = NSApplication` Info.plist entry; `LSUIElement` remains the
 explicit bundle-level accessory setting.
 
-`AppDelegate` receives small main-actor `AccessibilityPermissionProvider` and
-`WindowSnapshotProvider` seams. Production implementations call the public AX and
+`AppDelegate` receives small main-actor `AccessibilityPermissionProvider`,
+`WindowSnapshotProvider`, and `ApplicationLaunching` seams. Production implementations call the public AX and
 Core Graphics/AppKit APIs. Tests inject mock providers to prove denied startup does
 not enumerate, granted/revoked transitions refresh and clear state, and stale
 activation is harmless. Debug builds additionally accept the explicit
@@ -73,7 +76,7 @@ continues running, and `applicationShouldTerminateAfterLastWindowClosed` is fals
 running app is launched again.
 
 The retained Settings window is a non-resizable fixed-size AppKit window with an
-explicitly framed 640 × 340 point content view. Its content min/max sizes are both set
+explicitly framed 640 × 535 point content view. Its content min/max sizes are both set
 to that value after interface setup. The root vertical stack is constrained to fixed
 content-view insets, and every arranged row is constrained to the stack width. The
 window's fixed content min/max size prevents intrinsic fitting from resizing it while
@@ -112,10 +115,12 @@ the app.
 The same window contains only the required minimal settings. Launch at Login uses
 public `SMAppService.mainApp` status/register/unregister calls and displays unavailable,
 approval-required, or error states inline; there is no helper or login-item target.
-Show Window Titles defaults to true and persists in `UserDefaults`. When disabled,
-compact buttons use the owning application name while retaining app icons, full
-accessibility labels, and tooltips. The current `TaskbarState` is rerendered
-immediately without re-enumerating windows. A Quit TinyTaskbar button is provided.
+Typed controls cover active-window click behavior, stable/grouped ordering,
+window-title/application-name/icon-only labels, and standard/compact density. A
+separate sheet manages pinned and excluded application records without normally
+displaying paths. The legacy `showsWindowTitles` value is consulted only when the
+new label key is absent. The current `TaskbarState` is rerendered immediately without
+re-enumerating windows. A Quit TinyTaskbar button is provided.
 Taskbar panels remain non-activating and never use the settings-window activation path.
 
 ## Window eligibility and Space semantics
@@ -199,12 +204,11 @@ element identities in production. The production registry compares elements with
 `CFEqual`; it never treats non-unique `CFHash` values as identity. Entries survive one
 missed snapshot and are then pruned. Focus, minimize, and restore therefore do not move the target out from
 under the pointer. A left click activates/restores an inactive item and minimizes the
-currently active item, matching conventional taskbar toggling. Each item has one
-right-click-only native context command, Close, paired with AppKit's standard `xmark`
-symbol so the menu's symbol column is intentional rather than empty. The menu is
-returned from `NSView.menu(for:)` instead of assigned as the button's primary menu,
-keeping ordinary left-click activation independent from AppKit's click-and-hold menu
-path. The command reads the window's public
+currently active item by default, matching conventional taskbar toggling. The
+preference can instead make active clicks inert. Option-click minimizes eligible,
+non-excluded peers only on the target display; middle-click closes. Right-click menus
+are rebuilt from current retained state and expose restore/minimize, minimize others,
+Close, pin/unpin, exclude, Settings, and Quit. The Close command reads the window's public
 `kAXCloseButtonAttribute` and performs `kAXPressAction`, matching the semantic red
 window control and preserving any save-confirmation UI owned by the target app.
 Missing, stale, or unsupported close controls are isolated to that item.
@@ -222,10 +226,24 @@ exclusive within the Stage Manager/fullscreen group; TinyTaskbar selects only
 `canJoinAllApplications`. The horizontal AppKit stack is inside an `NSScrollView`,
 uses copied/cached application icons, falls back to the native `macwindow` symbol for
 a stale or unavailable application icon, truncates titles, marks active items with a
-subtle neutral emphasis, and provides button accessibility labels. The 30-point bar
+subtle neutral emphasis, and provides button accessibility labels. Pinned applications
+lead each display as normal window buttons or an icon-only launcher. A hidden-scroller
+subclass preserves horizontal deltas and translates predominantly vertical wheel input
+only while overflowing, clamping the clip view to document bounds. The standard
+30-point or compact 26-point bar
 uses AppKit's native header/footer material, spans the usable display width, and has
-no floating outer inset. It is deliberately an overlay because third-party panels
-cannot reserve Dock-like work area.
+no floating outer inset. It remains an overlay because third-party panels cannot
+reserve Dock-like work area. `TaskbarStore` recognizes windows whose AX top and bottom
+edges match the native Dock/menu-bar-aware work area, then writes a reduced AX height
+above the taskbar without changing horizontal tiled geometry. This covers full-width
+maximize and Rectangle/Raycast-style fractional layouts. The original and applied
+frames are tracked so density changes can update the constraint, hiding/quitting can
+restore it, and an unrelated manual resize cancels TinyTaskbar's ownership. Geometry
+that spans the full physical display height is treated as fullscreen and left untouched.
+An accepted AX write is verified after 150 milliseconds and retried at most five times;
+the provider rereads the live width immediately before every height write. This closes
+the race where another window manager completes its horizontal size operation after
+TinyTaskbar's first correction without creating an unbounded loop for fixed-size apps.
 
 Panel frames are calculated from the AppKit full and visible frames, not from AX
 geometry. The panel is flush with the usable horizontal and bottom edges: a bottom

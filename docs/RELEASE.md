@@ -1,7 +1,8 @@
 # Release and validation
 
-TinyTaskbar has repository metadata for source history, but no updater, helper,
-analytics, or configuration migration. Its minimal launch-at-login preference uses
+TinyTaskbar has repository metadata for source history, but no updater, helper, or
+analytics. Its typed preferences include a one-time compatibility migration from
+the legacy window-title toggle. Its minimal launch-at-login preference uses
 `SMAppService.mainApp`; there is no helper or separate login-item target. Version
 and build numbers live in `Resources/Info.plist`:
 
@@ -11,9 +12,9 @@ and build numbers live in `Resources/Info.plist`:
 ## Local structural build
 
 ```sh
-swift test
-swift build
-swift build -c release
+swift test --disable-sandbox
+swift build --disable-sandbox
+swift build --disable-sandbox -c release
 pre-commit run --all-files
 bash scripts/build-app.sh --adhoc
 codesign --verify --deep --strict --verbose=2 dist/TinyTaskbar.app

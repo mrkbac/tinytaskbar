@@ -58,6 +58,7 @@ struct WindowCandidate: Equatable, Sendable {
     let pid: Int32
     let applicationName: String
     let applicationIdentity: String?
+    let applicationBundlePath: String?
     let localizedApplicationName: String
     let applicationIsRunning: Bool
     let applicationIsRegular: Bool
@@ -76,6 +77,7 @@ struct WindowCandidate: Equatable, Sendable {
         pid: Int32,
         applicationName: String,
         applicationIdentity: String? = nil,
+        applicationBundlePath: String? = nil,
         localizedApplicationName: String? = nil,
         applicationIsRunning: Bool = true,
         applicationIsRegular: Bool = true,
@@ -93,6 +95,7 @@ struct WindowCandidate: Equatable, Sendable {
         self.pid = pid
         self.applicationName = applicationName
         self.applicationIdentity = applicationIdentity
+        self.applicationBundlePath = applicationBundlePath
         self.localizedApplicationName = localizedApplicationName ?? applicationName
         self.applicationIsRunning = applicationIsRunning
         self.applicationIsRegular = applicationIsRegular
@@ -113,6 +116,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let pid: Int32
     let applicationName: String
     let applicationIdentity: String?
+    let applicationBundlePath: String?
     let title: String
     let displayIdentifier: String
     let cgWindowNumber: UInt32?
@@ -125,6 +129,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         pid: Int32,
         applicationName: String,
         applicationIdentity: String? = nil,
+        applicationBundlePath: String? = nil,
         title: String,
         displayIdentifier: String,
         cgWindowNumber: UInt32?,
@@ -136,6 +141,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         self.pid = pid
         self.applicationName = applicationName
         self.applicationIdentity = applicationIdentity
+        self.applicationBundlePath = applicationBundlePath
         self.title = title
         self.displayIdentifier = displayIdentifier
         self.cgWindowNumber = cgWindowNumber
@@ -148,8 +154,16 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         title.isEmpty ? applicationName : title
     }
 
+    func buttonTitle(labelMode: TaskbarLabelMode) -> String {
+        switch labelMode {
+        case .windowTitle: displayTitle
+        case .applicationName: applicationName
+        case .iconOnly: ""
+        }
+    }
+
     func buttonTitle(showsWindowTitles: Bool) -> String {
-        showsWindowTitles ? displayTitle : applicationName
+        buttonTitle(labelMode: showsWindowTitles ? .windowTitle : .applicationName)
     }
 
     var accessibilityLabel: String {
@@ -176,7 +190,39 @@ struct TaskbarState: Equatable, Sendable {
 
 struct TinyTaskbarPreferences: Equatable, Sendable {
     var onboardingComplete = false
-    var showsWindowTitles = true
+    var activeWindowClickBehavior = ActiveWindowClickBehavior.minimize
+    var orderingMode = TaskbarOrderingMode.windowOrder
+    var labelMode = TaskbarLabelMode.windowTitle
+    var density = TaskbarDensity.standard
+    var pinnedApplications: [ApplicationRecord] = []
+    var excludedApplications: [ApplicationRecord] = []
+
+    var showsWindowTitles: Bool { labelMode == .windowTitle }
+
+    init(
+        onboardingComplete: Bool = false,
+        activeWindowClickBehavior: ActiveWindowClickBehavior = .minimize,
+        orderingMode: TaskbarOrderingMode = .windowOrder,
+        labelMode: TaskbarLabelMode = .windowTitle,
+        density: TaskbarDensity = .standard,
+        pinnedApplications: [ApplicationRecord] = [],
+        excludedApplications: [ApplicationRecord] = []
+    ) {
+        self.onboardingComplete = onboardingComplete
+        self.activeWindowClickBehavior = activeWindowClickBehavior
+        self.orderingMode = orderingMode
+        self.labelMode = labelMode
+        self.density = density
+        self.pinnedApplications = pinnedApplications
+        self.excludedApplications = excludedApplications
+    }
+
+    init(onboardingComplete: Bool, showsWindowTitles: Bool) {
+        self.init(
+            onboardingComplete: onboardingComplete,
+            labelMode: showsWindowTitles ? .windowTitle : .applicationName
+        )
+    }
 
     static let defaults = TinyTaskbarPreferences()
 }
@@ -185,6 +231,13 @@ extension CGRect {
     var isFiniteGeometry: Bool {
         minX.isFinite && minY.isFinite && maxX.isFinite && maxY.isFinite
             && width.isFinite && height.isFinite
+    }
+
+    func approximatelyEquals(_ other: CGRect, tolerance: CGFloat) -> Bool {
+        abs(minX - other.minX) <= tolerance
+            && abs(minY - other.minY) <= tolerance
+            && abs(width - other.width) <= tolerance
+            && abs(height - other.height) <= tolerance
     }
 }
 
@@ -361,6 +414,51 @@ enum TaskbarPanelLayout {
             height: panelHeight
         )
     }
+
+    /// Converts AppKit's Dock/menu-bar-aware visible frame into the Quartz/AX
+    /// top-left coordinate space used by discovered window frames.
+    static func nativeWindowWorkArea(for display: DisplayDescriptor) -> CGRect {
+        let full = display.appKitFrame
+        let visible = display.appKitVisibleFrame
+        guard full.isFiniteGeometry, visible.isFiniteGeometry, display.frame.isFiniteGeometry
+        else { return .zero }
+
+        let leftInset = max(0, visible.minX - full.minX)
+        let rightInset = max(0, full.maxX - visible.maxX)
+        let topInset = max(0, full.maxY - visible.maxY)
+        let bottomInset = max(0, visible.minY - full.minY)
+        return CGRect(
+            x: display.frame.minX + leftInset,
+            y: display.frame.minY + topInset,
+            width: max(0, display.frame.width - leftInset - rightInset),
+            height: max(0, display.frame.height - topInset - bottomInset)
+        )
+    }
+
+    static func constrainedFullHeightWindowFrame(
+        for frame: CGRect,
+        on display: DisplayDescriptor,
+        taskbarHeight: CGFloat,
+        tolerance: CGFloat = 4
+    ) -> CGRect? {
+        let nativeWorkArea = nativeWindowWorkArea(for: display)
+        let spansFullDisplayHeight =
+            abs(frame.minY - display.frame.minY) <= tolerance
+            && abs(frame.maxY - display.frame.maxY) <= tolerance
+        guard !spansFullDisplayHeight,
+            abs(frame.minY - nativeWorkArea.minY) <= tolerance,
+            abs(frame.maxY - nativeWorkArea.maxY) <= tolerance,
+            taskbarHeight > 0,
+            frame.height > taskbarHeight
+        else { return nil }
+
+        return CGRect(
+            origin: frame.origin,
+            size: CGSize(
+                width: frame.width,
+                height: frame.height - taskbarHeight)
+        )
+    }
 }
 
 enum TaskbarButtonLayout {
@@ -374,6 +472,23 @@ enum TaskbarButtonLayout {
             return titleOnMinimumWidth...titleOnMaximumWidth
         }
         return titleOffMinimumWidth...titleOffMaximumWidth
+    }
+
+    static func widthRange(
+        labelMode: TaskbarLabelMode,
+        density: TaskbarDensity
+    ) -> ClosedRange<CGFloat> {
+        let range: ClosedRange<CGFloat>
+        switch labelMode {
+        case .windowTitle:
+            range = titleOnMinimumWidth...titleOnMaximumWidth
+        case .applicationName:
+            range = titleOffMinimumWidth...titleOffMaximumWidth
+        case .iconOnly:
+            range = 32...32
+        }
+        guard density == .compact else { return range }
+        return max(28, range.lowerBound - 8)...max(28, range.upperBound - 12)
     }
 }
 
@@ -622,6 +737,7 @@ enum WindowProjection {
                     pid: candidate.pid,
                     applicationName: candidate.localizedApplicationName,
                     applicationIdentity: candidate.applicationIdentity,
+                    applicationBundlePath: candidate.applicationBundlePath,
                     title: candidate.title,
                     displayIdentifier: displayIdentifier,
                     cgWindowNumber: cgWindow?.windowNumber,

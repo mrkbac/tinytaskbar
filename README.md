@@ -8,9 +8,16 @@ Clicking an item activates, focuses, and raises its owning window.
 The executable is an `LSUIElement` AppKit application with no Dock icon during
 normal taskbar operation, no helper, updater, analytics, thumbnail capture, or
 third-party runtime dependency. It includes one small native onboarding/settings
-window for Accessibility,
-launch-at-login, and the window-title display preference; there is no SwiftUI or
-general-purpose settings framework.
+window for Accessibility, launch-at-login, click behavior, ordering, labels,
+density, and application lists; there is no SwiftUI or general-purpose settings
+framework.
+
+A permanent native menu-bar item can show or hide all taskbars, open Settings, or
+quit even when Accessibility access is unavailable. Taskbar visibility is not
+persisted. Window buttons support explicit restore/minimize, Option-click
+Minimize Others on the same display, middle-click semantic Close, and complete
+native context menus. Applications can be pinned as icon-only launchers or excluded
+by stable identity; both lists are managed from the Applications sheet.
 
 While Settings is visible, the app temporarily uses the regular activation policy so
 WindowServer will present the normal window; macOS may show a Dock icon during that
@@ -22,9 +29,9 @@ temporary Dock presence.
 The package targets macOS 26 and is intended for Xcode 26.6 / Swift 6.3.3:
 
 ```sh
-swift test
-swift build
-swift build -c release
+swift test --disable-sandbox
+swift build --disable-sandbox
+swift build --disable-sandbox -c release
 pre-commit run --all-files
 bash scripts/test-build-app-rollback.sh
 ```
@@ -33,7 +40,9 @@ The local package tests cover eligibility, malformed input isolation, conservati
 Core Graphics matching, one-to-one AX/CG assignment and activation keys, display
 intersection/tie/fallback mapping, Dock-aware panel frames, stable ordering,
 deduplication, lifecycle transitions including open/move/minimize/restore/close,
-injected permission/window providers, and the 120-window projection path. They do
+preference migration and corruption recovery, pin/exclusion conflicts, grouped
+ordering, launchers, pointer command scope, compact/icon-only geometry, injected
+permission/window providers, and the 120-window projection path. They do
 not replace tests on a real multi-display,
 Spaces, fullscreen, or Stage Manager session.
 
@@ -109,9 +118,12 @@ the app becomes active again. Closing the window keeps the process and taskbars
 running; Done records onboarding completion. If access is denied, it remains
 running without taskbars and does not automatically request TCC access.
 
-The same window offers public `SMAppService.mainApp` launch-at-login control and a
-persisted Show Window Titles toggle. Turning titles off changes compact button text
-immediately while retaining full accessibility labels, tooltips, and app icons.
+The same window offers public `SMAppService.mainApp` launch-at-login control and
+small typed preferences for active-window clicks, ordering, labels, and density.
+The legacy Show Window Titles value migrates once to Window Title or Application
+Name. Icon-only mode still retains full accessibility labels, tooltips, and app
+icons. Invalid enum values use retained defaults, while corrupt pin/exclusion
+records are discarded individually.
 
 TinyTaskbar does not request Screen Recording. Window titles come from AX; Core
 Graphics is used only for public owner, layer, on-screen, title, and geometry
@@ -126,11 +138,21 @@ deprecated Core Graphics workspace key is intentionally not used. Minimized wind
 remain associated with their last AX geometry so they can be restored; exact
 cross-Space membership is not attempted.
 
-The bar is an overlay. A third-party `NSPanel` cannot reserve screen work area like
-the Dock, so TinyTaskbar may cover the bottom edge of application content. Panels
-use each screen's full and visible AppKit frames: a bottom Dock lifts the bar exactly
-to the visible-frame boundary, while a side Dock trims its horizontal span without
-changing its vertical position. There is no additional floating outer margin.
+The bar is an overlay because a third-party `NSPanel` cannot reserve screen work
+area like the Dock. When a normal window spans the full native work-area height,
+TinyTaskbar uses Accessibility to shorten that window by the current bar height while
+preserving its horizontal tile. This covers native maximize plus Rectangle/Raycast-style
+left, right, and fractional layouts. Corrections are rechecked with bounded retries and
+each write preserves the latest live width, so a window manager finishing its tile a
+moment later cannot permanently overwrite TinyTaskbar's height correction. It updates
+the constraint when density changes,
+restores the original size when taskbars are hidden or TinyTaskbar quits, and
+relinquishes ownership after a manual resize. Full-display fullscreen geometry is not
+resized. Other manually positioned windows can still extend behind the overlay. Panels
+use each screen's full and visible AppKit
+frames: a bottom Dock lifts the bar exactly to the visible-frame boundary, while a
+side Dock trims its horizontal span without changing its vertical position. There is
+no additional floating outer margin.
 A per-display panel uses public AppKit collection behavior for all Spaces,
 fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
 real-machine behavior still needs validation.
@@ -144,7 +166,7 @@ included when Core Graphics reports them on-screen.
 
 ## Evidence status
 
-Validated in the local checkout: 51 automated tests, debug and release package
+Validated for the earlier baseline in the local checkout: debug and release package
 builds, Swift-format/pre-commit checks, app-bundle assembly, ad-hoc code-signature
 verification, and plist syntax/structure checks. Computer QA covers the denied
 onboarding guide, Settings layout/reopen/close-without-quit, title preference, stable
@@ -157,3 +179,12 @@ grant/window focus, installed launch-at-login,
 multi-monitor/Spaces/fullscreen/Stage Manager behavior, five-minute energy/latency
 traces, Developer ID signing, notarization/stapling, and Gatekeeper on a clean machine
 remain explicitly pending.
+
+The retained-feature implementation has 70 passing automated tests in this checkout.
+Computer QA on its deterministic fixtures verified the expanded context and launcher
+menus, pin/exclude/restore/unpin flows, closed pinned launchers, failed-launch pin
+retention, live Settings summaries, the scrollable Applications sheet, grouped
+ordering, compact icon-only rendering, stable numeric overflow ordering, and explicit
+sheet dismissal. Its menu-bar control, modifier/middle-click behavior, real app
+launch/move behavior, multi-display topology, and real Accessibility behavior still
+require the manual matrix before release claims are updated.

@@ -11,6 +11,50 @@ protocol WindowSnapshotProvider: AnyObject {
     func activate(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
+    @discardableResult
+    func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool
+}
+
+@MainActor
+protocol ApplicationLaunching: AnyObject {
+    @discardableResult
+    func launch(_ application: ApplicationRecord) -> Bool
+}
+
+@MainActor
+final class WorkspaceApplicationLauncher: ApplicationLaunching {
+    @discardableResult
+    func launch(_ application: ApplicationRecord) -> Bool {
+        let running: NSRunningApplication?
+        if let bundleIdentifier = application.bundleIdentifier {
+            running =
+                NSRunningApplication.runningApplications(
+                    withBundleIdentifier: bundleIdentifier
+                ).first
+        } else if let bundlePath = application.bundlePath {
+            running = NSWorkspace.shared.runningApplications.first { candidate in
+                candidate.bundleURL?.standardizedFileURL.path == bundlePath
+            }
+        } else {
+            running = nil
+        }
+        if let running {
+            return running.activate(options: [])
+        }
+        let resolvedByIdentifier = application.bundleIdentifier.flatMap {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+        }
+        let resolvedByPath = application.bundlePath.map {
+            URL(fileURLWithPath: $0).standardizedFileURL
+        }
+        guard let url = resolvedByIdentifier ?? resolvedByPath else { return false }
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        NSWorkspace.shared.openApplication(
+            at: url,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { _, _ in }
+        return true
+    }
 }
 
 @MainActor
@@ -397,6 +441,51 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         // resulting window state remain authoritative.
         onChange?()
     }
+
+    @discardableResult
+    func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool {
+        guard height.isFinite, height > 0,
+            let element = axElementsByStableKey[item.id]
+        else {
+            logger.debug(
+                "Height update skipped because the AX reference or geometry is invalid for \(item.id, privacy: .public)"
+            )
+            return false
+        }
+
+        // Window managers commonly write position and size separately. Preserve the live
+        // width so a late taskbar correction cannot undo their horizontal layout.
+        var rawSize: CFTypeRef?
+        let readError = AXUIElementCopyAttributeValue(
+            element, kAXSizeAttribute as CFString, &rawSize)
+        guard readError == .success, let rawSize,
+            CFGetTypeID(rawSize) == AXValueGetTypeID(),
+            let currentSizeValue = rawSize as! AXValue?,
+            AXValueGetType(currentSizeValue) == .cgSize
+        else {
+            logger.debug(
+                "Height update skipped because the live width is unavailable pid=\(item.pid, privacy: .public) error=\(readError.rawValue, privacy: .public)"
+            )
+            return false
+        }
+        var mutableSize = CGSize.zero
+        guard AXValueGetValue(currentSizeValue, .cgSize, &mutableSize),
+            mutableSize.width.isFinite, mutableSize.width > 0
+        else {
+            return false
+        }
+        mutableSize.height = height
+        guard let sizeValue = AXValueCreate(.cgSize, &mutableSize) else { return false }
+        let sizeError = AXUIElementSetAttributeValue(
+            element, kAXSizeAttribute as CFString, sizeValue)
+        let succeeded = sizeError == .success
+        if !succeeded {
+            logger.debug(
+                "Height update failed pid=\(item.pid, privacy: .public) error=\(sizeError.rawValue, privacy: .public)"
+            )
+        }
+        return succeeded
+    }
 }
 
 @MainActor
@@ -499,6 +588,8 @@ private final class AXWindowInspector {
                 pid: application.processIdentifier,
                 applicationName: applicationName,
                 applicationIdentity: applicationIdentity,
+                applicationBundlePath: application.bundleURL?.standardizedFileURL.path
+                    ?? application.executableURL?.standardizedFileURL.path,
                 localizedApplicationName: applicationName,
                 applicationIsRunning: !application.isTerminated,
                 applicationIsRegular: application.activationPolicy == .regular,

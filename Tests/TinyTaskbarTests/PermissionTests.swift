@@ -1565,6 +1565,95 @@ struct PermissionTests {
         #expect(resolved.itemsByDisplay["main"]?.first?.isMinimized == true)
     }
 
+    @Test("switching native tabs replaces the previously selected tab")
+    func selectedNativeTabReplacesOffScreenSibling() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let previousItem = TaskbarItem(
+            id: "previous-tab",
+            pid: 10,
+            applicationName: "Ghostty",
+            title: "Previous tab",
+            displayIdentifier: "main",
+            cgWindowNumber: 41,
+            stableOrderKey: "previous-tab",
+            isActive: true
+        )
+        let selectedItem = TaskbarItem(
+            id: "selected-tab",
+            pid: 10,
+            applicationName: "Ghostty",
+            title: "Selected tab",
+            displayIdentifier: "main",
+            cgWindowNumber: 42,
+            stableOrderKey: "selected-tab",
+            isActive: true
+        )
+        let candidates = [
+            WindowCandidate(
+                stableKey: "previous-tab",
+                cgWindowNumber: 41,
+                pid: 10,
+                applicationName: "Ghostty",
+                title: "Previous tab",
+                frame: frame
+            ),
+            WindowCandidate(
+                stableKey: "selected-tab",
+                cgWindowNumber: 42,
+                pid: 10,
+                applicationName: "Ghostty",
+                title: "Selected tab",
+                frame: frame,
+                isFocused: true,
+                isMain: true
+            ),
+        ]
+        let snapshot = RawWindowSnapshot(
+            candidates: candidates,
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 41,
+                    ownerPID: 10,
+                    bounds: frame,
+                    title: "Previous tab",
+                    isOnScreen: false
+                ),
+                CGWindowMetadata(
+                    windowNumber: 42,
+                    ownerPID: 10,
+                    bounds: frame,
+                    title: "Selected tab"
+                ),
+            ],
+            displays: [display],
+            frontmostPID: 10,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["previous-tab", "selected-tab"]
+            )
+        )
+
+        let resolved = TaskbarStateContinuity().resolve(
+            previous: TaskbarState(
+                displays: [display],
+                itemsByDisplay: ["main": [previousItem]]
+            ),
+            incoming: TaskbarState(
+                displays: [display],
+                itemsByDisplay: ["main": [selectedItem]]
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(resolved.itemsByDisplay["main"] == [selectedItem])
+    }
+
     @Test("active Space refresh removes AX-only items from the prior Space")
     func activeSpaceChangeInvalidatesAXOnlyItems() {
         let display = DisplayDescriptor(

@@ -116,6 +116,22 @@ struct TaskbarStateContinuity {
             )
         }
 
+        // Native tab containers keep every tab in the AX window list, but Core
+        // Graphics marks only the selected tab's exact window identity on-screen.
+        // Treat a matching off-screen record as positive replacement evidence;
+        // unlike a missing CG record, it is not an inconclusive move-time gap.
+        if let candidate,
+            !candidate.isMinimized,
+            !candidate.applicationIsHidden,
+            hasExactOffScreenCGWindow(
+                for: item,
+                candidate: candidate,
+                windows: snapshot.cgWindows
+            )
+        {
+            return nil
+        }
+
         // A Space change makes the current on-screen CG list authoritative for
         // membership. Do not let an AX-only candidate from the prior Space leak
         // into the new one.
@@ -201,6 +217,24 @@ struct TaskbarStateContinuity {
                 && $0.isOnScreen
         }
         return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func hasExactOffScreenCGWindow(
+        for item: TaskbarItem,
+        candidate: WindowCandidate,
+        windows: [CGWindowMetadata]
+    ) -> Bool {
+        guard let windowNumber = item.cgWindowNumber,
+            candidate.cgWindowNumber == windowNumber
+        else {
+            return false
+        }
+        let matches = windows.filter {
+            $0.windowNumber == windowNumber
+                && $0.ownerPID == item.pid
+                && $0.layer == 0
+        }
+        return matches.count == 1 && !matches[0].isOnScreen
     }
 
     private func hasAuthoritativeIneligibility(_ candidate: WindowCandidate) -> Bool {

@@ -620,6 +620,11 @@ struct PermissionTests {
         controller.loadView()
 
         #expect(controller.tabButtons.map(\.title) == tabs.map(\.title))
+        #expect(controller.tabButtons.allSatisfy { $0.image == nil })
+        #expect(controller.tabButtons[0].layer?.borderWidth == 1)
+        #expect(controller.tabButtons[1].layer?.borderWidth == 0)
+        #expect(controller.applicationLabel.stringValue == "Terminal")
+        #expect(controller.titleLabel.stringValue == "3 Tabs")
         #expect(controller.preferredContentSize.height > 100)
         #expect(controller.view is TaskbarHoverCardView)
         controller.tabButtons[1].performClick(nil)

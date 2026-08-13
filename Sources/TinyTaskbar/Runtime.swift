@@ -1596,6 +1596,29 @@ final class TaskbarButtonCell: NSButtonCell {
 }
 
 @MainActor
+private enum TaskbarSelectionAppearance {
+    static let cornerRadius: CGFloat = 6
+
+    static func apply(to layer: CALayer?, isSelected: Bool, isHovered: Bool = false) {
+        guard let layer else { return }
+        layer.cornerRadius = cornerRadius
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = true
+        layer.backgroundColor =
+            isSelected
+            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+            : isHovered
+                ? NSColor.labelColor.withAlphaComponent(0.06).cgColor
+                : NSColor.clear.cgColor
+        layer.borderWidth = isSelected ? 1 : 0
+        layer.borderColor =
+            isSelected
+            ? NSColor.controlAccentColor.withAlphaComponent(0.48).cgColor
+            : NSColor.clear.cgColor
+    }
+}
+
+@MainActor
 final class TaskbarButton: TaskbarHoverButton {
     var contextualMenu: NSMenu?
     var itemID = ""
@@ -1659,19 +1682,7 @@ final class TaskbarButton: TaskbarHoverButton {
     }
 
     private func updateFocusAppearance() {
-        guard let layer else { return }
-        layer.cornerRadius = 6
-        layer.cornerCurve = .continuous
-        layer.masksToBounds = true
-        layer.backgroundColor =
-            presentsActiveFocus
-            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
-            : NSColor.clear.cgColor
-        layer.borderWidth = presentsActiveFocus ? 1 : 0
-        layer.borderColor =
-            presentsActiveFocus
-            ? NSColor.controlAccentColor.withAlphaComponent(0.48).cgColor
-            : NSColor.clear.cgColor
+        TaskbarSelectionAppearance.apply(to: layer, isSelected: presentsActiveFocus)
     }
 }
 
@@ -1733,8 +1744,44 @@ final class TaskbarHoverCardView: NSView {
 }
 
 @MainActor
-private final class TaskbarTabButton: NSButton {
+private final class TaskbarTabButton: TaskbarHoverButton {
+    var isSelectedTab = false {
+        didSet { updateSelectionAppearance() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        cell = TaskbarButtonCell(textCell: "")
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        cell = TaskbarButtonCell(textCell: "")
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updateSelectionAppearance()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        updateSelectionAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateSelectionAppearance()
+    }
+
     override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
+
+    private func updateSelectionAppearance() {
+        TaskbarSelectionAppearance.apply(
+            to: layer,
+            isSelected: isSelectedTab,
+            isHovered: isPointerInside)
+    }
 }
 
 @MainActor
@@ -1759,6 +1806,7 @@ final class TaskbarHoverCardViewController: NSViewController {
 
     private let tabs: [TaskbarTab]
     private let onSelectTab: @MainActor (TaskbarTab) -> Void
+    private let showsTabList: Bool
     private let headerHeight: CGFloat
     private let tabListHeight: CGFloat
 
@@ -1769,25 +1817,31 @@ final class TaskbarHoverCardViewController: NSViewController {
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in }
     ) {
+        showsTabList = tabs.count > 1
+        let displayedTitle = showsTabList ? "\(tabs.count) Tabs" : title
         applicationLabel = NSTextField(labelWithString: applicationName)
-        titleLabel = NSTextField(wrappingLabelWithString: title)
+        titleLabel = NSTextField(wrappingLabelWithString: displayedTitle)
         iconView = NSImageView(image: icon ?? NSImage())
         self.tabs = tabs
         self.onSelectTab = onSelectTab
 
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .medium)
         let applicationFont = NSFont.systemFont(ofSize: 10, weight: .regular)
-        let showsApplication = applicationName != title
+        let showsApplication = showsTabList || applicationName != displayedTitle
+        let displayedTitleFont = showsTabList ? applicationFont : titleFont
+        let displayedApplicationFont = showsTabList ? titleFont : applicationFont
         let titleNaturalWidth = ceil(
-            (title as NSString).size(withAttributes: [.font: titleFont]).width)
+            (displayedTitle as NSString).size(withAttributes: [.font: displayedTitleFont]).width)
         let applicationNaturalWidth =
             showsApplication
             ? ceil(
-                (applicationName as NSString).size(withAttributes: [.font: applicationFont]).width)
+                (applicationName as NSString).size(
+                    withAttributes: [.font: displayedApplicationFont]
+                ).width)
             : 0
         let tabNaturalWidth =
             tabs.map {
-                ceil(($0.title as NSString).size(withAttributes: [.font: titleFont]).width) + 24
+                ceil(($0.title as NSString).size(withAttributes: [.font: titleFont]).width) + 12
             }.max() ?? 0
         let textWidth = min(
             Self.maximumTextWidth,
@@ -1797,13 +1851,13 @@ final class TaskbarHoverCardViewController: NSViewController {
             )
         )
         let titleHeight = ceil(
-            (title as NSString).boundingRect(
+            (displayedTitle as NSString).boundingRect(
                 with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: titleFont]
+                attributes: [.font: displayedTitleFont]
             ).height)
         let applicationHeight =
-            showsApplication ? ceil(applicationFont.boundingRectForFont.height) : 0
+            showsApplication ? ceil(displayedApplicationFont.boundingRectForFont.height) : 0
         let textHeight = titleHeight + applicationHeight + (showsApplication ? 2 : 0)
         headerHeight = Self.padding + max(Self.iconSize, textHeight) + Self.padding
         tabListHeight =
@@ -1827,12 +1881,18 @@ final class TaskbarHoverCardViewController: NSViewController {
         iconView.imageScaling = .scaleProportionallyDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
-        applicationLabel.font = .systemFont(ofSize: 10)
-        applicationLabel.textColor = .secondaryLabelColor
-        applicationLabel.isHidden = applicationLabel.stringValue == titleLabel.stringValue
-        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        titleLabel.maximumNumberOfLines = 0
-        titleLabel.lineBreakMode = .byCharWrapping
+        applicationLabel.font = .systemFont(
+            ofSize: showsTabList ? 12 : 10,
+            weight: showsTabList ? .medium : .regular)
+        applicationLabel.textColor = showsTabList ? .labelColor : .secondaryLabelColor
+        applicationLabel.isHidden =
+            !showsTabList && applicationLabel.stringValue == titleLabel.stringValue
+        titleLabel.font = .systemFont(
+            ofSize: showsTabList ? 10 : 12,
+            weight: showsTabList ? .regular : .medium)
+        titleLabel.textColor = showsTabList ? .secondaryLabelColor : .labelColor
+        titleLabel.maximumNumberOfLines = showsTabList ? 1 : 0
+        titleLabel.lineBreakMode = showsTabList ? .byTruncatingTail : .byCharWrapping
 
         let textStack = NSStackView(views: [applicationLabel, titleLabel])
         textStack.orientation = .vertical
@@ -1897,26 +1957,26 @@ final class TaskbarHoverCardViewController: NSViewController {
             button.tag = index
             button.bezelStyle = .inline
             button.isBordered = false
+            button.setButtonType(.momentaryPushIn)
             button.alignment = .left
-            button.font = .systemFont(ofSize: 12, weight: tab.isSelected ? .semibold : .regular)
-            button.image =
-                tab.isSelected
-                ? NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Selected")
-                : NSImage(systemSymbolName: "circle", accessibilityDescription: nil)
-            button.imagePosition = .imageLeading
-            button.contentTintColor = tab.isSelected ? .controlAccentColor : .tertiaryLabelColor
+            button.font = .systemFont(ofSize: 12, weight: .regular)
+            button.lineBreakMode = .byTruncatingTail
+            button.imagePosition = .noImage
+            button.wantsLayer = true
+            button.isSelectedTab = tab.isSelected
             button.setAccessibilityLabel(tab.title)
             button.setAccessibilityValue(tab.isSelected ? "Selected tab" : "Tab")
             button.translatesAutoresizingMaskIntoConstraints = false
             button.heightAnchor.constraint(equalToConstant: Self.tabRowHeight).isActive = true
-            button.widthAnchor.constraint(equalToConstant: preferredContentSize.width).isActive =
-                true
+            button.widthAnchor.constraint(
+                equalToConstant: preferredContentSize.width - 12
+            ).isActive = true
             stack.addArrangedSubview(button)
             return button
         }
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -6),
             stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 4),
         ])
 

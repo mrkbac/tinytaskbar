@@ -95,12 +95,6 @@ struct WindowModelTests {
                 frame: CGRect(x: 0, y: 0, width: 300, height: 200)
             ),
             WindowCandidate(
-                pid: 8,
-                applicationName: "App",
-                applicationIsHidden: true,
-                frame: CGRect(x: 0, y: 0, width: 300, height: 200)
-            ),
-            WindowCandidate(
                 pid: 9,
                 applicationName: "App",
                 role: "AXSheet",
@@ -135,6 +129,15 @@ struct WindowModelTests {
             isMinimized: true
         )
         #expect(eligibility.isEligible(minimized, selfPID: 999))
+
+        let hidden = WindowCandidate(
+            pid: 8,
+            applicationName: "App",
+            applicationIsHidden: true,
+            frame: CGRect(x: 0, y: 0, width: 300, height: 200),
+            isHidden: true
+        )
+        #expect(eligibility.isEligible(hidden, selfPID: 999))
     }
 
     @Test("projection requires an on-screen layer-zero Core Graphics match")
@@ -217,6 +220,172 @@ struct WindowModelTests {
         )
         #expect(
             CGWindowMatcher.match(candidate: candidate, windows: [ambiguousA, ambiguousB]) == nil)
+    }
+
+    @Test("projection does not promote AX-only minimized native tabs")
+    func minimizedNativeTabsRequirePriorPhysicalEvidence() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let candidates = ["selected-tab", "background-tab"].map { key in
+            WindowCandidate(
+                stableKey: key,
+                pid: 10,
+                applicationName: "Terminal",
+                title: key,
+                frame: frame,
+                isMinimized: true
+            )
+        }
+
+        let state = WindowProjection.project(
+            candidates: candidates,
+            cgWindows: [],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay.isEmpty)
+    }
+
+    @Test("cold-start projection includes an exactly identified minimized window")
+    func minimizedWindowUsesExactOffScreenIdentity() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let minimized = WindowCandidate(
+            stableKey: "minimized",
+            cgWindowNumber: 42,
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: frame,
+            isMinimized: true
+        )
+        let offScreen = CGWindowMetadata(
+            windowNumber: 42,
+            ownerPID: 10,
+            bounds: CGRect(x: 800, y: 700, width: 120, height: 80),
+            title: "Stale CG title",
+            isOnScreen: false
+        )
+
+        let state = WindowProjection.project(
+            candidates: [minimized],
+            cgWindows: [offScreen],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay["main"]?.count == 1)
+        let item = state.itemsByDisplay["main"]?.first
+        #expect(item?.id == "minimized")
+        #expect(item?.cgWindowNumber == 42)
+        #expect(item?.isMinimized == true)
+    }
+
+    @Test("cold-start projection does not promote hidden off-screen records")
+    func hiddenWindowRequiresPriorOnScreenEvidence() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let hidden = WindowCandidate(
+            stableKey: "hidden",
+            cgWindowNumber: 43,
+            pid: 10,
+            applicationName: "Editor",
+            applicationIsHidden: true,
+            title: "Document",
+            frame: frame
+        )
+        let offScreen = CGWindowMetadata(
+            windowNumber: 43,
+            ownerPID: 10,
+            bounds: frame,
+            title: "Document",
+            isOnScreen: false
+        )
+
+        let state = WindowProjection.project(
+            candidates: [hidden],
+            cgWindows: [offScreen],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay.isEmpty)
+    }
+
+    @Test("off-screen projection never guesses a minimized window identity")
+    func minimizedWindowWithoutIdentityStaysExcluded() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let ambiguous = WindowCandidate(
+            stableKey: "ambiguous",
+            pid: 10,
+            applicationName: "Terminal",
+            title: "Tab",
+            frame: frame,
+            isMinimized: true
+        )
+        let offScreen = CGWindowMetadata(
+            windowNumber: 42,
+            ownerPID: 10,
+            bounds: frame,
+            title: "Tab",
+            isOnScreen: false
+        )
+
+        let state = WindowProjection.project(
+            candidates: [ambiguous],
+            cgWindows: [offScreen],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay.isEmpty)
+    }
+
+    @Test("exact identity does not admit a non-minimized window from another Space")
+    func offSpaceWindowStaysExcluded() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let offSpace = WindowCandidate(
+            stableKey: "other-space",
+            cgWindowNumber: 42,
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: frame
+        )
+        let offScreen = CGWindowMetadata(
+            windowNumber: 42,
+            ownerPID: 10,
+            bounds: frame,
+            title: "Document",
+            isOnScreen: false
+        )
+
+        let state = WindowProjection.project(
+            candidates: [offSpace],
+            cgWindows: [offScreen],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay.isEmpty)
     }
 
     @Test("untitled windows use the application name for display")
@@ -446,12 +615,28 @@ struct WindowModelTests {
                 minimized: true),
             initialCandidates[1],
         ]
-        let minimized = WindowProjection.project(
+        let minimizedProjection = WindowProjection.project(
             candidates: minimizedCandidates,
             cgWindows: [initialCGWindows[1]],
             displays: [display],
             selfPID: 999,
             frontmostPID: 11
+        )
+        let minimized = TaskbarStateContinuity().resolve(
+            previous: initial,
+            incoming: minimizedProjection,
+            snapshot: RawWindowSnapshot(
+                candidates: minimizedCandidates,
+                cgWindows: [initialCGWindows[1]],
+                displays: [display],
+                frontmostPID: 11,
+                evidence: WindowSnapshotEvidence(
+                    isComplete: true,
+                    knownApplicationPIDs: [10, 11],
+                    axWindowListReadPIDs: [10, 11],
+                    observedAXWindowIDs: ["stable-first", "stable-second"]
+                )
+            )
         )
         let restored = WindowProjection.project(
             candidates: initialCandidates,

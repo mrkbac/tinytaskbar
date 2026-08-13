@@ -141,15 +141,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let presentation = TaskbarPresentationBuilder.build(
+            state: state, preferences: preferencesStore.values)
         let taskbarHeight = preferencesStore.values.density.panelHeight
         store.setTaskbarWorkAreaHeights(
             Dictionary(
-                uniqueKeysWithValues: state.displays.map {
+                uniqueKeysWithValues: presentation.displays.map {
                     ($0.identifier, taskbarHeight)
                 }))
 
-        let presentation = TaskbarPresentationBuilder.build(
-            state: state, preferences: preferencesStore.values)
         let displayIDs = Set(presentation.displays.map(\.identifier))
         for display in presentation.displays {
             let panel: TaskbarPanel
@@ -248,9 +248,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onAccessibilityRequest = { [weak self] in
             self?.requestAccessibility()
         }
-        settingsWindow.onShowsWindowTitlesChanged = { [weak self] shows in
-            self?.setShowsWindowTitles(shows)
-        }
         settingsWindow.onActiveWindowClickChanged = { [weak self] behavior in
             self?.preferencesStore.setActiveWindowClickBehavior(behavior)
         }
@@ -269,16 +266,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.preferencesStore.setDensity(density)
             self.render(state: self.store.state)
         }
+        settingsWindow.onButtonWidthChanged = { [weak self] buttonWidth in
+            guard let self else { return }
+            self.preferencesStore.setButtonWidth(buttonWidth)
+            self.render(state: self.store.state)
+        }
+        settingsWindow.onOverflowBehaviorChanged = { [weak self] behavior in
+            guard let self else { return }
+            self.preferencesStore.setOverflowBehavior(behavior)
+            self.render(state: self.store.state)
+        }
+        settingsWindow.onDisplayModeChanged = { [weak self] mode in
+            guard let self else { return }
+            self.preferencesStore.setDisplayMode(mode)
+            self.render(state: self.store.state)
+        }
         settingsWindow.onApplications = { [weak self] in
             self?.showApplicationsWindow()
         }
-        settingsWindow.onDone = { [weak self] in
-            self?.finishOnboarding()
-        }
-        settingsWindow.onQuit = {
-            NSApp.terminate(nil)
-        }
         settingsWindow.onClosed = { [weak self] in
+            self?.preferencesStore.setOnboardingComplete(true)
             self?.restoreAccessoryActivationPolicy()
         }
         self.settingsWindow = settingsWindow
@@ -344,16 +351,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         }
         refreshPermissionStatus()
-    }
-
-    private func finishOnboarding() {
-        preferencesStore.setOnboardingComplete(true)
-        settingsWindow?.close()
-    }
-
-    private func setShowsWindowTitles(_ shows: Bool) {
-        preferencesStore.setShowsWindowTitles(shows)
-        render(state: store.state)
     }
 
     private func handlePrimaryClick(_ item: TaskbarItem) {

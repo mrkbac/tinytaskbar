@@ -13,12 +13,22 @@ struct PermissionTests {
 
         window.refresh(
             accessibilityTrusted: false,
-            showsWindowTitles: true,
+            preferences: .defaults,
             accessibilityRequestWasMade: false
         )
         window.contentView?.layoutSubtreeIfNeeded()
 
-        #expect(window.contentView?.bounds.size == NSSize(width: 640, height: 535))
+        #expect(window.contentView?.bounds.size == NSSize(width: 620, height: 640))
+        let allSettingsViews = allSubviews(of: window.contentView!)
+        let buttonTitles = allSettingsViews.compactMap { ($0 as? NSButton)?.title }
+        #expect(!buttonTitles.contains("Done"))
+        #expect(!buttonTitles.contains("Quit TinyTaskbar"))
+        #expect(buttonTitles.contains("Manage…"))
+        let labels = allSettingsViews.compactMap { ($0 as? NSTextField)?.stringValue }
+        #expect(labels.contains("General"))
+        #expect(labels.contains("Taskbar"))
+        #expect(labels.contains("Applications"))
+        #expect(allSettingsViews.compactMap { $0 as? NSPopUpButton }.count == 7)
         var pendingViews = window.contentView.map { [$0] } ?? []
         while let view = pendingViews.popLast() {
             #expect(view.frame.origin.x.isFinite)
@@ -50,15 +60,15 @@ struct PermissionTests {
             accessibilityTrusted: true, preferences: preferences,
             accessibilityRequestWasMade: false)
         #expect(
-            allSubviews(of: window.contentView!).compactMap { $0 as? NSButton }
-                .contains { $0.title == "Applications…  1 pinned, 1 excluded" })
+            allSubviews(of: window.contentView!).compactMap { $0 as? NSTextField }
+                .contains { $0.stringValue == "1 pinned, 1 excluded" })
 
         window.refresh(
             accessibilityTrusted: true, preferences: .defaults,
             accessibilityRequestWasMade: false)
         #expect(
-            allSubviews(of: window.contentView!).compactMap { $0 as? NSButton }
-                .contains { $0.title == "Applications…  0 pinned, 0 excluded" })
+            allSubviews(of: window.contentView!).compactMap { $0 as? NSTextField }
+                .contains { $0.stringValue == "No custom rules" })
     }
 
     @Test("Applications management sheet always has an explicit dismissal action")
@@ -103,14 +113,16 @@ struct PermissionTests {
         )
         var activatedItem: TaskbarItem?
         var closedItem: TaskbarItem?
+        var windowCommand: WindowCommand?
         let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
         let panel = TaskbarPanel(
             frame: frame,
             onActivate: { activatedItem = $0 },
-            onClose: { closedItem = $0 }
+            onClose: { closedItem = $0 },
+            onWindowCommand: { windowCommand = $0 }
         )
         defer { panel.close() }
-        panel.update(frame: frame, items: [item], showsWindowTitles: true)
+        update(panel, frame: frame, items: [item])
         panel.contentView?.layoutSubtreeIfNeeded()
 
         var pendingViews = panel.contentView.map { [$0] } ?? []
@@ -123,9 +135,9 @@ struct PermissionTests {
             pendingViews.append(contentsOf: view.subviews)
         }
         guard
-            let closeItem = itemButton?.contextualMenu?.items.first(where: {
-                $0.title == "Close"
-            }),
+            let contextMenu = itemButton?.contextualMenu,
+            let closeItem = contextMenu.items.last,
+            closeItem.title == "Close",
             let action = closeItem.action
         else {
             Issue.record("taskbar Close context command was not rendered")
@@ -134,13 +146,33 @@ struct PermissionTests {
 
         #expect(itemButton?.menu == nil)
         #expect(
-            itemButton?.contextualMenu?.items.map(\.title)
+            contextMenu.items.map(\.title)
                 == [
-                    "Minimize", "Minimize Others", "Close", "Pin Application",
-                    "Never Show This App", "", "Settings…", "Quit TinyTaskbar",
+                    "Minimize", "Minimize All", "Minimize Others", "", "TinyTaskbar", "",
+                    "Close",
                 ])
-        #expect(itemButton?.contextualMenu?.items[3].isEnabled == false)
-        #expect(itemButton?.contextualMenu?.items[4].isEnabled == false)
+        let tinyTaskbarItems = contextMenu.items[4].submenu?.items
+        #expect(
+            tinyTaskbarItems?.map(\.title)
+                == [
+                    "Pin Application", "Never Show This App", "", "Settings…",
+                    "Quit TinyTaskbar",
+                ])
+        #expect(tinyTaskbarItems?[0].isEnabled == false)
+        #expect(tinyTaskbarItems?[1].isEnabled == false)
+        #expect(
+            panel.contentView?.menu?.items.map(\.title)
+                == ["TinyTaskbar", "", "Minimize All"])
+        if let minimizeAllItem = panel.contentView?.menu?.items.last,
+            let minimizeAllAction = minimizeAllItem.action
+        {
+            #expect(
+                NSApplication.shared.sendAction(
+                    minimizeAllAction, to: minimizeAllItem.target, from: minimizeAllItem))
+            #expect(windowCommand == .minimizeAll)
+        } else {
+            Issue.record("empty taskbar Minimize All command was not rendered")
+        }
         itemButton?.performClick(nil)
         #expect(activatedItem?.id == item.id)
         #expect(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
@@ -156,7 +188,7 @@ struct PermissionTests {
 
         let first = makeTaskbarItem(id: "first", title: "First")
         let second = makeTaskbarItem(id: "second", title: "Second")
-        panel.update(frame: frame, items: [first, second], showsWindowTitles: true)
+        update(panel, frame: frame, items: [first, second])
         panel.contentView?.layoutSubtreeIfNeeded()
 
         let initialButtons = Dictionary(
@@ -172,11 +204,7 @@ struct PermissionTests {
             id: "first", title: "Renamed", isActive: true)
         let minimizedSecond = makeTaskbarItem(
             id: "second", title: "Second", isMinimized: true)
-        panel.update(
-            frame: frame,
-            items: [activeFirst, minimizedSecond],
-            showsWindowTitles: true
-        )
+        update(panel, frame: frame, items: [activeFirst, minimizedSecond])
         panel.contentView?.layoutSubtreeIfNeeded()
 
         let updatedButtons = Dictionary(
@@ -191,23 +219,86 @@ struct PermissionTests {
         #expect(ObjectIdentifier(updatedFirst) == ObjectIdentifier(initialFirst))
         #expect(ObjectIdentifier(updatedSecond) == ObjectIdentifier(initialSecond))
         #expect(updatedFirst.title == "Renamed")
-        #expect(updatedFirst.toolTip == activeFirst.tooltip)
+        #expect(updatedFirst.toolTip == nil)
+        #expect(updatedFirst.onHoverChanged != nil)
+        updatedFirst.updateTrackingAreas()
+        #expect(!updatedFirst.trackingAreas.isEmpty)
         #expect(updatedFirst.accessibilityLabel() == activeFirst.accessibilityLabel)
         #expect(updatedFirst.alphaValue == 1)
         #expect(abs(updatedSecond.alphaValue - 0.65) < 0.001)
+        #expect(updatedFirst.presentsActiveFocus)
+        #expect(!updatedSecond.presentsActiveFocus)
+        #expect(updatedFirst.layer?.cornerRadius == 6)
+        #expect(updatedFirst.layer?.borderWidth == 1)
+        #expect(updatedSecond.layer?.borderWidth == 0)
         #expect(updatedFirst.contextualMenu === initialFirst.contextualMenu)
         #expect(
             updatedFirst.contextualMenu?.items.first?.representedObject as? String
                 == activeFirst.id)
 
-        panel.update(frame: frame, items: [activeFirst, minimizedSecond], showsWindowTitles: false)
+        update(
+            panel,
+            frame: frame,
+            items: [activeFirst, minimizedSecond],
+            labelMode: .applicationName)
         panel.contentView?.layoutSubtreeIfNeeded()
         #expect(
-            updatedFirst.minimumWidthConstraint?.constant
-                == TaskbarButtonLayout.titleOffMinimumWidth)
-        #expect(
-            updatedFirst.maximumWidthConstraint?.constant
+            updatedFirst.widthConstraint?.constant
                 == TaskbarButtonLayout.titleOffMaximumWidth)
+    }
+
+    @Test("focus and title changes never change taskbar button widths or positions")
+    @MainActor
+    func focusStylingDoesNotReflowTaskbar() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        let first = makeTaskbarItem(id: "first", title: "First")
+        let second = makeTaskbarItem(id: "second", title: "Second")
+        update(panel, frame: frame, items: [first, second])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let initialFrames = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+
+        update(
+            panel,
+            frame: frame,
+            items: [
+                makeTaskbarItem(id: "first", title: "First", isActive: true),
+                second,
+            ])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let firstFocusFrames = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+
+        update(
+            panel,
+            frame: frame,
+            items: [
+                first,
+                makeTaskbarItem(id: "second", title: "Second", isActive: true),
+            ])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let secondFocusFrames = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+
+        update(
+            panel,
+            frame: frame,
+            items: [
+                makeTaskbarItem(
+                    id: "first",
+                    title: "A much longer document title that must truncate in place"),
+                makeTaskbarItem(id: "second", title: "Second", isActive: true),
+            ])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let changedTitleFrames = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+
+        #expect(firstFocusFrames == initialFrames)
+        #expect(secondFocusFrames == initialFrames)
+        #expect(changedTitleFrames == initialFrames)
     }
 
     @Test("taskbar reconciliation removes stale items, adds new items, and follows requested order")
@@ -220,17 +311,13 @@ struct PermissionTests {
         let first = makeTaskbarItem(id: "first")
         let second = makeTaskbarItem(id: "second")
         let third = makeTaskbarItem(id: "third")
-        panel.update(frame: frame, items: [first, second, third], showsWindowTitles: true)
+        update(panel, frame: frame, items: [first, second, third])
         panel.contentView?.layoutSubtreeIfNeeded()
         let initialButtons = Dictionary(
             uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0) })
 
         let replacement = makeTaskbarItem(id: "replacement")
-        panel.update(
-            frame: frame,
-            items: [third, first, replacement],
-            showsWindowTitles: true
-        )
+        update(panel, frame: frame, items: [third, first, replacement])
         panel.contentView?.layoutSubtreeIfNeeded()
         let reconciledButtons = taskbarButtons(in: panel)
 
@@ -256,11 +343,7 @@ struct PermissionTests {
         let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
         defer { panel.close() }
 
-        panel.update(
-            frame: frame,
-            items: [makeTaskbarItem(id: "geometry")],
-            showsWindowTitles: true
-        )
+        update(panel, frame: frame, items: [makeTaskbarItem(id: "geometry")])
         panel.contentView?.layoutSubtreeIfNeeded()
 
         guard let contentView = panel.contentView,
@@ -275,6 +358,7 @@ struct PermissionTests {
 
         let buttonFrame = contentView.convert(button.bounds, from: button)
         #expect(buttonFrame.isFiniteGeometry)
+        #expect(buttonFrame.minX >= TaskbarPanelLayout.contentLeadingInset)
         #expect(buttonFrame.minY >= contentView.bounds.minY)
         #expect(buttonFrame.maxY <= separator.frame.minY)
         #expect(separator.frame.isFiniteGeometry)
@@ -296,11 +380,7 @@ struct PermissionTests {
         let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
         defer { panel.close() }
 
-        panel.update(
-            frame: frame,
-            items: [makeTaskbarItem(id: "midpoint")],
-            showsWindowTitles: true
-        )
+        update(panel, frame: frame, items: [makeTaskbarItem(id: "midpoint")])
         panel.orderFrontRegardless()
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.contentView?.displayIfNeeded()
@@ -340,11 +420,7 @@ struct PermissionTests {
         let panel = TaskbarPanel(frame: zeroFrame, onActivate: { _ in }, onClose: { _ in })
         defer { panel.close() }
 
-        panel.update(
-            frame: frame,
-            items: [makeTaskbarItem(id: "first-pass")],
-            showsWindowTitles: true
-        )
+        update(panel, frame: frame, items: [makeTaskbarItem(id: "first-pass")])
         panel.contentView?.layoutSubtreeIfNeeded()
 
         guard let contentView = panel.contentView,
@@ -398,12 +474,17 @@ struct PermissionTests {
         #expect(store.values == .defaults)
 
         store.setOnboardingComplete(true)
-        store.setShowsWindowTitles(false)
+        store.setLabelMode(.applicationName)
+        store.setButtonWidth(.wide)
+        store.setOverflowBehavior(.automaticIcons)
 
         let reloaded = TinyTaskbarPreferencesStore(defaults: defaults)
-        #expect(
-            reloaded.values
-                == TinyTaskbarPreferences(onboardingComplete: true, showsWindowTitles: false))
+        var expected = TinyTaskbarPreferences.defaults
+        expected.onboardingComplete = true
+        expected.labelMode = .applicationName
+        expected.buttonWidth = .wide
+        expected.overflowBehavior = .automaticIcons
+        #expect(reloaded.values == expected)
     }
 
     @Test("title preference hides only the compact button title")
@@ -418,10 +499,66 @@ struct PermissionTests {
             isActive: false
         )
 
-        #expect(item.buttonTitle(showsWindowTitles: true) == "Project.swift")
-        #expect(item.buttonTitle(showsWindowTitles: false) == "Editor")
+        #expect(item.buttonTitle(labelMode: .windowTitle) == "Project.swift")
+        #expect(item.buttonTitle(labelMode: .applicationName) == "Editor")
         #expect(item.accessibilityLabel == "Editor, Project.swift")
         #expect(item.tooltip == "Activate Editor: Project.swift")
+    }
+
+    @Test("hover card preserves the full title and application identity")
+    @MainActor
+    func hoverCardShowsFullTitle() {
+        let title = String(repeating: "A very long document title ", count: 12)
+        let icon = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
+        let controller = TaskbarHoverCardViewController(
+            applicationName: "Editor",
+            title: title,
+            icon: icon
+        )
+        controller.loadView()
+
+        #expect(controller.titleLabel.stringValue == title)
+        #expect(controller.titleLabel.maximumNumberOfLines == 0)
+        #expect(controller.titleLabel.lineBreakMode == .byCharWrapping)
+        #expect(controller.applicationLabel.stringValue == "Editor")
+        #expect(!controller.applicationLabel.isHidden)
+        #expect(controller.iconView.image != nil)
+        #expect(
+            controller.preferredContentSize.width
+                <= TaskbarHoverCardViewController.padding * 2
+                + TaskbarHoverCardViewController.iconSize
+                + TaskbarHoverCardViewController.spacing
+                + TaskbarHoverCardViewController.maximumTextWidth)
+        #expect(controller.preferredContentSize.height > 44)
+    }
+
+    @Test("hover tracking emits balanced enter and exit events")
+    @MainActor
+    func hoverTrackingEvents() {
+        let button = TaskbarHoverButton(title: "Window", target: nil, action: nil)
+        var states: [Bool] = []
+        button.onHoverChanged = { _, hovering in states.append(hovering) }
+        guard
+            let cgEvent = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: .zero,
+                mouseButton: .left),
+            let event = NSEvent(cgEvent: cgEvent)
+        else {
+            Issue.record("could not construct hover fixture")
+            return
+        }
+
+        button.mouseEntered(with: event)
+        button.mouseEntered(with: event)
+        button.mouseExited(with: event)
+        button.mouseExited(with: event)
+
+        #expect(states == [true, false])
+        #expect(!button.isPointerInside)
+        #expect(button.acceptsFirstMouse(for: nil))
+        #expect(TaskbarHoverPresenter.popoverBehavior == .applicationDefined)
     }
 
     @Test("middle click emits exactly one semantic close command")
@@ -438,7 +575,7 @@ struct PermissionTests {
                 if case .close(let closed) = command, closed.id == item.id { closeCount += 1 }
             })
         defer { panel.close() }
-        panel.update(frame: frame, items: [item], showsWindowTitles: true)
+        update(panel, frame: frame, items: [item])
         panel.contentView?.layoutSubtreeIfNeeded()
         guard let button = taskbarButtons(in: panel).first,
             let cgEvent = CGEvent(
@@ -517,6 +654,61 @@ struct PermissionTests {
         #expect(provider.activatedItemIDs == ["target"])
     }
 
+    @Test("minimize all affects every eligible visible window")
+    @MainActor
+    func minimizeAllScope() {
+        let displays = [
+            DisplayDescriptor(
+                identifier: "left", frame: CGRect(x: 0, y: 0, width: 1000, height: 800)),
+            DisplayDescriptor(
+                identifier: "right", frame: CGRect(x: 1000, y: 0, width: 1000, height: 800)),
+        ]
+        let candidates = [
+            WindowCandidate(
+                stableKey: "left", pid: 10, applicationName: "Left",
+                applicationIdentity: "com.example.Left", title: "Left",
+                frame: CGRect(x: 10, y: 10, width: 300, height: 300)),
+            WindowCandidate(
+                stableKey: "right", pid: 11, applicationName: "Right",
+                applicationIdentity: "com.example.Right", title: "Right",
+                frame: CGRect(x: 1100, y: 10, width: 300, height: 300)),
+            WindowCandidate(
+                stableKey: "excluded", pid: 12, applicationName: "Excluded",
+                applicationIdentity: "com.example.Excluded", title: "Excluded",
+                frame: CGRect(x: 350, y: 10, width: 300, height: 300)),
+            WindowCandidate(
+                stableKey: "minimized", pid: 13, applicationName: "Minimized",
+                applicationIdentity: "com.example.Minimized", title: "Minimized",
+                frame: CGRect(x: 400, y: 400, width: 300, height: 300), isMinimized: true),
+            WindowCandidate(
+                stableKey: "hidden", pid: 14, applicationName: "Hidden",
+                applicationIdentity: "com.example.Hidden", applicationIsHidden: true,
+                title: "Hidden", frame: CGRect(x: 1_450, y: 400, width: 300, height: 300)),
+        ]
+        let cgWindows = candidates.filter { !$0.isMinimized }.enumerated().map {
+            index, candidate in
+            CGWindowMetadata(
+                windowNumber: UInt32(index + 1), ownerPID: candidate.pid,
+                bounds: candidate.frame!, title: candidate.title)
+        }
+        let provider = MockWindowSnapshotProvider(
+            snapshot: RawWindowSnapshot(
+                candidates: candidates,
+                cgWindows: cgWindows,
+                displays: displays,
+                frontmostPID: 10))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+
+        store.execute(
+            .minimizeAll,
+            excludingApplicationIdentities: ["com.example.Excluded"])
+
+        #expect(provider.minimizedItemIDs == ["left", "right"])
+        #expect(provider.activatedItemIDs.isEmpty)
+    }
+
     @Test("closed pinned launcher uses primary click and retained context commands")
     @MainActor
     func pinnedLauncherInteractions() {
@@ -550,8 +742,13 @@ struct PermissionTests {
         #expect(
             launcher.contextualMenu?.items.map(\.title)
                 == [
-                    "Open", "Unpin Application", "Never Show This App", "",
-                    "Settings…", "Quit TinyTaskbar",
+                    "Open", "", "TinyTaskbar",
+                ])
+        #expect(
+            launcher.contextualMenu?.items[2].submenu?.items.map(\.title)
+                == [
+                    "Unpin Application", "Never Show This App", "", "Settings…",
+                    "Quit TinyTaskbar",
                 ])
         launcher.performClick(nil)
         #expect(launched == app)
@@ -585,6 +782,60 @@ struct PermissionTests {
         #expect(buttonFrame.maxY <= contentView.bounds.maxY)
         #expect(scrollView.hasHorizontalScroller == false)
         #expect(scrollView.horizontalScroller == nil)
+    }
+
+    @Test("taskbar shrinks labels before scrolling and can switch to icons")
+    @MainActor
+    func taskbarOverflowPresentation() {
+        let items = (0..<5).map { makeTaskbarItem(id: "overflow-\($0)") }
+        let panel = TaskbarPanel(
+            frame: NSRect(x: 0, y: 0, width: 700, height: 30),
+            onActivate: { _ in },
+            onClose: { _ in })
+        defer { panel.close() }
+        var preferences = TinyTaskbarPreferences.defaults
+
+        panel.update(
+            frame: NSRect(x: 0, y: 0, width: 700, height: 30),
+            entries: items.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        var buttons = taskbarButtons(in: panel)
+        let roomyScrollView = allSubviews(of: panel.contentView!).compactMap { $0 as? NSScrollView }
+            .first
+        #expect(buttons.count == 5)
+        #expect(buttons.allSatisfy { $0.frame.width < 180 && $0.frame.width >= 110 })
+        #expect(
+            (roomyScrollView?.documentView?.frame.width ?? .greatestFiniteMagnitude)
+                <= (roomyScrollView?.contentView.bounds.width ?? 0) + 1)
+
+        let narrowFrame = NSRect(x: 0, y: 0, width: 480, height: 30)
+        panel.update(
+            frame: narrowFrame,
+            entries: items.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        buttons = taskbarButtons(in: panel)
+        let scrollingView = allSubviews(of: panel.contentView!).compactMap { $0 as? NSScrollView }
+            .first
+        #expect(buttons.allSatisfy { abs($0.frame.width - 110) <= 1 })
+        #expect(
+            (scrollingView?.documentView?.frame.width ?? 0)
+                > (scrollingView?.contentView.bounds.width ?? .greatestFiniteMagnitude))
+
+        preferences.overflowBehavior = .automaticIcons
+        panel.update(
+            frame: narrowFrame,
+            entries: items.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        buttons = taskbarButtons(in: panel)
+        let iconScrollView = allSubviews(of: panel.contentView!).compactMap { $0 as? NSScrollView }
+            .first
+        #expect(buttons.allSatisfy { $0.title.isEmpty && abs($0.frame.width - 32) <= 1 })
+        #expect(
+            (iconScrollView?.documentView?.frame.width ?? .greatestFiniteMagnitude)
+                <= (iconScrollView?.contentView.bounds.width ?? 0) + 1)
     }
 
     @Test("maximized windows are constrained above the taskbar and restored when hidden")
@@ -846,8 +1097,8 @@ struct PermissionTests {
         #expect(resolved.itemsByDisplay["main"]?.map(\.id) == ["first", "middle", "last"])
     }
 
-    @Test("authoritative hidden and absent evidence removes items promptly")
-    func authoritativeRemovalEvidence() {
+    @Test("hidden windows remain actionable while confirmed absence removes items")
+    func hiddenRetentionAndAuthoritativeRemoval() {
         let display = DisplayDescriptor(
             identifier: "main",
             frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
@@ -860,6 +1111,7 @@ struct PermissionTests {
             stableKey: "hidden",
             pid: 10,
             applicationName: "Hidden",
+            applicationIsHidden: true,
             title: "Hidden",
             frame: CGRect(x: 100, y: 100, width: 500, height: 300),
             isHidden: true
@@ -884,7 +1136,9 @@ struct PermissionTests {
             incoming: emptyState,
             snapshot: hiddenSnapshot
         )
-        #expect(hiddenResult.itemsByDisplay.isEmpty)
+        #expect(hiddenResult.itemsByDisplay["main"]?.map(\.id) == ["hidden"])
+        #expect(hiddenResult.itemsByDisplay["main"]?.first?.isHidden == true)
+        #expect(hiddenResult.itemsByDisplay["main"]?.first?.tooltip == "Show Hidden: Hidden")
 
         let closedItem = TaskbarItem(
             id: "closed", pid: 11, applicationName: "Closed", title: "Closed",
@@ -1024,6 +1278,148 @@ struct PermissionTests {
         #expect(resolved.itemsByDisplay["right"]?.map(\.id) == ["moving"])
         #expect(resolved.itemsByDisplay.values.joined().map(\.id) == ["moving"])
         #expect(resolved.itemsByDisplay["right"]?.first == rightItem)
+    }
+
+    @Test("AX identity turnover replaces stale aliases of the same CG window")
+    func axIdentityTurnoverDoesNotDuplicateWindows() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let staleItems = ["old-1", "old-2"].map { id in
+            TaskbarItem(
+                id: id,
+                pid: 10,
+                applicationName: "Editor",
+                title: "Document",
+                displayIdentifier: "main",
+                cgWindowNumber: 42,
+                stableOrderKey: id,
+                isActive: false
+            )
+        }
+        let currentItem = TaskbarItem(
+            id: "current",
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            displayIdentifier: "main",
+            cgWindowNumber: 42,
+            stableOrderKey: "current",
+            isActive: true
+        )
+        let currentCandidate = WindowCandidate(
+            stableKey: "current",
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: frame,
+            isFocused: true,
+            isMain: true
+        )
+        let snapshot = RawWindowSnapshot(
+            candidates: [currentCandidate],
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 42,
+                    ownerPID: 10,
+                    bounds: frame,
+                    title: "Document"
+                )
+            ],
+            displays: [display],
+            frontmostPID: 10,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["current"]
+            )
+        )
+
+        let resolved = TaskbarStateContinuity().resolve(
+            previous: TaskbarState(
+                displays: [display],
+                itemsByDisplay: ["main": staleItems]
+            ),
+            incoming: TaskbarState(
+                displays: [display],
+                itemsByDisplay: ["main": [currentItem]]
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(resolved.itemsByDisplay["main"] == [currentItem])
+    }
+
+    @Test("minimizing a native tab group retains only the physically observed tab")
+    func minimizedNativeTabSiblingsDoNotBecomeTaskbarItems() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let selectedItem = TaskbarItem(
+            id: "selected-tab",
+            pid: 10,
+            applicationName: "Terminal",
+            title: "Selected",
+            displayIdentifier: "main",
+            cgWindowNumber: 42,
+            stableOrderKey: "selected-tab",
+            isMinimized: false,
+            isActive: false
+        )
+        let candidates = [
+            WindowCandidate(
+                stableKey: "selected-tab",
+                pid: 10,
+                applicationName: "Terminal",
+                title: "Selected",
+                frame: frame,
+                isMinimized: true
+            ),
+            WindowCandidate(
+                stableKey: "background-tab",
+                pid: 10,
+                applicationName: "Terminal",
+                title: "Background",
+                frame: frame,
+                isMinimized: true
+            ),
+        ]
+        let snapshot = RawWindowSnapshot(
+            candidates: candidates,
+            cgWindows: [],
+            displays: [display],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [10],
+                axWindowListReadPIDs: [10],
+                observedAXWindowIDs: ["selected-tab", "background-tab"]
+            )
+        )
+
+        let resolved = TaskbarStateContinuity().resolve(
+            previous: TaskbarState(
+                displays: [display],
+                itemsByDisplay: ["main": [selectedItem]]
+            ),
+            incoming: WindowProjection.project(
+                candidates: candidates,
+                cgWindows: [],
+                displays: [display],
+                selfPID: 999
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(resolved.itemsByDisplay["main"]?.count == 1)
+        #expect(resolved.itemsByDisplay["main"]?.first?.id == "selected-tab")
+        #expect(resolved.itemsByDisplay["main"]?.first?.cgWindowNumber == 42)
+        #expect(resolved.itemsByDisplay["main"]?.first?.isMinimized == true)
     }
 
     @Test("active Space refresh removes AX-only items from the prior Space")
@@ -1269,6 +1665,28 @@ struct PermissionTests {
         #expect(provider.activationCount == 1)
     }
 
+    @Test("primary click follows physical identity through AX identity turnover")
+    @MainActor
+    func primaryClickSurvivesIdentityTurnover() {
+        let provider = MockWindowSnapshotProvider(
+            snapshot: identitySnapshot(stableKey: "old-identity"))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+
+        guard let oldItem = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("old fixture identity was not projected")
+            return
+        }
+        provider.snapshotValue = identitySnapshot(stableKey: "new-identity")
+
+        store.performPrimaryClick(oldItem, activeWindowBehavior: .minimize)
+
+        #expect(provider.activatedItemIDs == ["new-identity"])
+        #expect(store.state.itemsByDisplay["main"]?.map(\.id) == ["new-identity"])
+    }
+
     @Test("injected Accessibility provider exposes trust and request calls")
     @MainActor
     func accessibilityProviderSeam() {
@@ -1300,6 +1718,36 @@ struct PermissionTests {
             ],
             displays: [fixtureDisplay],
             frontmostPID: isActive ? fixturePID : nil
+        )
+    }
+
+    private func identitySnapshot(stableKey: String) -> RawWindowSnapshot {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let candidate = WindowCandidate(
+            stableKey: stableKey,
+            cgWindowNumber: 77,
+            pid: fixturePID,
+            applicationName: "Fixture",
+            title: "Document",
+            frame: frame
+        )
+        return RawWindowSnapshot(
+            candidates: [candidate],
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 77,
+                    ownerPID: fixturePID,
+                    bounds: frame,
+                    title: candidate.title)
+            ],
+            displays: [fixtureDisplay],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [fixturePID],
+                axWindowListReadPIDs: [fixturePID],
+                observedAXWindowIDs: [stableKey]
+            )
         )
     }
 
@@ -1355,6 +1803,21 @@ struct PermissionTests {
             isMinimized: isMinimized,
             isActive: isActive
         )
+    }
+
+    @MainActor
+    private func update(
+        _ panel: TaskbarPanel,
+        frame: NSRect,
+        items: [TaskbarItem],
+        labelMode: TaskbarLabelMode = .windowTitle
+    ) {
+        var preferences = TinyTaskbarPreferences.defaults
+        preferences.labelMode = labelMode
+        panel.update(
+            frame: frame,
+            entries: items.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
     }
 
     @MainActor

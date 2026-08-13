@@ -83,8 +83,10 @@ final class ApplicationsManagementWindow: NSWindow {
             scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 24),
-            contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -24),
+            contentStack.leadingAnchor.constraint(
+                equalTo: documentView.leadingAnchor, constant: 24),
+            contentStack.trailingAnchor.constraint(
+                equalTo: documentView.trailingAnchor, constant: -24),
             contentStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 22),
             contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -22),
         ])
@@ -130,7 +132,8 @@ final class ApplicationsManagementWindow: NSWindow {
         }
         for record in records {
             let icon = NSImageView()
-            icon.image = record.bundlePath.map { NSWorkspace.shared.icon(forFile: $0) }
+            icon.image =
+                record.bundlePath.map { NSWorkspace.shared.icon(forFile: $0) }
                 ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)
             icon.imageScaling = .scaleProportionallyDown
             icon.widthAnchor.constraint(equalToConstant: 24).isActive = true

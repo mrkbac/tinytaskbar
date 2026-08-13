@@ -2,27 +2,31 @@
 
 TinyTaskbar is a small, native macOS 26 utility that keeps a compact taskbar over
 the bottom of each connected display. Each item represents one eligible window
-reported by Accessibility and matched to a current on-screen Core Graphics window.
+reported by Accessibility and matched to a Core Graphics window. Normal windows
+must be on-screen; exactly identified minimized windows and previously observed
+windows from hidden applications remain available.
 Clicking an item activates, focuses, and raises its owning window.
 
 The executable is an `LSUIElement` AppKit application with no Dock icon during
 normal taskbar operation, no helper, updater, analytics, thumbnail capture, or
 third-party runtime dependency. It includes one small native onboarding/settings
 window for Accessibility, launch-at-login, click behavior, ordering, labels,
-density, and application lists; there is no SwiftUI or general-purpose settings
-framework.
+button width, overflow behavior, bar size, multi-display behavior, and application
+lists; there is no SwiftUI or general-purpose settings framework.
 
 A permanent native menu-bar item can show or hide all taskbars, open Settings, or
 quit even when Accessibility access is unavailable. Taskbar visibility is not
-persisted. Window buttons support explicit restore/minimize, Option-click
-Minimize Others on the same display, middle-click semantic Close, and complete
-native context menus. Applications can be pinned as icon-only launchers or excluded
+persisted. Window buttons support explicit restore/minimize, Minimize All across the
+current Space, Option-click Minimize Others on the same display, middle-click semantic
+Close, and complete native context menus. Frequently used window actions stay in the
+main menu with Close at its bottom edge; TinyTaskbar preferences and Quit are isolated
+in a submenu. Applications can be pinned as icon-only launchers or excluded
 by stable identity; both lists are managed from the Applications sheet.
 
 While Settings is visible, the app temporarily uses the regular activation policy so
 WindowServer will present the normal window; macOS may show a Dock icon during that
-interval. Closing Settings with X or Done restores accessory mode and removes the
-temporary Dock presence.
+interval. Closing Settings restores accessory mode and removes the temporary Dock
+presence.
 
 ## Build and test
 
@@ -36,13 +40,14 @@ pre-commit run --all-files
 bash scripts/test-build-app-rollback.sh
 ```
 
-The local package tests cover eligibility, malformed input isolation, conservative
-Core Graphics matching, one-to-one AX/CG assignment and activation keys, display
+The local package tests cover eligibility, malformed input isolation, exact minimized
+and hidden window identity, conservative Core Graphics matching, one-to-one AX/CG assignment and activation keys, display
 intersection/tie/fallback mapping, Dock-aware panel frames, stable ordering,
 deduplication, lifecycle transitions including open/move/minimize/restore/close,
 preference migration and corruption recovery, pin/exclusion conflicts, grouped
 ordering, launchers, pointer command scope, compact/icon-only geometry, injected
-permission/window providers, and the 120-window projection path. They do
+permission/window providers, shrink-before-scroll overflow, automatic icon-only
+fallback, multi-display presentation policies, and the 120-window projection path. They do
 not replace tests on a real multi-display,
 Spaces, fullscreen, or Stage Manager session.
 
@@ -115,28 +120,37 @@ retained native onboarding/settings window and activates only that explicit wind
 The Accessibility button calls `AXIsProcessTrustedWithOptions` only after the user
 chooses it, opens Privacy & Security → Accessibility, and updates the status when
 the app becomes active again. Closing the window keeps the process and taskbars
-running; Done records onboarding completion. If access is denied, it remains
-running without taskbars and does not automatically request TCC access.
+running without taskbars and does not automatically request TCC access. Closing the
+window records onboarding completion without quitting the utility.
 
 The same window offers public `SMAppService.mainApp` launch-at-login control and
-small typed preferences for active-window clicks, ordering, labels, and density.
-The legacy Show Window Titles value migrates once to Window Title or Application
-Name. Icon-only mode still retains full accessibility labels, tooltips, and app
-icons. Invalid enum values use retained defaults, while corrupt pin/exclusion
-records are discarded individually.
+small typed preferences for active-window clicks, ordering, labels, button width,
+overflow behavior, bar size, and multi-display behavior.
+Every window button, including icon-only and truncated labels, shows a native hover
+card with its app icon and full wrapping title after a short delay. Full
+accessibility labels remain available independently. Invalid enum values use retained
+defaults, while corrupt pin/exclusion records are discarded individually.
 
 TinyTaskbar does not request Screen Recording. Window titles come from AX; Core
-Graphics is used only for public owner, layer, on-screen, title, and geometry
-metadata. No thumbnails or window content are captured.
+Graphics is used only for owner, layer, on-screen, title, geometry, and numeric
+window metadata. No thumbnails or window content are captured. One deliberately
+isolated private Accessibility bridge, `_AXUIElementGetWindow`, associates an AX
+window with that numeric Core Graphics identity so windows already minimized when
+TinyTaskbar starts can be restored without title/frame guesses. No private Space
+management APIs are used.
 
 ## Important macOS boundaries
 
-The current Space is represented conservatively by the intersection of AX window
-geometry with the public `CGWindowListCopyWindowInfo(.optionOnScreenOnly, ...)`
-list. macOS does not expose a reliable public arbitrary-window Space ID, and the
-deprecated Core Graphics workspace key is intentionally not used. Minimized windows
-remain associated with their last AX geometry so they can be restored; exact
-cross-Space membership is not attempted.
+The current Space is represented conservatively by on-screen records from public
+`CGWindowListCopyWindowInfo(.optionAll, ...)` metadata. Non-minimized off-screen
+records remain excluded unless AX identifies them as minimized. Minimized windows may
+match their exact `_AXUIElementGetWindow` identity in that list, including at cold
+start. Windows from an application hidden after discovery are retained from positive
+prior on-screen evidence; hidden off-screen records are not promoted at cold start.
+macOS
+does not expose a reliable public arbitrary-window Space ID, and the deprecated Core
+Graphics workspace key is intentionally not used; exact cross-Space membership is
+not attempted.
 
 The bar is an overlay because a third-party `NSPanel` cannot reserve screen work
 area like the Dock. When a normal window spans the full native work-area height,
@@ -155,14 +169,18 @@ side Dock trims its horizontal span without changing its vertical position. Ther
 no additional floating outer margin.
 A per-display panel uses public AppKit collection behavior for all Spaces,
 fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
-real-machine behavior still needs validation.
+real-machine behavior still needs validation. Settings can keep windows on their owning
+display, mirror all current-Space windows on every display, or show one taskbar with all
+windows on the main display.
 
 App-provided AX metadata and notifications can be missing or malformed. A failing
 application or window is skipped and revisited on later system events. Hidden
-applications and non-minimized windows not reported on-screen by Core Graphics are
-omitted in v1. Minimized AX windows remain as dimmed taskbar items and restore on
-click. Stage Manager background sets are therefore omitted; fullscreen windows are
-included when Core Graphics reports them on-screen.
+applications remain as dimmed taskbar items and are unhidden before activation.
+Exactly identified minimized windows also appear as dimmed taskbar items and restore
+on click, including after a TinyTaskbar restart; AX-only native tab
+siblings are not promoted through title/frame guesses. Stage Manager background sets
+are therefore omitted; fullscreen windows are included when Core Graphics reports
+them on-screen.
 
 ## Evidence status
 
@@ -180,7 +198,7 @@ multi-monitor/Spaces/fullscreen/Stage Manager behavior, five-minute energy/laten
 traces, Developer ID signing, notarization/stapling, and Gatekeeper on a clean machine
 remain explicitly pending.
 
-The retained-feature implementation has 70 passing automated tests in this checkout.
+The retained-feature implementation has 87 passing automated tests in this checkout.
 Computer QA on its deterministic fixtures verified the expanded context and launcher
 menus, pin/exclude/restore/unpin flows, closed pinned launchers, failed-launch pin
 retention, live Settings summaries, the scrollable Applications sheet, grouped

@@ -25,6 +25,23 @@ enum TaskbarDensity: String, CaseIterable, Codable, Sendable {
     var buttonHeight: CGFloat { self == .standard ? 27 : 23 }
 }
 
+enum TaskbarButtonWidth: String, CaseIterable, Codable, Sendable {
+    case narrow
+    case balanced
+    case wide
+}
+
+enum TaskbarOverflowBehavior: String, CaseIterable, Codable, Sendable {
+    case shrinkThenScroll
+    case automaticIcons
+}
+
+enum TaskbarDisplayMode: String, CaseIterable, Codable, Sendable {
+    case windowDisplay
+    case everyDisplay
+    case mainDisplayOnly
+}
+
 struct ApplicationRecord: Codable, Equatable, Hashable, Sendable, Identifiable {
     let identity: String
     var bundleIdentifier: String?
@@ -76,8 +93,25 @@ enum TaskbarPresentationBuilder {
         let pinnedIdentities = Set(pins.map(\.identity))
         var entriesByDisplay: [String: [TaskbarPresentationEntry]] = [:]
 
-        for display in state.displays {
-            let eligible = (state.itemsByDisplay[display.identifier] ?? []).filter { item in
+        let presentationDisplays: [DisplayDescriptor]
+        switch preferences.displayMode {
+        case .windowDisplay, .everyDisplay:
+            presentationDisplays = state.displays
+        case .mainDisplayOnly:
+            presentationDisplays =
+                state.displays.first(where: \.isMain)
+                .map { [$0] }
+                ?? state.displays.min(by: { $0.ordinal < $1.ordinal }).map { [$0] }
+                ?? []
+        }
+        let allItems = Array(state.itemsByDisplay.values.joined())
+
+        for display in presentationDisplays {
+            let displayItems =
+                preferences.displayMode == .windowDisplay
+                ? (state.itemsByDisplay[display.identifier] ?? [])
+                : allItems
+            let eligible = displayItems.filter { item in
                 guard let identity = item.applicationIdentity else { return true }
                 return !excluded.contains(identity)
             }
@@ -87,7 +121,9 @@ enum TaskbarPresentationBuilder {
                 if windows.isEmpty {
                     pinnedEntries.append(.launcher(pin))
                 } else {
-                    pinnedEntries.append(contentsOf: ordered(windows, mode: preferences.orderingMode).map(TaskbarPresentationEntry.window))
+                    pinnedEntries.append(
+                        contentsOf: ordered(windows, mode: preferences.orderingMode).map(
+                            TaskbarPresentationEntry.window))
                 }
             }
             let remaining = eligible.filter { item in
@@ -102,7 +138,8 @@ enum TaskbarPresentationBuilder {
             entries.append(contentsOf: orderedRemaining.map(TaskbarPresentationEntry.window))
             entriesByDisplay[display.identifier] = entries
         }
-        return TaskbarPresentationState(displays: state.displays, entriesByDisplay: entriesByDisplay)
+        return TaskbarPresentationState(
+            displays: presentationDisplays, entriesByDisplay: entriesByDisplay)
     }
 
     private static func ordered(
@@ -125,6 +162,7 @@ enum TaskbarPresentationBuilder {
 enum WindowCommand: Equatable, Sendable {
     case activate(TaskbarItem)
     case minimize(TaskbarItem)
+    case minimizeAll
     case restore(TaskbarItem)
     case close(TaskbarItem)
     case minimizeOthers(TaskbarItem)

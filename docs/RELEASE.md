@@ -1,8 +1,8 @@
 # Release and validation
 
 TinyTaskbar has repository metadata for source history, but no updater, helper, or
-analytics. Its typed preferences include a one-time compatibility migration from
-the legacy window-title toggle. Its minimal launch-at-login preference uses
+analytics. Its typed preferences use current defaults for absent or invalid values.
+Its minimal launch-at-login preference uses
 `SMAppService.mainApp`; there is no helper or separate login-item target. Version
 and build numbers live in `Resources/Info.plist`:
 

@@ -4,6 +4,21 @@ import CoreGraphics
 import Foundation
 import OSLog
 
+// Accessibility has no supported public AX-to-CG identity bridge. TinyTaskbar uses this
+// single private symbol so already-minimized windows can be joined to their exact public
+// Core Graphics records without title/frame guesses. Keep all Space management on public
+// APIs; this declaration is intentionally isolated for compatibility review.
+@_silgen_name("_AXUIElementGetWindow")
+private func axUIElementGetWindowID(
+    _ element: AXUIElement,
+    _ identifier: UnsafeMutablePointer<CGWindowID>
+) -> AXError
+
+private struct AXPhysicalWindowIdentity: Hashable {
+    let pid: Int32
+    let cgWindowNumber: UInt32
+}
+
 @MainActor
 protocol WindowSnapshotProvider: AnyObject {
     var onChange: (@MainActor @Sendable () -> Void)? { get set }
@@ -188,6 +203,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         CFEqual($0, $1)
     }
     private var axElementsByStableKey: [String: AXUIElement] = [:]
+    private var axElementsByPhysicalIdentity: [AXPhysicalWindowIdentity: AXUIElement] = [:]
 
     var onChange: (@MainActor @Sendable () -> Void)?
 
@@ -206,7 +222,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     func snapshot() -> RawWindowSnapshot {
         identityRegistry.beginSnapshot()
         defer { identityRegistry.endSnapshot() }
-        let cgWindows = CGWindowReader.onScreenWindows()
+        let cgWindows = CGWindowReader.allWindows()
         let displays = DisplayReader.current()
         let applications = NSWorkspace.shared.runningApplications.filter { application in
             application.activationPolicy == .regular && !application.isTerminated
@@ -218,6 +234,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         var applicationInputs: [AXApplicationInput] = []
         var allRecords: [AXWindowRecord] = []
         var nextElements: [String: AXUIElement] = [:]
+        var nextPhysicalElements: [AXPhysicalWindowIdentity: AXUIElement] = [:]
+        var ambiguousPhysicalIdentities: Set<AXPhysicalWindowIdentity> = []
         var axWindowListReadPIDs: Set<Int32> = []
         var observedAXWindowIDs: Set<String> = []
 
@@ -252,7 +270,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         let eligibility = WindowEligibility()
         for (candidateIndex, record) in allRecords.enumerated() {
             let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
-            guard cgWindow != nil || record.candidate.isMinimized,
+            guard
                 eligibility.isEligible(
                     record.candidate,
                     selfPID: ProcessInfo.processInfo.processIdentifier
@@ -265,6 +283,16 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 cgWindow: cgWindow
             )
             nextElements[key] = record.element
+            if let cgWindowNumber = record.candidate.cgWindowNumber {
+                let identity = AXPhysicalWindowIdentity(
+                    pid: record.candidate.pid,
+                    cgWindowNumber: cgWindowNumber)
+                if nextPhysicalElements.removeValue(forKey: identity) != nil {
+                    ambiguousPhysicalIdentities.insert(identity)
+                } else if !ambiguousPhysicalIdentities.contains(identity) {
+                    nextPhysicalElements[identity] = record.element
+                }
+            }
         }
 
         let observerRecords = applicationInputs.map { input in
@@ -288,6 +316,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
         observerRegistry.update(with: observerRecords)
         axElementsByStableKey = nextElements
+        axElementsByPhysicalIdentity = nextPhysicalElements
 
         return RawWindowSnapshot(
             candidates: candidates,
@@ -304,7 +333,13 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func activate(_ item: TaskbarItem) {
-        guard let element = axElementsByStableKey[item.id] else {
+        let application = NSRunningApplication(processIdentifier: item.pid)
+        if application?.isHidden == true, application?.unhide() != true {
+            logger.debug(
+                "Unhide failed pid=\(item.pid, privacy: .public)"
+            )
+        }
+        guard let element = actionableElement(for: item) else {
             logger.debug(
                 "Activation skipped because AX reference is stale for \(item.id, privacy: .public)")
             return
@@ -325,7 +360,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             failures.append("main=\(mainError.rawValue)")
         }
 
-        if let application = NSRunningApplication(processIdentifier: item.pid) {
+        if let application {
             if !application.activate(options: []) {
                 failures.append("activate=false")
             }
@@ -384,7 +419,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func minimize(_ item: TaskbarItem) {
-        guard let element = axElementsByStableKey[item.id] else {
+        guard let element = actionableElement(for: item) else {
             logger.debug(
                 "Minimize skipped because AX reference is stale for \(item.id, privacy: .public)"
             )
@@ -405,7 +440,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func close(_ item: TaskbarItem) {
-        guard let element = axElementsByStableKey[item.id] else {
+        guard let element = actionableElement(for: item) else {
             logger.debug(
                 "Close skipped because AX reference is stale for \(item.id, privacy: .public)")
             return
@@ -431,6 +466,12 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         let pressError = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
         if pressError == .success {
             axElementsByStableKey.removeValue(forKey: item.id)
+            if let cgWindowNumber = item.cgWindowNumber {
+                axElementsByPhysicalIdentity.removeValue(
+                    forKey: AXPhysicalWindowIdentity(
+                        pid: item.pid,
+                        cgWindowNumber: cgWindowNumber))
+            }
         } else {
             logger.debug(
                 "Close action failed pid=\(item.pid, privacy: .public) error=\(pressError.rawValue, privacy: .public)"
@@ -445,7 +486,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     @discardableResult
     func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool {
         guard height.isFinite, height > 0,
-            let element = axElementsByStableKey[item.id]
+            let element = actionableElement(for: item)
         else {
             logger.debug(
                 "Height update skipped because the AX reference or geometry is invalid for \(item.id, privacy: .public)"
@@ -485,6 +526,14 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             )
         }
         return succeeded
+    }
+
+    private func actionableElement(for item: TaskbarItem) -> AXUIElement? {
+        if let exact = axElementsByStableKey[item.id] { return exact }
+        guard let cgWindowNumber = item.cgWindowNumber else { return nil }
+        return axElementsByPhysicalIdentity[
+            AXPhysicalWindowIdentity(pid: item.pid, cgWindowNumber: cgWindowNumber)
+        ]
     }
 }
 
@@ -558,6 +607,10 @@ private final class AXWindowInspector {
         for element in windows {
             let stableKey = stableKeyForElement(element)
             observedWindowIDs.insert(stableKey)
+            var rawWindowNumber = CGWindowID.zero
+            let windowIDError = axUIElementGetWindowID(element, &rawWindowNumber)
+            let cgWindowNumber =
+                windowIDError == .success && rawWindowNumber != 0 ? rawWindowNumber : nil
             var rawValues: CFArray?
             let error = AXUIElementCopyMultipleAttributeValues(
                 element,
@@ -585,6 +638,7 @@ private final class AXWindowInspector {
             let axFrame = CGRect(origin: position, size: size)
             let candidate = WindowCandidate(
                 stableKey: stableKey,
+                cgWindowNumber: cgWindowNumber,
                 pid: application.processIdentifier,
                 applicationName: applicationName,
                 applicationIdentity: applicationIdentity,
@@ -847,10 +901,14 @@ private func axObserverCallback(
 }
 
 enum CGWindowReader {
-    static func onScreenWindows() -> [CGWindowMetadata] {
+    static func allWindows() -> [CGWindowMetadata] {
+        windows(options: [.optionAll, .excludeDesktopElements])
+    }
+
+    private static func windows(options: CGWindowListOption) -> [CGWindowMetadata] {
         guard
             let rawWindows = CGWindowListCopyWindowInfo(
-                [.optionOnScreenOnly, .excludeDesktopElements],
+                options,
                 kCGNullWindowID
             ) as? [[String: Any]]
         else {
@@ -899,7 +957,8 @@ enum DisplayReader {
                 frame: CGDisplayBounds(displayID),
                 appKitFrame: screen.frame,
                 appKitVisibleFrame: screen.visibleFrame,
-                ordinal: ordinal
+                ordinal: ordinal,
+                isMain: displayID == CGMainDisplayID()
             )
         }
     }

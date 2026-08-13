@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// The public metadata that Core Graphics makes available for an on-screen window.
+/// The public metadata that Core Graphics makes available for a window.
 /// Its coordinate system is the Quartz screen space used by AX positions after conversion.
 struct CGWindowMetadata: Equatable, Sendable {
     let windowNumber: UInt32?
@@ -35,13 +35,15 @@ struct DisplayDescriptor: Equatable, Sendable {
     let appKitFrame: CGRect
     let appKitVisibleFrame: CGRect
     let ordinal: Int
+    let isMain: Bool
 
     init(
         identifier: String,
         frame: CGRect,
         appKitFrame: CGRect? = nil,
         appKitVisibleFrame: CGRect? = nil,
-        ordinal: Int = 0
+        ordinal: Int = 0,
+        isMain: Bool = false
     ) {
         self.identifier = identifier
         self.frame = frame
@@ -49,12 +51,14 @@ struct DisplayDescriptor: Equatable, Sendable {
         self.appKitFrame = resolvedAppKitFrame
         self.appKitVisibleFrame = appKitVisibleFrame ?? resolvedAppKitFrame
         self.ordinal = ordinal
+        self.isMain = isMain
     }
 }
 
 /// AX-derived data before it has been matched to the public Core Graphics window list.
 struct WindowCandidate: Equatable, Sendable {
     let stableKey: String?
+    let cgWindowNumber: UInt32?
     let pid: Int32
     let applicationName: String
     let applicationIdentity: String?
@@ -74,6 +78,7 @@ struct WindowCandidate: Equatable, Sendable {
 
     init(
         stableKey: String? = nil,
+        cgWindowNumber: UInt32? = nil,
         pid: Int32,
         applicationName: String,
         applicationIdentity: String? = nil,
@@ -92,6 +97,7 @@ struct WindowCandidate: Equatable, Sendable {
         isMain: Bool = false
     ) {
         self.stableKey = stableKey
+        self.cgWindowNumber = cgWindowNumber
         self.pid = pid
         self.applicationName = applicationName
         self.applicationIdentity = applicationIdentity
@@ -121,6 +127,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let displayIdentifier: String
     let cgWindowNumber: UInt32?
     let stableOrderKey: String?
+    let isHidden: Bool
     let isMinimized: Bool
     let isActive: Bool
 
@@ -134,6 +141,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         displayIdentifier: String,
         cgWindowNumber: UInt32?,
         stableOrderKey: String? = nil,
+        isHidden: Bool = false,
         isMinimized: Bool = false,
         isActive: Bool
     ) {
@@ -146,6 +154,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         self.displayIdentifier = displayIdentifier
         self.cgWindowNumber = cgWindowNumber
         self.stableOrderKey = stableOrderKey
+        self.isHidden = isHidden
         self.isMinimized = isMinimized
         self.isActive = isActive
     }
@@ -162,15 +171,14 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         }
     }
 
-    func buttonTitle(showsWindowTitles: Bool) -> String {
-        buttonTitle(labelMode: showsWindowTitles ? .windowTitle : .applicationName)
-    }
-
     var accessibilityLabel: String {
         "\(applicationName), \(displayTitle)"
     }
 
     var tooltip: String {
+        if isHidden {
+            return "Show \(applicationName): \(displayTitle)"
+        }
         if isActive {
             return "Minimize \(applicationName): \(displayTitle)"
         }
@@ -194,10 +202,11 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
     var orderingMode = TaskbarOrderingMode.windowOrder
     var labelMode = TaskbarLabelMode.windowTitle
     var density = TaskbarDensity.standard
+    var buttonWidth = TaskbarButtonWidth.balanced
+    var overflowBehavior = TaskbarOverflowBehavior.shrinkThenScroll
+    var displayMode = TaskbarDisplayMode.windowDisplay
     var pinnedApplications: [ApplicationRecord] = []
     var excludedApplications: [ApplicationRecord] = []
-
-    var showsWindowTitles: Bool { labelMode == .windowTitle }
 
     init(
         onboardingComplete: Bool = false,
@@ -205,6 +214,9 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
         orderingMode: TaskbarOrderingMode = .windowOrder,
         labelMode: TaskbarLabelMode = .windowTitle,
         density: TaskbarDensity = .standard,
+        buttonWidth: TaskbarButtonWidth = .balanced,
+        overflowBehavior: TaskbarOverflowBehavior = .shrinkThenScroll,
+        displayMode: TaskbarDisplayMode = .windowDisplay,
         pinnedApplications: [ApplicationRecord] = [],
         excludedApplications: [ApplicationRecord] = []
     ) {
@@ -213,15 +225,11 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
         self.orderingMode = orderingMode
         self.labelMode = labelMode
         self.density = density
+        self.buttonWidth = buttonWidth
+        self.overflowBehavior = overflowBehavior
+        self.displayMode = displayMode
         self.pinnedApplications = pinnedApplications
         self.excludedApplications = excludedApplications
-    }
-
-    init(onboardingComplete: Bool, showsWindowTitles: Bool) {
-        self.init(
-            onboardingComplete: onboardingComplete,
-            labelMode: showsWindowTitles ? .windowTitle : .applicationName
-        )
     }
 
     static let defaults = TinyTaskbarPreferences()
@@ -261,10 +269,9 @@ struct WindowEligibility: Sendable {
         guard candidate.pid != selfPID,
             candidate.applicationIsRunning,
             candidate.applicationIsRegular,
-            !candidate.applicationIsHidden,
             candidate.role == "AXWindow",
             candidate.subrole == "AXStandardWindow" || candidate.subrole == "AXDialog",
-            !candidate.isHidden,
+            !candidate.isHidden || candidate.applicationIsHidden,
             let frame = candidate.frame,
             frame.width >= minimumSize.width,
             frame.height >= minimumSize.height,
@@ -289,7 +296,8 @@ enum CGWindowMatcher {
     static func matchIndex(
         candidate: WindowCandidate,
         windows: [CGWindowMetadata],
-        excluding excludedIndices: Set<Int> = []
+        excluding excludedIndices: Set<Int> = [],
+        allowOffScreen: Bool = false
     ) -> Int? {
         guard let frame = candidate.frame, frame.isFiniteGeometry else { return nil }
 
@@ -299,11 +307,18 @@ enum CGWindowMatcher {
                 return !excludedIndices.contains(index)
                     && window.ownerPID == candidate.pid
                     && window.layer == 0
-                    && window.isOnScreen
+                    && (allowOffScreen || window.isOnScreen)
                     && window.bounds.isFiniteGeometry
             }
             .sorted { preferredWindow(windows[$0], windows[$1]) }
         guard !base.isEmpty else { return nil }
+
+        if let cgWindowNumber = candidate.cgWindowNumber {
+            let identityMatches = base.filter {
+                windows[$0].windowNumber == cgWindowNumber
+            }
+            return identityMatches.count == 1 ? identityMatches[0] : nil
+        }
 
         let boundsMatches = base.filter {
             approximatelyEqual(windows[$0].bounds, frame, tolerance: boundsTolerance)
@@ -374,6 +389,7 @@ enum TaskbarPanelLayout {
     static let defaultBottomInset: CGFloat = 0
     static let topSeparatorHeight: CGFloat = 1
     static let contentVerticalInset: CGFloat = 1
+    static let contentLeadingInset: CGFloat = 6
     static let topSeparatorIdentifier = "TinyTaskbar.TaskbarPanel.topSeparator"
 
     static var contentHeight: CGFloat {
@@ -467,28 +483,100 @@ enum TaskbarButtonLayout {
     static let titleOnMaximumWidth: CGFloat = 180
     static let titleOffMaximumWidth: CGFloat = 150
 
-    static func widthRange(showsWindowTitles: Bool) -> ClosedRange<CGFloat> {
-        if showsWindowTitles {
-            return titleOnMinimumWidth...titleOnMaximumWidth
-        }
-        return titleOffMinimumWidth...titleOffMaximumWidth
-    }
-
     static func widthRange(
         labelMode: TaskbarLabelMode,
-        density: TaskbarDensity
+        density: TaskbarDensity,
+        buttonWidth: TaskbarButtonWidth = .balanced
     ) -> ClosedRange<CGFloat> {
         let range: ClosedRange<CGFloat>
         switch labelMode {
         case .windowTitle:
-            range = titleOnMinimumWidth...titleOnMaximumWidth
+            switch buttonWidth {
+            case .narrow: range = 92...148
+            case .balanced: range = titleOnMinimumWidth...titleOnMaximumWidth
+            case .wide: range = 128...220
+            }
         case .applicationName:
-            range = titleOffMinimumWidth...titleOffMaximumWidth
+            switch buttonWidth {
+            case .narrow: range = 60...120
+            case .balanced: range = titleOffMinimumWidth...titleOffMaximumWidth
+            case .wide: range = 88...184
+            }
         case .iconOnly:
             range = 32...32
         }
         guard density == .compact else { return range }
         return max(28, range.lowerBound - 8)...max(28, range.upperBound - 12)
+    }
+
+    static func preferredWidth(
+        labelMode: TaskbarLabelMode,
+        density: TaskbarDensity,
+        buttonWidth: TaskbarButtonWidth = .balanced
+    ) -> CGFloat {
+        widthRange(
+            labelMode: labelMode,
+            density: density,
+            buttonWidth: buttonWidth
+        ).upperBound
+    }
+}
+
+struct TaskbarOverflowLayout: Equatable, Sendable {
+    let labelMode: TaskbarLabelMode
+    let windowWidth: CGFloat
+    let contentWidth: CGFloat
+    let requiresScrolling: Bool
+
+    static func resolve(
+        viewportWidth: CGFloat,
+        windowCount: Int,
+        fixedContentWidth: CGFloat,
+        requestedLabelMode: TaskbarLabelMode,
+        density: TaskbarDensity,
+        buttonWidth: TaskbarButtonWidth,
+        behavior: TaskbarOverflowBehavior
+    ) -> TaskbarOverflowLayout {
+        let viewportWidth = max(0, viewportWidth)
+        let fixedContentWidth = max(0, fixedContentWidth)
+        guard windowCount > 0 else {
+            return TaskbarOverflowLayout(
+                labelMode: requestedLabelMode,
+                windowWidth: 0,
+                contentWidth: fixedContentWidth,
+                requiresScrolling: fixedContentWidth > viewportWidth
+            )
+        }
+
+        let requestedRange = TaskbarButtonLayout.widthRange(
+            labelMode: requestedLabelMode,
+            density: density,
+            buttonWidth: buttonWidth
+        )
+        let availableWindowWidth = max(0, viewportWidth - fixedContentWidth)
+        let requestedMinimumWidth = requestedRange.lowerBound * CGFloat(windowCount)
+        let shouldUseIcons =
+            behavior == .automaticIcons
+            && requestedLabelMode != .iconOnly
+            && requestedMinimumWidth > availableWindowWidth
+        let effectiveLabelMode: TaskbarLabelMode = shouldUseIcons ? .iconOnly : requestedLabelMode
+        let effectiveRange = TaskbarButtonLayout.widthRange(
+            labelMode: effectiveLabelMode,
+            density: density,
+            buttonWidth: buttonWidth
+        )
+        let availablePerWindow = availableWindowWidth / CGFloat(windowCount)
+        let resolvedWindowWidth = min(
+            effectiveRange.upperBound,
+            max(effectiveRange.lowerBound, availablePerWindow)
+        )
+        let contentWidth = fixedContentWidth + resolvedWindowWidth * CGFloat(windowCount)
+        return TaskbarOverflowLayout(
+            labelMode: effectiveLabelMode,
+            windowWidth: resolvedWindowWidth,
+            contentWidth: contentWidth,
+            requiresScrolling: contentWidth > viewportWidth + 0.5
+        )
     }
 }
 
@@ -671,8 +759,7 @@ enum WindowCGAssignment {
         var usedCGWindowIndices = Set<Int>()
         let orderedCandidateIndices = candidates.indices
             .filter {
-                !candidates[$0].isMinimized
-                    && eligibility.isEligible(candidates[$0], selfPID: selfPID)
+                eligibility.isEligible(candidates[$0], selfPID: selfPID)
             }
             .sorted { WindowCandidateOrdering.preferred(candidates[$0], candidates[$1]) }
 
@@ -681,7 +768,10 @@ enum WindowCGAssignment {
                 let cgWindowIndex = CGWindowMatcher.matchIndex(
                     candidate: candidates[candidateIndex],
                     windows: cgWindows,
-                    excluding: usedCGWindowIndices
+                    excluding: usedCGWindowIndices,
+                    allowOffScreen: (candidates[candidateIndex].isMinimized
+                        || candidates[candidateIndex].applicationIsHidden)
+                        && candidates[candidateIndex].cgWindowNumber != nil
                 )
             else {
                 continue
@@ -720,8 +810,16 @@ enum WindowProjection {
                 continue
             }
 
-            let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
-            guard cgWindow != nil || candidate.isMinimized else { continue }
+            // Only project windows with physical-window evidence. Normal windows must
+            // be on-screen; minimized windows may use their exact AX-derived CG window
+            // number to match an off-screen `.optionAll` record. AX-only minimized
+            // candidates remain excluded, so ambiguous tab siblings are never admitted
+            // through title/frame guesses alone. Hidden applications are retained by
+            // continuity only after their windows were physically observed on-screen;
+            // admitting every hidden off-screen record would also admit background tabs.
+            guard let cgWindowIndex = assignments[candidateIndex] else { continue }
+            let cgWindow = cgWindows[cgWindowIndex]
+            guard cgWindow.isOnScreen || candidate.isMinimized else { continue }
 
             let id =
                 WindowObservationKey.itemKey(
@@ -729,7 +827,8 @@ enum WindowProjection {
                     cgWindow: cgWindow
                 )
             let isActive =
-                !candidate.isMinimized && frontmostPID == candidate.pid
+                !candidate.isMinimized && !candidate.applicationIsHidden
+                && frontmostPID == candidate.pid
                 && (candidate.isFocused || candidate.isMain)
             projected.append(
                 TaskbarItem(
@@ -740,8 +839,9 @@ enum WindowProjection {
                     applicationBundlePath: candidate.applicationBundlePath,
                     title: candidate.title,
                     displayIdentifier: displayIdentifier,
-                    cgWindowNumber: cgWindow?.windowNumber,
+                    cgWindowNumber: cgWindow.windowNumber,
                     stableOrderKey: candidate.stableKey,
+                    isHidden: candidate.applicationIsHidden,
                     isMinimized: candidate.isMinimized,
                     isActive: isActive
                 )

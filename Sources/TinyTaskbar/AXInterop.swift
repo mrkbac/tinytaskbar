@@ -199,6 +199,23 @@ struct WindowElementIdentityRegistry<Element> {
 }
 
 @MainActor
+enum NativeTabSelectionSequence {
+    @discardableResult
+    static func perform(
+        activateGroup: () -> Void,
+        pressTab: () -> AXError,
+        refresh: () -> Void
+    ) -> AXError {
+        activateGroup()
+        let error = pressTab()
+        if error == .success {
+            refresh()
+        }
+        return error
+    }
+}
+
+@MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
     private lazy var inspector = AXWindowInspector(logger: logger)
@@ -468,13 +485,18 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             activate(item)
             return
         }
-        let pressError = AXUIElementPerformAction(tabElement, kAXPressAction as CFString)
+        let pressError = NativeTabSelectionSequence.perform(
+            activateGroup: { activate(item) },
+            pressTab: {
+                AXUIElementPerformAction(tabElement, kAXPressAction as CFString)
+            },
+            refresh: { onChange?(.ordinary) }
+        )
         if pressError != .success {
             logger.debug(
                 "Tab selection failed pid=\(item.pid, privacy: .public) error=\(pressError.rawValue, privacy: .public)"
             )
         }
-        activate(item)
     }
 
     func minimize(_ item: TaskbarItem) {

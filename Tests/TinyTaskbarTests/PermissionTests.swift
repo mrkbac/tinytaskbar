@@ -631,6 +631,24 @@ struct PermissionTests {
         #expect(selectedTab == tabs[1])
     }
 
+    @Test("native tab selection focuses the group before pressing the requested tab")
+    @MainActor
+    func nativeTabSelectionOrder() {
+        var events: [String] = []
+
+        let error = NativeTabSelectionSequence.perform(
+            activateGroup: { events.append("activate") },
+            pressTab: {
+                events.append("press")
+                return .success
+            },
+            refresh: { events.append("refresh") }
+        )
+
+        #expect(error == .success)
+        #expect(events == ["activate", "press", "refresh"])
+    }
+
     @Test("hover tracking emits balanced enter and exit events")
     @MainActor
     func hoverTrackingEvents() {

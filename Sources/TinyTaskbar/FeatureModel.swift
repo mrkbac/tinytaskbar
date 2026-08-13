@@ -171,9 +171,12 @@ enum WindowCommand: Equatable, Sendable {
     case selectTab(TaskbarItem, TaskbarTab)
     case closeTab(TaskbarItem, TaskbarTab)
     case closeTabGroup(TaskbarItem)
-    case closeApplication(TaskbarItem)
     case close(TaskbarItem)
     case minimizeOthers(TaskbarItem)
+
+    static func closePreview(for item: TaskbarItem) -> Self {
+        item.nativeTabs.count > 1 ? .closeTabGroup(item) : .close(item)
+    }
 }
 
 enum ApplicationCommand: Equatable, Sendable {

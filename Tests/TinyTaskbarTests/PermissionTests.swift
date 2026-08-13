@@ -18,17 +18,12 @@ struct PermissionTests {
         )
         window.contentView?.layoutSubtreeIfNeeded()
 
-        #expect(window.contentView?.bounds.size == NSSize(width: 620, height: 640))
-        let allSettingsViews = allSubviews(of: window.contentView!)
-        let buttonTitles = allSettingsViews.compactMap { ($0 as? NSButton)?.title }
-        #expect(!buttonTitles.contains("Done"))
-        #expect(!buttonTitles.contains("Quit TinyTaskbar"))
-        #expect(buttonTitles.contains("Manage…"))
-        let labels = allSettingsViews.compactMap { ($0 as? NSTextField)?.stringValue }
-        #expect(labels.contains("General"))
-        #expect(labels.contains("Taskbar"))
-        #expect(labels.contains("Applications"))
-        #expect(allSettingsViews.compactMap { $0 as? NSPopUpButton }.count == 7)
+        #expect(window.contentView?.bounds.size == NSSize(width: 800, height: 600))
+        let splitController = window.contentViewController as? NSSplitViewController
+        #expect(splitController?.splitViewItems.count == 2)
+        #expect(splitController?.splitViewItems.first?.minimumThickness == 215)
+        #expect(splitController?.splitViewItems.first?.maximumThickness == 215)
+        #expect(splitController?.splitViewItems.first?.canCollapse == false)
         var pendingViews = window.contentView.map { [$0] } ?? []
         while let view = pendingViews.popLast() {
             #expect(view.frame.origin.x.isFinite)
@@ -39,6 +34,36 @@ struct PermissionTests {
             #expect(view.frame.height >= 0)
             pendingViews.append(contentsOf: view.subviews)
         }
+    }
+
+    @Test("Settings navigation selects exactly one content section")
+    @MainActor
+    func settingsNavigationChangesSections() {
+        let window = TinyTaskbarSettingsWindow()
+        defer { window.close() }
+
+        #expect(window.selectedSection == .general)
+        window.selectSection(.appearance)
+        #expect(window.selectedSection == .appearance)
+        #expect(window.title == "Appearance")
+    }
+
+    @Test("Settings form changes update the model and route callbacks")
+    @MainActor
+    func settingsFormChangesRouteCallbacks() {
+        let model = TinyTaskbarSettingsModel()
+        var receivedOrdering: TaskbarOrderingMode?
+        var receivedDensity: TaskbarDensity?
+        model.onOrderingChanged = { receivedOrdering = $0 }
+        model.onDensityChanged = { receivedDensity = $0 }
+
+        model.setOrdering(.groupByApplication)
+        model.setDensity(.compact)
+
+        #expect(model.preferences.orderingMode == .groupByApplication)
+        #expect(model.preferences.density == .compact)
+        #expect(receivedOrdering == .groupByApplication)
+        #expect(receivedDensity == .compact)
     }
 
     @Test("Settings application summary follows refreshed preferences")
@@ -59,16 +84,12 @@ struct PermissionTests {
         window.refresh(
             accessibilityTrusted: true, preferences: preferences,
             accessibilityRequestWasMade: false)
-        #expect(
-            allSubviews(of: window.contentView!).compactMap { $0 as? NSTextField }
-                .contains { $0.stringValue == "1 pinned, 1 excluded" })
+        #expect(window.applicationsSummary == "1 pinned, 1 excluded")
 
         window.refresh(
             accessibilityTrusted: true, preferences: .defaults,
             accessibilityRequestWasMade: false)
-        #expect(
-            allSubviews(of: window.contentView!).compactMap { $0 as? NSTextField }
-                .contains { $0.stringValue == "No custom rules" })
+        #expect(window.applicationsSummary == "No custom rules")
     }
 
     @Test("Applications management sheet always has an explicit dismissal action")

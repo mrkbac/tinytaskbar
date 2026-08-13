@@ -3,6 +3,7 @@ import ApplicationServices
 import Foundation
 import OSLog
 import ServiceManagement
+import SwiftUI
 
 struct RefreshMetrics: Equatable, Sendable {
     fileprivate(set) var refreshCount = 0
@@ -994,10 +995,40 @@ private struct DynamicCodingKey: CodingKey {
     }
 }
 
-@MainActor
-final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
-    private static let fixedContentSize = NSSize(width: 620, height: 640)
+enum TinyTaskbarSettingsSection: Int, CaseIterable, Hashable, Sendable {
+    case general
+    case behavior
+    case appearance
+    case applications
 
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .behavior: "Behavior"
+        case .appearance: "Appearance"
+        case .applications: "Applications"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .general: "gearshape"
+        case .behavior: "cursorarrow.click"
+        case .appearance: "paintbrush"
+        case .applications: "square.grid.2x2"
+        }
+    }
+}
+
+@MainActor
+final class TinyTaskbarSettingsModel: ObservableObject {
+    @Published private(set) var selectedSection = TinyTaskbarSettingsSection.general
+    @Published private(set) var accessibilityTrusted = false
+    @Published private(set) var accessibilityRequestWasMade = false
+    @Published private(set) var preferences = TinyTaskbarPreferences.defaults
+    @Published private(set) var launchAtLoginError: String?
+
+    var onSelectedSectionChanged: (@MainActor (TinyTaskbarSettingsSection) -> Void)?
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)?
     var onOrderingChanged: (@MainActor (TaskbarOrderingMode) -> Void)?
@@ -1007,64 +1038,391 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     var onOverflowBehaviorChanged: (@MainActor (TaskbarOverflowBehavior) -> Void)?
     var onDisplayModeChanged: (@MainActor (TaskbarDisplayMode) -> Void)?
     var onApplications: (@MainActor () -> Void)?
+
+    private let launchAtLoginService = SMAppService.mainApp
+
+    var applicationsSummary: String {
+        let pinnedCount = preferences.pinnedApplications.count
+        let excludedCount = preferences.excludedApplications.count
+        return pinnedCount == 0 && excludedCount == 0
+            ? "No custom rules"
+            : "\(pinnedCount) pinned, \(excludedCount) excluded"
+    }
+
+    var launchAtLoginEnabled: Bool {
+        launchAtLoginService.status == .enabled || launchAtLoginService.status == .requiresApproval
+    }
+
+    var launchAtLoginAvailable: Bool {
+        launchAtLoginService.status == .enabled || launchAtLoginService.status == .notRegistered
+    }
+
+    var launchAtLoginStatus: String? {
+        if let launchAtLoginError { return launchAtLoginError }
+        switch launchAtLoginService.status {
+        case .enabled, .notRegistered: return nil
+        case .requiresApproval: return "Approval required in System Settings"
+        case .notFound: return "Unavailable for this app bundle"
+        @unknown default: return "Unavailable"
+        }
+    }
+
+    func refresh(
+        accessibilityTrusted: Bool,
+        preferences: TinyTaskbarPreferences,
+        accessibilityRequestWasMade: Bool
+    ) {
+        self.accessibilityTrusted = accessibilityTrusted
+        self.preferences = preferences
+        self.accessibilityRequestWasMade = accessibilityRequestWasMade
+        launchAtLoginError = nil
+    }
+
+    func select(_ section: TinyTaskbarSettingsSection) {
+        guard selectedSection != section else { return }
+        selectedSection = section
+        onSelectedSectionChanged?(section)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try launchAtLoginService.register()
+            } else {
+                try launchAtLoginService.unregister()
+            }
+            launchAtLoginError = nil
+            objectWillChange.send()
+        } catch {
+            launchAtLoginError = "Could not update: \(error.localizedDescription)"
+        }
+    }
+
+    func setActiveWindowClick(_ value: ActiveWindowClickBehavior) {
+        preferences.activeWindowClickBehavior = value
+        onActiveWindowClickChanged?(value)
+    }
+
+    func setOrdering(_ value: TaskbarOrderingMode) {
+        preferences.orderingMode = value
+        onOrderingChanged?(value)
+    }
+
+    func setLabelMode(_ value: TaskbarLabelMode) {
+        preferences.labelMode = value
+        onLabelModeChanged?(value)
+    }
+
+    func setDensity(_ value: TaskbarDensity) {
+        preferences.density = value
+        onDensityChanged?(value)
+    }
+
+    func setButtonWidth(_ value: TaskbarButtonWidth) {
+        preferences.buttonWidth = value
+        onButtonWidthChanged?(value)
+    }
+
+    func setOverflowBehavior(_ value: TaskbarOverflowBehavior) {
+        preferences.overflowBehavior = value
+        onOverflowBehaviorChanged?(value)
+    }
+
+    func setDisplayMode(_ value: TaskbarDisplayMode) {
+        preferences.displayMode = value
+        onDisplayModeChanged?(value)
+    }
+}
+
+private struct TinyTaskbarSettingsSidebar: View {
+    @ObservedObject var model: TinyTaskbarSettingsModel
+
+    var body: some View {
+        List(selection: selection) {
+            Section("TinyTaskbar") {
+                ForEach(TinyTaskbarSettingsSection.allCases, id: \.self) { section in
+                    Label(section.title, systemImage: section.systemImageName)
+                        .tag(section)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private var selection: Binding<TinyTaskbarSettingsSection?> {
+        Binding(
+            get: { model.selectedSection },
+            set: { if let section = $0 { model.select(section) } })
+    }
+}
+
+private struct TinyTaskbarSettingsDetail: View {
+    @ObservedObject var model: TinyTaskbarSettingsModel
+
+    var body: some View {
+        Group {
+            switch model.selectedSection {
+            case .general: general
+            case .behavior: behavior
+            case .appearance: appearance
+            case .applications: applications
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var general: some View {
+        Form {
+            Section("Permissions") {
+                LabeledContent {
+                    HStack {
+                        Text(model.accessibilityTrusted ? "Granted" : "Required")
+                            .foregroundStyle(model.accessibilityTrusted ? .green : .secondary)
+                        Button(model.accessibilityButtonTitle) {
+                            model.onAccessibilityRequest?()
+                        }
+                    }
+                } label: {
+                    Text("Accessibility")
+                    Text("Required to discover, focus, and manage windows.")
+                }
+            }
+            Section {
+                Toggle(
+                    isOn: Binding(
+                        get: { model.launchAtLoginEnabled },
+                        set: { model.setLaunchAtLogin($0) }
+                    )
+                ) {
+                    Text("Launch at Login")
+                    Text("Start TinyTaskbar automatically when you sign in.")
+                }
+                .disabled(!model.launchAtLoginAvailable)
+            } header: {
+                Text("Startup")
+            } footer: {
+                if let status = model.launchAtLoginStatus {
+                    Text(status)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var behavior: some View {
+        Form {
+            Section("Windows") {
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.activeWindowClickBehavior },
+                        set: { model.setActiveWindowClick($0) }
+                    )
+                ) {
+                    Text("Minimize").tag(ActiveWindowClickBehavior.minimize)
+                    Text("Do Nothing").tag(ActiveWindowClickBehavior.doNothing)
+                } label: {
+                    Text("Active Window Click")
+                    Text("Choose what happens when you click the focused window.")
+                }
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.orderingMode },
+                        set: { model.setOrdering($0) }
+                    )
+                ) {
+                    Text("Window Order").tag(TaskbarOrderingMode.windowOrder)
+                    Text("Group by Application").tag(TaskbarOrderingMode.groupByApplication)
+                } label: {
+                    Text("Ordering")
+                    Text("Keep a stable window order or group windows by application.")
+                }
+            }
+            Section("Displays") {
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.displayMode },
+                        set: { model.setDisplayMode($0) }
+                    )
+                ) {
+                    Text("Window's Display").tag(TaskbarDisplayMode.windowDisplay)
+                    Text("Every Display").tag(TaskbarDisplayMode.everyDisplay)
+                    Text("Main Display Only").tag(TaskbarDisplayMode.mainDisplayOnly)
+                } label: {
+                    Text("Multiple Displays")
+                    Text("Choose where taskbars appear and which windows they contain.")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var appearance: some View {
+        Form {
+            Section("Taskbar") {
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.labelMode },
+                        set: { model.setLabelMode($0) }
+                    )
+                ) {
+                    Text("Window Title").tag(TaskbarLabelMode.windowTitle)
+                    Text("Application Name").tag(TaskbarLabelMode.applicationName)
+                    Text("Icon Only").tag(TaskbarLabelMode.iconOnly)
+                } label: {
+                    Text("Labels")
+                    Text("Choose the text shown beside each application icon.")
+                }
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.buttonWidth },
+                        set: { model.setButtonWidth($0) }
+                    )
+                ) {
+                    Text("Narrow").tag(TaskbarButtonWidth.narrow)
+                    Text("Balanced").tag(TaskbarButtonWidth.balanced)
+                    Text("Wide").tag(TaskbarButtonWidth.wide)
+                } label: {
+                    Text("Button Width")
+                    Text("Set the preferred width used before the taskbar compresses.")
+                }
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.overflowBehavior },
+                        set: { model.setOverflowBehavior($0) }
+                    )
+                ) {
+                    Text("Shrink, Then Scroll").tag(TaskbarOverflowBehavior.shrinkThenScroll)
+                    Text("Switch to Icons").tag(TaskbarOverflowBehavior.automaticIcons)
+                } label: {
+                    Text("When Space Runs Out")
+                    Text("Shrink labels and scroll, or temporarily switch to icons.")
+                }
+                Picker(
+                    selection: Binding(
+                        get: { model.preferences.density },
+                        set: { model.setDensity($0) }
+                    )
+                ) {
+                    Text("Standard").tag(TaskbarDensity.standard)
+                    Text("Compact").tag(TaskbarDensity.compact)
+                } label: {
+                    Text("Bar Size")
+                    Text("Use the standard 30-point bar or a compact 26-point bar.")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var applications: some View {
+        Form {
+            Section {
+                LabeledContent {
+                    Button("Manage…") { model.onApplications?() }
+                } label: {
+                    Text("Pinned & Excluded")
+                    Text("Manage pinned launchers and applications that never appear.")
+                }
+            } header: {
+                Text("Applications")
+            } footer: {
+                Text(model.applicationsSummary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+extension TinyTaskbarSettingsModel {
+    fileprivate var accessibilityButtonTitle: String {
+        accessibilityTrusted || accessibilityRequestWasMade
+            ? "Open System Settings…"
+            : "Enable Accessibility…"
+    }
+}
+
+@MainActor
+final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
+    private static let fixedContentSize = NSSize(width: 800, height: 600)
+    private static let sidebarWidth: CGFloat = 215
+
+    var onAccessibilityRequest: (@MainActor () -> Void)? {
+        didSet { model.onAccessibilityRequest = onAccessibilityRequest }
+    }
+    var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)? {
+        didSet { model.onActiveWindowClickChanged = onActiveWindowClickChanged }
+    }
+    var onOrderingChanged: (@MainActor (TaskbarOrderingMode) -> Void)? {
+        didSet { model.onOrderingChanged = onOrderingChanged }
+    }
+    var onLabelModeChanged: (@MainActor (TaskbarLabelMode) -> Void)? {
+        didSet { model.onLabelModeChanged = onLabelModeChanged }
+    }
+    var onDensityChanged: (@MainActor (TaskbarDensity) -> Void)? {
+        didSet { model.onDensityChanged = onDensityChanged }
+    }
+    var onButtonWidthChanged: (@MainActor (TaskbarButtonWidth) -> Void)? {
+        didSet { model.onButtonWidthChanged = onButtonWidthChanged }
+    }
+    var onOverflowBehaviorChanged: (@MainActor (TaskbarOverflowBehavior) -> Void)? {
+        didSet { model.onOverflowBehaviorChanged = onOverflowBehaviorChanged }
+    }
+    var onDisplayModeChanged: (@MainActor (TaskbarDisplayMode) -> Void)? {
+        didSet { model.onDisplayModeChanged = onDisplayModeChanged }
+    }
+    var onApplications: (@MainActor () -> Void)? {
+        didSet { model.onApplications = onApplications }
+    }
     var onClosed: (@MainActor () -> Void)?
 
-    private let accessibilityStatusLabel: NSTextField
-    private let accessibilityButton: NSButton
-    private let launchAtLoginSwitch: NSSwitch
-    private let launchAtLoginStatusLabel: NSTextField
-    private let activeWindowClickPopUp: NSPopUpButton
-    private let orderingPopUp: NSPopUpButton
-    private let labelModePopUp: NSPopUpButton
-    private let densityPopUp: NSPopUpButton
-    private let buttonWidthPopUp: NSPopUpButton
-    private let overflowBehaviorPopUp: NSPopUpButton
-    private let displayModePopUp: NSPopUpButton
-    private let applicationsStatusLabel: NSTextField
-    private let applicationsButton: NSButton
-    private let launchAtLoginService: SMAppService
+    private let model = TinyTaskbarSettingsModel()
+    var selectedSection: TinyTaskbarSettingsSection { model.selectedSection }
+    var applicationsSummary: String { model.applicationsSummary }
 
     init() {
-        accessibilityStatusLabel = NSTextField(labelWithString: "Required")
-        accessibilityButton = NSButton(
-            title: "Enable Accessibility…", target: nil, action: nil)
-        launchAtLoginSwitch = NSSwitch()
-        launchAtLoginStatusLabel = NSTextField(wrappingLabelWithString: "Off")
-        activeWindowClickPopUp = NSPopUpButton()
-        orderingPopUp = NSPopUpButton()
-        labelModePopUp = NSPopUpButton()
-        densityPopUp = NSPopUpButton()
-        buttonWidthPopUp = NSPopUpButton()
-        overflowBehaviorPopUp = NSPopUpButton()
-        displayModePopUp = NSPopUpButton()
-        applicationsStatusLabel = NSTextField(labelWithString: "No custom rules")
-        applicationsButton = NSButton(title: "Manage…", target: nil, action: nil)
-        launchAtLoginService = SMAppService.mainApp
-
         super.init(
             contentRect: NSRect(origin: .zero, size: Self.fixedContentSize),
             styleMask: [.titled, .closable],
             backing: .buffered,
-            defer: false
-        )
+            defer: false)
 
-        let fixedContentView = NSView(
-            frame: NSRect(origin: .zero, size: Self.fixedContentSize))
-        fixedContentView.autoresizingMask = [.width, .height]
-        contentView = fixedContentView
-
-        title = "TinyTaskbar"
+        title = model.selectedSection.title
         isReleasedWhenClosed = false
         isMovableByWindowBackground = false
         level = .normal
         collectionBehavior = [.moveToActiveSpace]
         hidesOnDeactivate = false
+        toolbarStyle = .unified
+        titlebarSeparatorStyle = .none
         delegate = self
-        setupInterface()
-        contentView?.layoutSubtreeIfNeeded()
+
+        let splitController = NSSplitViewController()
+        let sidebarItem = NSSplitViewItem(
+            sidebarWithViewController: NSHostingController(
+                rootView: TinyTaskbarSettingsSidebar(model: model)))
+        sidebarItem.minimumThickness = Self.sidebarWidth
+        sidebarItem.maximumThickness = Self.sidebarWidth
+        sidebarItem.canCollapse = false
+        let detailItem = NSSplitViewItem(
+            viewController: NSHostingController(
+                rootView: TinyTaskbarSettingsDetail(model: model)))
+        detailItem.minimumThickness = 480
+        splitController.addSplitViewItem(sidebarItem)
+        splitController.addSplitViewItem(detailItem)
+        contentViewController = splitController
+
+        let toolbar = NSToolbar(identifier: "TinyTaskbarSettingsToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.allowsDisplayModeCustomization = false
+        self.toolbar = toolbar
+
+        model.onSelectedSectionChanged = { [weak self] section in
+            self?.title = section.title
+        }
         contentMinSize = Self.fixedContentSize
         contentMaxSize = Self.fixedContentSize
-        setContentSize(Self.fixedContentSize)
         restoreFixedContentSize()
     }
 
@@ -1077,35 +1435,14 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         preferences: TinyTaskbarPreferences,
         accessibilityRequestWasMade: Bool
     ) {
-        accessibilityStatusLabel.stringValue = accessibilityTrusted ? "Granted" : "Required"
-        accessibilityStatusLabel.textColor =
-            accessibilityTrusted
-            ? .systemGreen
-            : .secondaryLabelColor
-        accessibilityButton.title =
-            accessibilityTrusted || accessibilityRequestWasMade
-            ? "Open Accessibility Settings…"
-            : "Enable Accessibility…"
-        accessibilityButton.setAccessibilityLabel(accessibilityButton.title)
-        activeWindowClickPopUp.selectItem(
-            at: preferences.activeWindowClickBehavior == .minimize ? 0 : 1)
-        orderingPopUp.selectItem(at: preferences.orderingMode == .windowOrder ? 0 : 1)
-        labelModePopUp.selectItem(
-            at: TaskbarLabelMode.allCases.firstIndex(of: preferences.labelMode) ?? 0)
-        densityPopUp.selectItem(at: preferences.density == .standard ? 0 : 1)
-        buttonWidthPopUp.selectItem(
-            at: TaskbarButtonWidth.allCases.firstIndex(of: preferences.buttonWidth) ?? 1)
-        overflowBehaviorPopUp.selectItem(
-            at: TaskbarOverflowBehavior.allCases.firstIndex(of: preferences.overflowBehavior) ?? 0)
-        displayModePopUp.selectItem(
-            at: TaskbarDisplayMode.allCases.firstIndex(of: preferences.displayMode) ?? 0)
-        let pinnedCount = preferences.pinnedApplications.count
-        let excludedCount = preferences.excludedApplications.count
-        applicationsStatusLabel.stringValue =
-            pinnedCount == 0 && excludedCount == 0
-            ? "No custom rules"
-            : "\(pinnedCount) pinned, \(excludedCount) excluded"
-        refreshLaunchAtLoginStatus()
+        model.refresh(
+            accessibilityTrusted: accessibilityTrusted,
+            preferences: preferences,
+            accessibilityRequestWasMade: accessibilityRequestWasMade)
+    }
+
+    func selectSection(_ section: TinyTaskbarSettingsSection) {
+        model.select(section)
     }
 
     func restoreFixedContentSize() {
@@ -1113,8 +1450,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         let targetFrameSize = frameRect(forContentRect: contentRect).size
         setFrame(
             NSRect(origin: frame.origin, size: targetFrameSize),
-            display: isVisible
-        )
+            display: isVisible)
         contentView?.frame = contentRect
     }
 
@@ -1123,299 +1459,12 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         NSApp.deactivate()
     }
 
-    private func setupInterface() {
-        accessibilityButton.bezelStyle = .rounded
-        accessibilityButton.target = self
-        accessibilityButton.action = #selector(accessibilityButtonPressed)
-        accessibilityButton.setAccessibilityLabel("Enable Accessibility")
-
-        launchAtLoginSwitch.target = self
-        launchAtLoginSwitch.action = #selector(launchAtLoginChanged(_:))
-        launchAtLoginSwitch.setAccessibilityLabel("Launch TinyTaskbar at login")
-        launchAtLoginStatusLabel.maximumNumberOfLines = 2
-        launchAtLoginStatusLabel.lineBreakMode = .byWordWrapping
-        launchAtLoginStatusLabel.setContentCompressionResistancePriority(
-            .required, for: .horizontal)
-        launchAtLoginStatusLabel.widthAnchor.constraint(equalToConstant: 190).isActive = true
-
-        configure(
-            activeWindowClickPopUp,
-            titles: ["Minimize", "Do Nothing"],
-            action: #selector(activeWindowClickChanged(_:)),
-            accessibilityLabel: "Active window click")
-        configure(
-            orderingPopUp,
-            titles: ["Window Order", "Group by Application"],
-            action: #selector(orderingChanged(_:)),
-            accessibilityLabel: "Window ordering")
-        configure(
-            labelModePopUp,
-            titles: ["Window Title", "Application Name", "Icon Only"],
-            action: #selector(labelModeChanged(_:)),
-            accessibilityLabel: "Button labels")
-        configure(
-            densityPopUp,
-            titles: ["Standard", "Compact"],
-            action: #selector(densityChanged(_:)),
-            accessibilityLabel: "Bar size")
-        configure(
-            buttonWidthPopUp,
-            titles: ["Narrow", "Balanced", "Wide"],
-            action: #selector(buttonWidthChanged(_:)),
-            accessibilityLabel: "Button width")
-        configure(
-            overflowBehaviorPopUp,
-            titles: ["Shrink, Then Scroll", "Switch to Icons"],
-            action: #selector(overflowBehaviorChanged(_:)),
-            accessibilityLabel: "Overflow behavior")
-        configure(
-            displayModePopUp,
-            titles: ["Window's Display", "Every Display", "Main Display Only"],
-            action: #selector(displayModeChanged(_:)),
-            accessibilityLabel: "Multiple display behavior")
-        applicationsButton.target = self
-        applicationsButton.action = #selector(applicationsPressed)
-        applicationsStatusLabel.textColor = .secondaryLabelColor
-
-        let accessibilityControls = NSStackView(
-            views: [accessibilityStatusLabel, accessibilityButton])
-        accessibilityControls.alignment = .centerY
-        accessibilityControls.spacing = 10
-        accessibilityControls.setContentHuggingPriority(.required, for: .horizontal)
-        accessibilityControls.setContentCompressionResistancePriority(
-            .required, for: .horizontal)
-        accessibilityButton.setContentHuggingPriority(.required, for: .horizontal)
-        accessibilityButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let accessibilityRow = makeRow(
-            title: "Accessibility",
-            detail: "Required for semantic window discovery and focus/raise.",
-            accessory: accessibilityControls
-        )
-
-        let launchControls = NSStackView(
-            views: [launchAtLoginSwitch, launchAtLoginStatusLabel])
-        launchControls.alignment = .centerY
-        launchControls.spacing = 10
-        launchControls.setContentHuggingPriority(.required, for: .horizontal)
-        launchControls.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let launchRow = makeRow(
-            title: "Launch at Login",
-            detail: "Start TinyTaskbar automatically when you sign in.",
-            accessory: launchControls
-        )
-
-        let activeClickRow = makeRow(
-            title: "Active Window Click",
-            detail: "Choose whether clicking the focused window minimizes it.",
-            accessory: activeWindowClickPopUp)
-        let orderingRow = makeRow(
-            title: "Ordering",
-            detail: "Keep stable window order or group windows by application.",
-            accessory: orderingPopUp)
-        let labelsRow = makeRow(
-            title: "Labels",
-            detail: "Choose the compact text shown beside each application icon.",
-            accessory: labelModePopUp)
-        let buttonWidthRow = makeRow(
-            title: "Button Width",
-            detail: "Set the preferred and minimum width used before scrolling.",
-            accessory: buttonWidthPopUp)
-        let overflowRow = makeRow(
-            title: "When Space Runs Out",
-            detail: "Shrink labels first, then scroll or switch temporarily to icons.",
-            accessory: overflowBehaviorPopUp)
-        let densityRow = makeRow(
-            title: "Bar Size",
-            detail: "Use the standard 30-point taskbar or a compact 26-point taskbar.",
-            accessory: densityPopUp)
-        let displayModeRow = makeRow(
-            title: "Multiple Displays",
-            detail: "Choose where taskbars appear and which windows they contain.",
-            accessory: displayModePopUp)
-        let applicationsControls = NSStackView(
-            views: [applicationsStatusLabel, applicationsButton])
-        applicationsControls.alignment = .centerY
-        applicationsControls.spacing = 10
-        applicationsControls.setContentHuggingPriority(.required, for: .horizontal)
-        let applicationsRow = makeRow(
-            title: "Pinned & Excluded",
-            detail: "Manage pinned launchers and applications that never appear.",
-            accessory: applicationsControls)
-
-        let arrangedRows = [
-            sectionHeader("General"),
-            accessibilityRow,
-            launchRow,
-            activeClickRow,
-            separator(),
-            sectionHeader("Taskbar"),
-            labelsRow,
-            buttonWidthRow,
-            overflowRow,
-            densityRow,
-            orderingRow,
-            displayModeRow,
-            separator(),
-            sectionHeader("Applications"),
-            applicationsRow,
-        ]
-        let stack = NSStackView(views: arrangedRows)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 11
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        guard let contentView else { return }
-        let horizontalInset: CGFloat = 24
-        let topInset: CGFloat = 20
-        let bottomInset: CGFloat = 20
-        contentView.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(
-                equalTo: contentView.leadingAnchor, constant: horizontalInset),
-            stack.trailingAnchor.constraint(
-                equalTo: contentView.trailingAnchor, constant: -horizontalInset),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: topInset),
-            stack.bottomAnchor.constraint(
-                equalTo: contentView.bottomAnchor, constant: -bottomInset),
-        ])
-        for row in arrangedRows {
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
+    func toolbarDefaultItemIdentifiers(_: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.sidebarTrackingSeparator]
     }
 
-    private func sectionHeader(_ title: String) -> NSTextField {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = .labelColor
-        return label
-    }
-
-    private func separator() -> NSBox {
-        let separator = NSBox()
-        separator.boxType = .separator
-        return separator
-    }
-
-    private func configure(
-        _ popUp: NSPopUpButton,
-        titles: [String],
-        action: Selector,
-        accessibilityLabel: String
-    ) {
-        popUp.addItems(withTitles: titles)
-        popUp.target = self
-        popUp.action = action
-        popUp.setAccessibilityLabel(accessibilityLabel)
-        popUp.setContentHuggingPriority(.required, for: .horizontal)
-    }
-
-    private func makeRow(title: String, detail: String, accessory: NSView) -> NSStackView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        titleLabel.alignment = .left
-        let detailLabel = NSTextField(wrappingLabelWithString: detail)
-        detailLabel.maximumNumberOfLines = 0
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.alignment = .left
-
-        let text = NSStackView(views: [titleLabel, detailLabel])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 3
-        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let row = NSStackView(views: [text, accessory])
-        row.alignment = .centerY
-        row.distribution = .fill
-        row.spacing = 16
-        row.setContentCompressionResistancePriority(.required, for: .horizontal)
-        return row
-    }
-
-    private func refreshLaunchAtLoginStatus() {
-        switch launchAtLoginService.status {
-        case .enabled:
-            launchAtLoginSwitch.state = .on
-            launchAtLoginSwitch.isEnabled = true
-            launchAtLoginStatusLabel.stringValue = "On"
-        case .notRegistered:
-            launchAtLoginSwitch.state = .off
-            launchAtLoginSwitch.isEnabled = true
-            launchAtLoginStatusLabel.stringValue = "Off"
-        case .requiresApproval:
-            launchAtLoginSwitch.state = .on
-            launchAtLoginSwitch.isEnabled = false
-            launchAtLoginStatusLabel.stringValue = "Approval required in System Settings"
-        case .notFound:
-            launchAtLoginSwitch.state = .off
-            launchAtLoginSwitch.isEnabled = false
-            launchAtLoginStatusLabel.stringValue = "Unavailable for this app bundle"
-        @unknown default:
-            launchAtLoginSwitch.state = .off
-            launchAtLoginSwitch.isEnabled = false
-            launchAtLoginStatusLabel.stringValue = "Unavailable"
-        }
-        launchAtLoginStatusLabel.textColor = .secondaryLabelColor
-    }
-
-    @objc private func accessibilityButtonPressed() {
-        onAccessibilityRequest?()
-    }
-
-    @objc private func launchAtLoginChanged(_ sender: NSSwitch) {
-        do {
-            if sender.state == .on {
-                try launchAtLoginService.register()
-            } else {
-                try launchAtLoginService.unregister()
-            }
-            refreshLaunchAtLoginStatus()
-        } catch {
-            sender.state = launchAtLoginService.status == .enabled ? .on : .off
-            sender.isEnabled = false
-            launchAtLoginStatusLabel.stringValue =
-                "Could not update: \(error.localizedDescription)"
-            launchAtLoginStatusLabel.textColor = .systemOrange
-        }
-    }
-
-    @objc private func activeWindowClickChanged(_ sender: NSPopUpButton) {
-        onActiveWindowClickChanged?(sender.indexOfSelectedItem == 0 ? .minimize : .doNothing)
-    }
-
-    @objc private func orderingChanged(_ sender: NSPopUpButton) {
-        onOrderingChanged?(sender.indexOfSelectedItem == 0 ? .windowOrder : .groupByApplication)
-    }
-
-    @objc private func labelModeChanged(_ sender: NSPopUpButton) {
-        let index = max(0, min(sender.indexOfSelectedItem, TaskbarLabelMode.allCases.count - 1))
-        onLabelModeChanged?(TaskbarLabelMode.allCases[index])
-    }
-
-    @objc private func densityChanged(_ sender: NSPopUpButton) {
-        onDensityChanged?(sender.indexOfSelectedItem == 0 ? .standard : .compact)
-    }
-
-    @objc private func buttonWidthChanged(_ sender: NSPopUpButton) {
-        let index = max(0, min(sender.indexOfSelectedItem, TaskbarButtonWidth.allCases.count - 1))
-        onButtonWidthChanged?(TaskbarButtonWidth.allCases[index])
-    }
-
-    @objc private func overflowBehaviorChanged(_ sender: NSPopUpButton) {
-        let index = max(
-            0, min(sender.indexOfSelectedItem, TaskbarOverflowBehavior.allCases.count - 1))
-        onOverflowBehaviorChanged?(TaskbarOverflowBehavior.allCases[index])
-    }
-
-    @objc private func displayModeChanged(_ sender: NSPopUpButton) {
-        let index = max(0, min(sender.indexOfSelectedItem, TaskbarDisplayMode.allCases.count - 1))
-        onDisplayModeChanged?(TaskbarDisplayMode.allCases[index])
-    }
-
-    @objc private func applicationsPressed() {
-        onApplications?()
+    func toolbarAllowedItemIdentifiers(_: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.sidebarTrackingSeparator]
     }
 }
 

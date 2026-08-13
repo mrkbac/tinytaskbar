@@ -638,6 +638,7 @@ struct PermissionTests {
 
         let error = NativeTabSelectionSequence.perform(
             activateGroup: { events.append("activate") },
+            refreshGroup: { events.append("refresh-group") },
             pressTab: {
                 events.append("press")
                 return .success
@@ -646,7 +647,23 @@ struct PermissionTests {
         )
 
         #expect(error == .success)
-        #expect(events == ["activate", "press", "refresh"])
+        #expect(events == ["activate", "refresh-group", "press", "refresh"])
+    }
+
+    @Test("native tab selection falls back to the current element at the requested index")
+    func nativeTabSelectionResolvesStaleIdentity() {
+        #expect(
+            NativeTabSelectionTarget.resolve(
+                stableElement: nil,
+                currentElements: ["current-alpha", "current-beta"],
+                index: 1
+            ) == "current-beta")
+        #expect(
+            NativeTabSelectionTarget.resolve(
+                stableElement: "stable-beta",
+                currentElements: ["current-alpha", "current-beta"],
+                index: 1
+            ) == "stable-beta")
     }
 
     @Test("hover tracking emits balanced enter and exit events")

@@ -59,6 +59,14 @@ struct TaskbarTab: Equatable, Sendable, Identifiable {
     let id: String
     let title: String
     let isSelected: Bool
+    let index: Int
+
+    init(id: String, title: String, isSelected: Bool, index: Int = 0) {
+        self.id = id
+        self.title = title
+        self.isSelected = isSelected
+        self.index = index
+    }
 }
 
 /// AX-derived data before it has been matched to the public Core Graphics window list.

@@ -132,7 +132,11 @@ enum TaskbarPresentationBuilder {
             }
             var entries = pinnedEntries
             let orderedRemaining = ordered(remaining, mode: preferences.orderingMode)
-            if !entries.isEmpty && !orderedRemaining.isEmpty {
+            let hasPinnedWindows = pinnedEntries.contains { entry in
+                if case .window = entry { return true }
+                return false
+            }
+            if hasPinnedWindows && !orderedRemaining.isEmpty {
                 entries.append(.separator(display.identifier))
             }
             entries.append(contentsOf: orderedRemaining.map(TaskbarPresentationEntry.window))

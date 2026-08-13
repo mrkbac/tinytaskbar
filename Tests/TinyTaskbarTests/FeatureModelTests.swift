@@ -96,7 +96,7 @@ struct FeatureModelTests {
             ])
         #expect(
             presentation.entriesByDisplay["right"]?.map(\.id) == [
-                "launcher:com.example.Editor", "separator:right", "browser-right",
+                "launcher:com.example.Editor", "browser-right",
             ])
     }
 

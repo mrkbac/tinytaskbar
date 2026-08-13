@@ -823,6 +823,42 @@ struct PermissionTests {
         #expect(launched == app)
     }
 
+    @Test("closed pinned launcher sits directly beside windows")
+    @MainActor
+    func pinnedLauncherDividerGeometry() {
+        let app = ApplicationRecord(
+            identity: "com.example.Pinned",
+            bundleIdentifier: "com.example.Pinned",
+            localizedName: "Pinned",
+            sequence: 0)
+        let item = makeTaskbarItem(id: "window")
+        let frame = NSRect(x: 0, y: 0, width: 500, height: 30)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        var preferences = TinyTaskbarPreferences.defaults
+        preferences.pinnedApplications = [app]
+        panel.update(
+            frame: frame,
+            entries: [.launcher(app), .window(item)],
+            preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let contentView = panel.contentView,
+            let launcher = allSubviews(of: contentView).compactMap({
+                $0 as? TaskbarLauncherButton
+            }).first,
+            let button = taskbarButtons(in: panel).first
+        else {
+            Issue.record("pinned launcher transition was not rendered")
+            return
+        }
+
+        let launcherFrame = contentView.convert(launcher.bounds, from: launcher)
+        let buttonFrame = contentView.convert(button.bounds, from: button)
+        #expect(buttonFrame.minX - launcherFrame.maxX == 2)
+    }
+
     @Test("compact icon-only presentation remains vertically contained")
     @MainActor
     func compactIconOnlyGeometry() {

@@ -29,6 +29,7 @@ protocol WindowSnapshotProvider: AnyObject {
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
+    func selectTab(_ tab: TaskbarTab, in item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
     @discardableResult
@@ -209,8 +210,15 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var identityRegistry = WindowElementIdentityRegistry<AXUIElement> {
         CFEqual($0, $1)
     }
+    private var tabGroupIdentityRegistry = WindowElementIdentityRegistry<AXUIElement> {
+        CFEqual($0, $1)
+    }
+    private var tabIdentityRegistry = WindowElementIdentityRegistry<AXUIElement> {
+        CFEqual($0, $1)
+    }
     private var axElementsByStableKey: [String: AXUIElement] = [:]
     private var axElementsByPhysicalIdentity: [AXPhysicalWindowIdentity: AXUIElement] = [:]
+    private var axTabElementsByID: [String: AXUIElement] = [:]
 
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
@@ -228,7 +236,13 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
     func snapshot() -> RawWindowSnapshot {
         identityRegistry.beginSnapshot()
-        defer { identityRegistry.endSnapshot() }
+        tabGroupIdentityRegistry.beginSnapshot()
+        tabIdentityRegistry.beginSnapshot()
+        defer {
+            identityRegistry.endSnapshot()
+            tabGroupIdentityRegistry.endSnapshot()
+            tabIdentityRegistry.endSnapshot()
+        }
         let cgWindows = CGWindowReader.allWindows()
         let displays = DisplayReader.current()
         let applications = NSWorkspace.shared.runningApplications.filter { application in
@@ -241,6 +255,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         var applicationInputs: [AXApplicationInput] = []
         var allRecords: [AXWindowRecord] = []
         var nextElements: [String: AXUIElement] = [:]
+        var nextTabElements: [String: AXUIElement] = [:]
         var nextPhysicalElements: [AXPhysicalWindowIdentity: AXUIElement] = [:]
         var ambiguousPhysicalIdentities: Set<AXPhysicalWindowIdentity> = []
         var axWindowListReadPIDs: Set<Int32> = []
@@ -248,14 +263,32 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
         for application in applications {
             let namespace = String(application.processIdentifier)
-            let enumeration = inspector.enumerate(application) { [unowned self] element in
-                identityRegistry.identifier(for: element, namespace: namespace)
-            }
+            let enumeration = inspector.enumerate(
+                application,
+                stableKeyForElement: { [unowned self] element in
+                    identityRegistry.identifier(for: element, namespace: namespace)
+                },
+                stableKeyForTabGroup: { [unowned self] element in
+                    tabGroupIdentityRegistry.identifier(
+                        for: element,
+                        namespace: "tab-group:\(namespace)"
+                    )
+                },
+                stableKeyForTab: { [unowned self] element in
+                    tabIdentityRegistry.identifier(
+                        for: element,
+                        namespace: "tab:\(namespace)"
+                    )
+                }
+            )
             if enumeration.didReadWindowList {
                 axWindowListReadPIDs.insert(application.processIdentifier)
             }
             observedAXWindowIDs.formUnion(enumeration.observedWindowIDs)
             let records = enumeration.records
+            for record in records {
+                nextTabElements.merge(record.tabElementsByID) { current, _ in current }
+            }
             let startIndex = allRecords.count
             allRecords.append(contentsOf: records)
             candidates.append(contentsOf: records.map(\.candidate))
@@ -278,6 +311,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         for (candidateIndex, record) in allRecords.enumerated() {
             let cgWindow = assignments[candidateIndex].map { cgWindows[$0] }
             guard
+                record.candidate.isNativeTabGroupRepresentative,
                 eligibility.isEligible(
                     record.candidate,
                     selfPID: ProcessInfo.processInfo.processIdentifier
@@ -324,6 +358,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         observerRegistry.update(with: observerRecords)
         axElementsByStableKey = nextElements
         axElementsByPhysicalIdentity = nextPhysicalElements
+        axTabElementsByID = nextTabElements
 
         return RawWindowSnapshot(
             candidates: candidates,
@@ -423,6 +458,23 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         }
 
         onChange?(.ordinary)
+    }
+
+    func selectTab(_ tab: TaskbarTab, in item: TaskbarItem) {
+        guard let tabElement = axTabElementsByID[tab.id] else {
+            logger.debug(
+                "Tab selection fell back to group activation because AX reference is stale for \(tab.id, privacy: .public)"
+            )
+            activate(item)
+            return
+        }
+        let pressError = AXUIElementPerformAction(tabElement, kAXPressAction as CFString)
+        if pressError != .success {
+            logger.debug(
+                "Tab selection failed pid=\(item.pid, privacy: .public) error=\(pressError.rawValue, privacy: .public)"
+            )
+        }
+        activate(item)
     }
 
     func minimize(_ item: TaskbarItem) {
@@ -566,7 +618,9 @@ private final class AXWindowInspector {
 
     func enumerate(
         _ application: NSRunningApplication,
-        stableKeyForElement: (AXUIElement) -> String
+        stableKeyForElement: (AXUIElement) -> String,
+        stableKeyForTabGroup: (AXUIElement) -> String,
+        stableKeyForTab: (AXUIElement) -> String
     ) -> AXWindowEnumerationResult {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         var rawWindows: CFTypeRef?
@@ -643,7 +697,7 @@ private final class AXWindowInspector {
             }
 
             let axFrame = CGRect(origin: position, size: size)
-            let candidate = WindowCandidate(
+            var candidate = WindowCandidate(
                 stableKey: stableKey,
                 cgWindowNumber: cgWindowNumber,
                 pid: application.processIdentifier,
@@ -664,7 +718,24 @@ private final class AXWindowInspector {
                 isFocused: boolValue(values[7]) ?? false,
                 isMain: boolValue(values[8]) ?? false
             )
-            records.append(AXWindowRecord(candidate: candidate, element: element))
+            let nativeTabGroup = inspectNativeTabGroup(
+                in: element,
+                stableKeyForTabGroup: stableKeyForTabGroup,
+                stableKeyForTab: stableKeyForTab
+            )
+            if let nativeTabGroup {
+                candidate = candidate.assigningNativeTabGroup(
+                    id: nativeTabGroup.id,
+                    tabs: nativeTabGroup.tabs
+                )
+            }
+            records.append(
+                AXWindowRecord(
+                    candidate: candidate,
+                    element: element,
+                    tabElementsByID: nativeTabGroup?.elementsByID ?? [:]
+                )
+            )
         }
 
         if !batchFailures.isEmpty || malformedCount > 0 {
@@ -676,10 +747,123 @@ private final class AXWindowInspector {
             )
         }
         return AXWindowEnumerationResult(
-            records: records,
+            records: assignNativeTabGroupMembership(records),
             observedWindowIDs: observedWindowIDs,
             didReadWindowList: true
         )
+    }
+
+    private func inspectNativeTabGroup(
+        in window: AXUIElement,
+        stableKeyForTabGroup: (AXUIElement) -> String,
+        stableKeyForTab: (AXUIElement) -> String
+    ) -> AXNativeTabGroupInspection? {
+        guard let children = elementArrayAttribute(kAXChildrenAttribute, from: window) else {
+            return nil
+        }
+        let tabGroups = children.filter {
+            stringAttribute(kAXRoleAttribute, from: $0) == kAXTabGroupRole as String
+        }
+        guard tabGroups.count == 1,
+            let tabElements = elementArrayAttribute(kAXTabsAttribute, from: tabGroups[0]),
+            tabElements.count > 1
+        else {
+            return nil
+        }
+
+        var tabs: [TaskbarTab] = []
+        var elementsByID: [String: AXUIElement] = [:]
+        for (index, element) in tabElements.enumerated() {
+            let attributes = [
+                kAXRoleAttribute,
+                kAXSubroleAttribute,
+                kAXTitleAttribute,
+                kAXValueAttribute,
+            ]
+            var rawValues: CFArray?
+            guard
+                AXUIElementCopyMultipleAttributeValues(
+                    element,
+                    attributes as CFArray,
+                    [],
+                    &rawValues
+                ) == .success,
+                let values = rawValues as? [Any],
+                values.count == attributes.count,
+                stringValue(values[0]) == kAXRadioButtonRole as String,
+                stringValue(values[1]) == NSAccessibility.Subrole.tabButtonSubrole.rawValue
+            else {
+                return nil
+            }
+            let id = stableKeyForTab(element)
+            let title = stringValue(values[2]) ?? "Tab \(index + 1)"
+            tabs.append(
+                TaskbarTab(
+                    id: id,
+                    title: title,
+                    isSelected: boolValue(values[3]) ?? false
+                )
+            )
+            elementsByID[id] = element
+        }
+
+        return AXNativeTabGroupInspection(
+            id: stableKeyForTabGroup(tabGroups[0]),
+            tabs: tabs,
+            elementsByID: elementsByID
+        )
+    }
+
+    private func assignNativeTabGroupMembership(
+        _ records: [AXWindowRecord]
+    ) -> [AXWindowRecord] {
+        let candidates = NativeTabGroupMembershipResolver.assign(records.map(\.candidate))
+        return zip(records, candidates).map { record, candidate in
+            AXWindowRecord(
+                candidate: candidate,
+                element: record.element,
+                tabElementsByID: record.tabElementsByID
+            )
+        }
+    }
+
+    private func elementArrayAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> [AXUIElement]? {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                element,
+                attribute as CFString,
+                &rawValue
+            ) == .success,
+            let rawValue
+        else {
+            return nil
+        }
+        if let elements = rawValue as? [AXUIElement] { return elements }
+        guard let array = rawValue as? NSArray else { return nil }
+        return array.compactMap { value in
+            let cfValue = value as CFTypeRef
+            guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
+            return (cfValue as! AXUIElement)
+        }
+    }
+
+    private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                element,
+                attribute as CFString,
+                &rawValue
+            ) == .success,
+            let rawValue
+        else {
+            return nil
+        }
+        return stringValue(rawValue)
     }
 
     private func stringValue(_ value: Any) -> String? {
@@ -730,6 +914,14 @@ private struct AXWindowEnumerationResult {
 private struct AXWindowRecord {
     let candidate: WindowCandidate
     let element: AXUIElement
+    let tabElementsByID: [String: AXUIElement]
+}
+
+@MainActor
+private struct AXNativeTabGroupInspection {
+    let id: String
+    let tabs: [TaskbarTab]
+    let elementsByID: [String: AXUIElement]
 }
 
 @MainActor

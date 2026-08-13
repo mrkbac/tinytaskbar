@@ -187,11 +187,15 @@ struct TaskbarStateContinuity {
         let stableMatches = candidates.filter { candidate in
             candidate.stableKey == item.id
                 || (candidate.stableKey != nil && candidate.stableKey == item.stableOrderKey)
+                || (candidate.nativeTabGroupID != nil
+                    && (candidate.nativeTabGroupID == item.nativeTabGroupID
+                        || candidate.nativeTabGroupID == item.id))
         }
-        if stableMatches.count == 1 {
-            return stableMatches[0]
+        let representativeMatches = stableMatches.filter(\.isNativeTabGroupRepresentative)
+        if representativeMatches.count == 1 {
+            return representativeMatches[0]
         }
-        guard stableMatches.isEmpty, item.stableOrderKey == nil else { return nil }
+        guard representativeMatches.isEmpty, item.stableOrderKey == nil else { return nil }
 
         // Older/fallback identities are based on a CG window number. If AX has
         // temporarily omitted that identity, only a unique same-title candidate
@@ -288,6 +292,12 @@ struct TaskbarStateContinuity {
         } else {
             isActive = item.isActive
         }
+        let nativeTabs: [TaskbarTab]
+        if let candidate, !candidate.nativeTabs.isEmpty {
+            nativeTabs = candidate.nativeTabs
+        } else {
+            nativeTabs = item.nativeTabs
+        }
         return TaskbarItem(
             id: item.id,
             pid: candidate?.pid ?? item.pid,
@@ -297,10 +307,13 @@ struct TaskbarStateContinuity {
             title: candidate?.title ?? item.title,
             displayIdentifier: displayIdentifier,
             cgWindowNumber: cgWindow?.windowNumber ?? item.cgWindowNumber,
-            stableOrderKey: item.stableOrderKey ?? candidate?.stableKey,
+            stableOrderKey: item.stableOrderKey ?? candidate?.nativeTabGroupID
+                ?? candidate?.stableKey,
             isHidden: isHidden,
             isMinimized: isMinimized,
-            isActive: isActive
+            isActive: isActive,
+            nativeTabGroupID: candidate?.nativeTabGroupID ?? item.nativeTabGroupID,
+            nativeTabs: nativeTabs
         )
     }
 }
@@ -416,7 +429,12 @@ final class TaskbarStore {
         let snapshot = provider.snapshot()
         latestFramesByItemID = Dictionary(
             uniqueKeysWithValues: snapshot.candidates.compactMap { candidate in
-                guard let id = candidate.stableKey, let frame = candidate.frame else { return nil }
+                guard candidate.isNativeTabGroupRepresentative,
+                    let id = candidate.nativeTabGroupID ?? candidate.stableKey,
+                    let frame = candidate.frame
+                else {
+                    return nil
+                }
                 return (id, frame)
             })
         latestDisplaysByID = Dictionary(
@@ -528,6 +546,8 @@ final class TaskbarStore {
         case .activate(let item), .minimize(let item), .restore(let item),
             .close(let item), .minimizeOthers(let item):
             requestedItem = item
+        case .selectTab(let item, _):
+            requestedItem = item
         case .minimizeAll:
             return
         }
@@ -539,6 +559,8 @@ final class TaskbarStore {
             provider.activate(item)
         case .minimize:
             provider.minimize(item)
+        case .selectTab(_, let tab):
+            provider.selectTab(tab, in: item)
         case .close:
             provider.close(item)
             requestWindowDisappearanceConfirmation()
@@ -1682,22 +1704,76 @@ final class TaskbarLauncherButton: TaskbarHoverButton {
 }
 
 @MainActor
+final class TaskbarHoverCardView: NSView {
+    var onHoverChanged: (@MainActor (Bool) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        if let tracking { removeTrackingArea(tracking) }
+        let next = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(next)
+        tracking = next
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChanged?(false)
+    }
+}
+
+@MainActor
+private final class TaskbarTabButton: NSButton {
+    override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
+}
+
+@MainActor
+private final class TaskbarTabListView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+@MainActor
 final class TaskbarHoverCardViewController: NSViewController {
     static let maximumTextWidth: CGFloat = 360
     static let minimumTextWidth: CGFloat = 120
     static let iconSize: CGFloat = 24
     static let padding: CGFloat = 10
     static let spacing: CGFloat = 8
+    static let tabRowHeight: CGFloat = 26
+    static let maximumTabListHeight: CGFloat = 234
 
     let applicationLabel: NSTextField
     let titleLabel: NSTextField
     let iconView: NSImageView
+    private(set) var tabButtons: [NSButton] = []
 
-    init(applicationName: String, title: String, icon: NSImage?) {
+    private let tabs: [TaskbarTab]
+    private let onSelectTab: @MainActor (TaskbarTab) -> Void
+    private let headerHeight: CGFloat
+    private let tabListHeight: CGFloat
+
+    init(
+        applicationName: String,
+        title: String,
+        icon: NSImage?,
+        tabs: [TaskbarTab] = [],
+        onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in }
+    ) {
         applicationLabel = NSTextField(labelWithString: applicationName)
         titleLabel = NSTextField(wrappingLabelWithString: title)
         iconView = NSImageView(image: icon ?? NSImage())
-        super.init(nibName: nil, bundle: nil)
+        self.tabs = tabs
+        self.onSelectTab = onSelectTab
 
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .medium)
         let applicationFont = NSFont.systemFont(ofSize: 10, weight: .regular)
@@ -1709,9 +1785,16 @@ final class TaskbarHoverCardViewController: NSViewController {
             ? ceil(
                 (applicationName as NSString).size(withAttributes: [.font: applicationFont]).width)
             : 0
+        let tabNaturalWidth =
+            tabs.map {
+                ceil(($0.title as NSString).size(withAttributes: [.font: titleFont]).width) + 24
+            }.max() ?? 0
         let textWidth = min(
             Self.maximumTextWidth,
-            max(Self.minimumTextWidth, max(titleNaturalWidth, applicationNaturalWidth))
+            max(
+                Self.minimumTextWidth,
+                max(titleNaturalWidth, max(applicationNaturalWidth, tabNaturalWidth))
+            )
         )
         let titleHeight = ceil(
             (title as NSString).boundingRect(
@@ -1722,9 +1805,15 @@ final class TaskbarHoverCardViewController: NSViewController {
         let applicationHeight =
             showsApplication ? ceil(applicationFont.boundingRectForFont.height) : 0
         let textHeight = titleHeight + applicationHeight + (showsApplication ? 2 : 0)
+        headerHeight = Self.padding + max(Self.iconSize, textHeight) + Self.padding
+        tabListHeight =
+            tabs.count > 1
+            ? min(Self.maximumTabListHeight, CGFloat(tabs.count) * Self.tabRowHeight + 8)
+            : 0
+        super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(
             width: Self.padding + Self.iconSize + Self.spacing + textWidth + Self.padding,
-            height: Self.padding + max(Self.iconSize, textHeight) + Self.padding
+            height: headerHeight + (tabListHeight > 0 ? 1 + tabListHeight : 0)
         )
     }
 
@@ -1733,7 +1822,8 @@ final class TaskbarHoverCardViewController: NSViewController {
     }
 
     override func loadView() {
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
+        let container = TaskbarHoverCardView(
+            frame: NSRect(origin: .zero, size: preferredContentSize))
         iconView.imageScaling = .scaleProportionallyDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1750,41 +1840,135 @@ final class TaskbarHoverCardViewController: NSViewController {
         textStack.spacing = 2
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
-        container.addSubview(iconView)
-        container.addSubview(textStack)
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(iconView)
+        header.addSubview(textStack)
+        container.addSubview(header)
         NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            header.topAnchor.constraint(equalTo: container.topAnchor),
+            header.heightAnchor.constraint(equalToConstant: headerHeight),
             iconView.leadingAnchor.constraint(
-                equalTo: container.leadingAnchor, constant: Self.padding),
-            iconView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                equalTo: header.leadingAnchor, constant: Self.padding),
+            iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: Self.iconSize),
             iconView.heightAnchor.constraint(equalToConstant: Self.iconSize),
             textStack.leadingAnchor.constraint(
                 equalTo: iconView.trailingAnchor, constant: Self.spacing),
             textStack.trailingAnchor.constraint(
-                equalTo: container.trailingAnchor, constant: -Self.padding),
-            textStack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                equalTo: header.trailingAnchor, constant: -Self.padding),
+            textStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
         ])
+
+        if tabListHeight > 0 {
+            addTabList(to: container, below: header)
+        }
         view = container
+    }
+
+    private func addTabList(to container: NSView, below header: NSView) {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        let documentHeight = CGFloat(tabs.count) * Self.tabRowHeight + 8
+        let document = TaskbarTabListView(
+            frame: NSRect(
+                x: 0,
+                y: 0,
+                width: preferredContentSize.width,
+                height: documentHeight
+            ))
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+
+        tabButtons = tabs.enumerated().map { index, tab in
+            let button = TaskbarTabButton(
+                title: tab.title,
+                target: self,
+                action: #selector(selectTab(_:))
+            )
+            button.tag = index
+            button.bezelStyle = .inline
+            button.isBordered = false
+            button.alignment = .left
+            button.font = .systemFont(ofSize: 12, weight: tab.isSelected ? .semibold : .regular)
+            button.image =
+                tab.isSelected
+                ? NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Selected")
+                : NSImage(systemSymbolName: "circle", accessibilityDescription: nil)
+            button.imagePosition = .imageLeading
+            button.contentTintColor = tab.isSelected ? .controlAccentColor : .tertiaryLabelColor
+            button.setAccessibilityLabel(tab.title)
+            button.setAccessibilityValue(tab.isSelected ? "Selected tab" : "Tab")
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.heightAnchor.constraint(equalToConstant: Self.tabRowHeight).isActive = true
+            button.widthAnchor.constraint(equalToConstant: preferredContentSize.width).isActive =
+                true
+            stack.addArrangedSubview(button)
+            return button
+        }
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 4),
+        ])
+
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = false
+        scroll.hasVerticalScroller = documentHeight > tabListHeight
+        scroll.autohidesScrollers = true
+        scroll.documentView = document
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(separator)
+        container.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: header.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
+
+    @objc private func selectTab(_ sender: NSButton) {
+        guard tabs.indices.contains(sender.tag) else { return }
+        onSelectTab(tabs[sender.tag])
     }
 }
 
 @MainActor
 final class TaskbarHoverPresenter {
     private static let delay = Duration.milliseconds(300)
+    private static let interactiveExitDelay = Duration.milliseconds(180)
     static let popoverBehavior = NSPopover.Behavior.applicationDefined
 
     private var pendingShow: Task<Void, Never>?
+    private var pendingHide: Task<Void, Never>?
     private weak var requestedAnchor: TaskbarHoverButton?
     private var popover: NSPopover?
+    private var isInteractive = false
 
     func schedule(
         applicationName: String,
         title: String,
         icon: NSImage?,
+        tabs: [TaskbarTab] = [],
+        onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
         from anchor: TaskbarHoverButton
     ) {
         hide()
         requestedAnchor = anchor
+        isInteractive = tabs.count > 1
         pendingShow = Task { @MainActor [weak self, weak anchor] in
             try? await Task.sleep(for: Self.delay)
             guard !Task.isCancelled,
@@ -1795,29 +1979,64 @@ final class TaskbarHoverPresenter {
                 anchor.window?.isVisible == true
             else { return }
 
-            let popover = NSPopover()
-            popover.animates = false
-            // A transient popover may consume the first click outside itself merely to
-            // dismiss. This card is informational, so dismissal is explicit and must
-            // never take a taskbar click away from its button.
-            popover.behavior = Self.popoverBehavior
-            popover.contentViewController = TaskbarHoverCardViewController(
+            let controller = TaskbarHoverCardViewController(
                 applicationName: applicationName,
                 title: title,
-                icon: icon
+                icon: icon,
+                tabs: tabs,
+                onSelectTab: { [weak self] tab in
+                    onSelectTab(tab)
+                    self?.hide()
+                }
             )
+            controller.loadView()
+            if let hoverView = controller.view as? TaskbarHoverCardView {
+                hoverView.onHoverChanged = { [weak self] hovering in
+                    if hovering {
+                        self?.pendingHide?.cancel()
+                        self?.pendingHide = nil
+                    } else {
+                        self?.scheduleInteractiveHide()
+                    }
+                }
+            }
+            let popover = NSPopover()
+            popover.animates = false
+            popover.behavior = Self.popoverBehavior
+            popover.contentViewController = controller
             self.popover = popover
             popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         }
+    }
+
+    func pointerExited(from anchor: TaskbarHoverButton) {
+        guard requestedAnchor === anchor else { return }
+        guard isInteractive, popover != nil else {
+            hide(from: anchor)
+            return
+        }
+        scheduleInteractiveHide()
     }
 
     func hide(from anchor: TaskbarHoverButton? = nil) {
         if let anchor, requestedAnchor !== anchor { return }
         pendingShow?.cancel()
         pendingShow = nil
+        pendingHide?.cancel()
+        pendingHide = nil
         requestedAnchor = nil
+        isInteractive = false
         popover?.performClose(nil)
         popover = nil
+    }
+
+    private func scheduleInteractiveHide() {
+        pendingHide?.cancel()
+        pendingHide = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.interactiveExitDelay)
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
     }
 }
 
@@ -2170,10 +2389,14 @@ private final class TaskbarBarView: NSView {
                     applicationName: current.applicationName,
                     title: current.displayTitle,
                     icon: anchor.image,
+                    tabs: current.nativeTabs,
+                    onSelectTab: { [weak self] tab in
+                        self?.onWindowCommand(.selectTab(current, tab))
+                    },
                     from: anchor
                 )
             } else {
-                self.hoverPresenter.hide(from: anchor)
+                self.hoverPresenter.pointerExited(from: anchor)
             }
         }
         button.onMenuRequested = { [weak self] in

@@ -601,6 +601,31 @@ struct PermissionTests {
         #expect(controller.preferredContentSize.height > 44)
     }
 
+    @Test("hover card lists native tabs and dispatches the selected tab")
+    @MainActor
+    func hoverCardSelectsNativeTab() {
+        let tabs = [
+            TaskbarTab(id: "alpha", title: "Alpha project", isSelected: true),
+            TaskbarTab(id: "beta", title: "Beta logs", isSelected: false),
+            TaskbarTab(id: "gamma", title: "Gamma shell", isSelected: false),
+        ]
+        var selectedTab: TaskbarTab?
+        let controller = TaskbarHoverCardViewController(
+            applicationName: "Terminal",
+            title: "Alpha project",
+            icon: nil,
+            tabs: tabs,
+            onSelectTab: { selectedTab = $0 }
+        )
+        controller.loadView()
+
+        #expect(controller.tabButtons.map(\.title) == tabs.map(\.title))
+        #expect(controller.preferredContentSize.height > 100)
+        #expect(controller.view is TaskbarHoverCardView)
+        controller.tabButtons[1].performClick(nil)
+        #expect(selectedTab == tabs[1])
+    }
+
     @Test("hover tracking emits balanced enter and exit events")
     @MainActor
     func hoverTrackingEvents() {
@@ -721,6 +746,26 @@ struct PermissionTests {
 
         #expect(provider.minimizedItemIDs == ["peer"])
         #expect(provider.activatedItemIDs == ["target"])
+    }
+
+    @Test("select tab command routes through the current group item")
+    @MainActor
+    func selectTabCommandUsesCurrentItem() {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture item was not projected")
+            return
+        }
+        let tab = TaskbarTab(id: "tab-beta", title: "Beta", isSelected: false)
+
+        store.execute(.selectTab(item, tab))
+
+        #expect(provider.selectedTabIDs == ["tab-beta"])
+        #expect(provider.activatedItemIDs == [item.id])
     }
 
     @Test("minimize all affects every eligible visible window")
@@ -2076,6 +2121,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var minimizeCount = 0
     var closeCount = 0
     var activatedItemIDs: [String] = []
+    var selectedTabIDs: [String] = []
     var minimizedItemIDs: [String] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
@@ -2094,6 +2140,11 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     func activate(_ item: TaskbarItem) {
         activationCount += 1
         activatedItemIDs.append(item.id)
+    }
+
+    func selectTab(_ tab: TaskbarTab, in item: TaskbarItem) {
+        selectedTabIDs.append(tab.id)
+        activate(item)
     }
 
     func minimize(_ item: TaskbarItem) {

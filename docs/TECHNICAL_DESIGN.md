@@ -174,6 +174,12 @@ background native tabs or other-Space records merely because their application i
 hidden. Exact arbitrary Space IDs and cross-Space movement are intentionally not
 attempted.
 
+Native AppKit tab containers publish an `AXTabGroup` whose `AXTabs` are ordered tab
+buttons with titles, selected state, and press actions. TinyTaskbar assigns that group
+a stable identity, retains its tab actions, and collapses matching minimized AX window
+siblings only when the authoritative group count plus title/geometry evidence agrees.
+The selected group window remains the single actionable taskbar item.
+
 ## Observation and failure isolation
 
 `AXObserverRegistry` creates one public `AXObserver` per eligible application and
@@ -274,10 +280,12 @@ horizontal span without lifting it. Tiny and
 negative-origin displays are clamped deterministically. The title-off width range
 starts below the title-on minimum so app-name-only buttons stay compact.
 `TaskbarHoverButton` uses an active-always tracking area and a cancellable 300 ms task
-to show one shared informational `NSPopover` above the hovered item. The card contains the
-app icon, application name, and complete character-wrapping window title; it never
-activates or reorders a taskbar item. Its dismissal is application-defined and begins
-on mouse-down, so the popover cannot consume the first taskbar click merely to close
+to show one shared `NSPopover` above the hovered item. The card contains the app icon,
+application name, and complete character-wrapping window title. Native tab groups add
+a bounded, scrollable list of their tab titles; selecting a row presses the published
+AX tab action and activates the group window. A short exit grace keeps the card open
+while the pointer crosses from the taskbar button into that list. Its dismissal remains
+application-defined, so it cannot consume the first taskbar click merely to close
 itself. Taskbar buttons explicitly accept first mouse. The full accessibility label
 remains independent of the hover presentation.
 

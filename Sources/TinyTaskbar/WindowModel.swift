@@ -55,6 +55,12 @@ struct DisplayDescriptor: Equatable, Sendable {
     }
 }
 
+struct TaskbarTab: Equatable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let isSelected: Bool
+}
+
 /// AX-derived data before it has been matched to the public Core Graphics window list.
 struct WindowCandidate: Equatable, Sendable {
     let stableKey: String?
@@ -75,6 +81,8 @@ struct WindowCandidate: Equatable, Sendable {
     let isMinimized: Bool
     let isFocused: Bool
     let isMain: Bool
+    let nativeTabGroupID: String?
+    let nativeTabs: [TaskbarTab]
 
     init(
         stableKey: String? = nil,
@@ -94,7 +102,9 @@ struct WindowCandidate: Equatable, Sendable {
         isHidden: Bool = false,
         isMinimized: Bool = false,
         isFocused: Bool = false,
-        isMain: Bool = false
+        isMain: Bool = false,
+        nativeTabGroupID: String? = nil,
+        nativeTabs: [TaskbarTab] = []
     ) {
         self.stableKey = stableKey
         self.cgWindowNumber = cgWindowNumber
@@ -114,6 +124,37 @@ struct WindowCandidate: Equatable, Sendable {
         self.isMinimized = isMinimized
         self.isFocused = isFocused
         self.isMain = isMain
+        self.nativeTabGroupID = nativeTabGroupID
+        self.nativeTabs = nativeTabs
+    }
+
+    var isNativeTabGroupRepresentative: Bool {
+        nativeTabGroupID == nil || !nativeTabs.isEmpty
+    }
+
+    func assigningNativeTabGroup(id: String, tabs: [TaskbarTab]) -> WindowCandidate {
+        WindowCandidate(
+            stableKey: stableKey,
+            cgWindowNumber: cgWindowNumber,
+            pid: pid,
+            applicationName: applicationName,
+            applicationIdentity: applicationIdentity,
+            applicationBundlePath: applicationBundlePath,
+            localizedApplicationName: localizedApplicationName,
+            applicationIsRunning: applicationIsRunning,
+            applicationIsRegular: applicationIsRegular,
+            applicationIsHidden: applicationIsHidden,
+            role: role,
+            subrole: subrole,
+            title: title,
+            frame: frame,
+            isHidden: isHidden,
+            isMinimized: isMinimized,
+            isFocused: isFocused,
+            isMain: isMain,
+            nativeTabGroupID: id,
+            nativeTabs: tabs
+        )
     }
 }
 
@@ -130,6 +171,8 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let isHidden: Bool
     let isMinimized: Bool
     let isActive: Bool
+    let nativeTabGroupID: String?
+    let nativeTabs: [TaskbarTab]
 
     init(
         id: String,
@@ -143,7 +186,9 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         stableOrderKey: String? = nil,
         isHidden: Bool = false,
         isMinimized: Bool = false,
-        isActive: Bool
+        isActive: Bool,
+        nativeTabGroupID: String? = nil,
+        nativeTabs: [TaskbarTab] = []
     ) {
         self.id = id
         self.pid = pid
@@ -157,6 +202,8 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         self.isHidden = isHidden
         self.isMinimized = isMinimized
         self.isActive = isActive
+        self.nativeTabGroupID = nativeTabGroupID
+        self.nativeTabs = nativeTabs
     }
 
     var displayTitle: String {
@@ -194,6 +241,83 @@ struct TaskbarState: Equatable, Sendable {
     let itemsByDisplay: [String: [TaskbarItem]]
 
     static let empty = TaskbarState(displays: [], itemsByDisplay: [:])
+}
+
+enum NativeTabGroupMembershipResolver {
+    static func assign(_ candidates: [WindowCandidate]) -> [WindowCandidate] {
+        var resolved = candidates
+        var claimedIndices = Set<Int>()
+        let ownerIndices = candidates.indices.filter { candidates[$0].nativeTabs.count > 1 }
+
+        for ownerIndex in ownerIndices {
+            let owner = candidates[ownerIndex]
+            guard let groupID = owner.nativeTabGroupID,
+                let ownerFrame = owner.frame
+            else {
+                continue
+            }
+            let ownerTabIndex =
+                owner.nativeTabs.firstIndex(where: \.isSelected)
+                ?? owner.nativeTabs.firstIndex {
+                    CGWindowMatcher.normalized($0.title)
+                        == CGWindowMatcher.normalized(owner.title)
+                }
+            guard let ownerTabIndex else { continue }
+
+            var matchedIndices = [ownerIndex]
+            let eligiblePeerIndices = candidates.indices
+                .filter { index in
+                    index != ownerIndex
+                        && !claimedIndices.contains(index)
+                        && candidates[index].nativeTabs.isEmpty
+                        && candidates[index].pid == owner.pid
+                        && candidates[index].isMinimized == owner.isMinimized
+                        && approximatelyEqual(candidates[index].frame, ownerFrame)
+                }
+                .sorted { lhs, rhs in
+                    (candidates[lhs].stableKey ?? "") < (candidates[rhs].stableKey ?? "")
+                }
+            var availableIndices = eligiblePeerIndices
+            var isComplete = true
+            for tabIndex in owner.nativeTabs.indices where tabIndex != ownerTabIndex {
+                let title = CGWindowMatcher.normalized(owner.nativeTabs[tabIndex].title)
+                guard
+                    let matchOffset = availableIndices.firstIndex(where: { index in
+                        CGWindowMatcher.normalized(candidates[index].title) == title
+                    })
+                else {
+                    isComplete = false
+                    break
+                }
+                matchedIndices.append(availableIndices.remove(at: matchOffset))
+            }
+            if !isComplete,
+                eligiblePeerIndices.count == owner.nativeTabs.count - 1
+            {
+                // Native window and tab titles can update in adjacent event-loop
+                // turns. An exact tab count plus identical geometry is sufficient
+                // fallback evidence once the AXTabGroup itself is authoritative.
+                matchedIndices = [ownerIndex] + eligiblePeerIndices
+                isComplete = true
+            }
+            guard isComplete, matchedIndices.count == owner.nativeTabs.count else { continue }
+
+            claimedIndices.formUnion(matchedIndices)
+            for index in matchedIndices where index != ownerIndex {
+                resolved[index] = candidates[index].assigningNativeTabGroup(id: groupID, tabs: [])
+            }
+        }
+        return resolved
+    }
+
+    private static func approximatelyEqual(_ frame: CGRect?, _ reference: CGRect) -> Bool {
+        guard let frame else { return false }
+        let tolerance = CGWindowMatcher.boundsTolerance
+        return abs(frame.minX - reference.minX) <= tolerance
+            && abs(frame.minY - reference.minY) <= tolerance
+            && abs(frame.width - reference.width) <= tolerance
+            && abs(frame.height - reference.height) <= tolerance
+    }
 }
 
 struct TinyTaskbarPreferences: Equatable, Sendable {
@@ -759,7 +883,8 @@ enum WindowCGAssignment {
         var usedCGWindowIndices = Set<Int>()
         let orderedCandidateIndices = candidates.indices
             .filter {
-                eligibility.isEligible(candidates[$0], selfPID: selfPID)
+                candidates[$0].isNativeTabGroupRepresentative
+                    && eligibility.isEligible(candidates[$0], selfPID: selfPID)
             }
             .sorted { WindowCandidateOrdering.preferred(candidates[$0], candidates[$1]) }
 
@@ -840,10 +965,12 @@ enum WindowProjection {
                     title: candidate.title,
                     displayIdentifier: displayIdentifier,
                     cgWindowNumber: cgWindow.windowNumber,
-                    stableOrderKey: candidate.stableKey,
+                    stableOrderKey: candidate.nativeTabGroupID ?? candidate.stableKey,
                     isHidden: candidate.applicationIsHidden,
                     isMinimized: candidate.isMinimized,
-                    isActive: isActive
+                    isActive: isActive,
+                    nativeTabGroupID: candidate.nativeTabGroupID,
+                    nativeTabs: candidate.nativeTabs
                 )
             )
         }
@@ -880,7 +1007,9 @@ enum StableWindowKey {
 
 enum WindowObservationKey {
     static func itemKey(candidate: WindowCandidate, cgWindow: CGWindowMetadata?) -> String {
-        candidate.stableKey ?? StableWindowKey.make(candidate: candidate, cgWindow: cgWindow)
+        candidate.nativeTabGroupID
+            ?? candidate.stableKey
+            ?? StableWindowKey.make(candidate: candidate, cgWindow: cgWindow)
     }
 
     static func observerKey(

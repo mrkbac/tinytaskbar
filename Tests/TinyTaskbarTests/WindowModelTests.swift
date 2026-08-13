@@ -250,6 +250,75 @@ struct WindowModelTests {
         #expect(state.itemsByDisplay.isEmpty)
     }
 
+    @Test("minimized native tab group projects as one selectable taskbar item")
+    func minimizedNativeTabGroupCollapsesPhysicalSiblings() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let tabs = [
+            TaskbarTab(id: "tab-alpha", title: "Alpha", isSelected: true),
+            TaskbarTab(id: "tab-beta", title: "Beta", isSelected: false),
+            TaskbarTab(id: "tab-gamma", title: "Gamma", isSelected: false),
+        ]
+        let candidates = [
+            WindowCandidate(
+                stableKey: "window-alpha",
+                cgWindowNumber: 41,
+                pid: 10,
+                applicationName: "Terminal",
+                title: "Alpha",
+                frame: frame,
+                isMinimized: true,
+                nativeTabGroupID: "native-group",
+                nativeTabs: tabs
+            ),
+            WindowCandidate(
+                stableKey: "window-beta",
+                cgWindowNumber: 42,
+                pid: 10,
+                applicationName: "Terminal",
+                title: "Previous Beta title",
+                frame: frame,
+                isMinimized: true
+            ),
+            WindowCandidate(
+                stableKey: "window-gamma",
+                cgWindowNumber: 43,
+                pid: 10,
+                applicationName: "Terminal",
+                title: "Gamma",
+                frame: frame,
+                isMinimized: true
+            ),
+        ]
+        let cgWindows = zip(candidates, UInt32(41)...UInt32(43)).map { candidate, number in
+            CGWindowMetadata(
+                windowNumber: number,
+                ownerPID: 10,
+                bounds: frame,
+                title: candidate.title,
+                isOnScreen: false
+            )
+        }
+
+        let resolvedCandidates = NativeTabGroupMembershipResolver.assign(candidates)
+        let state = WindowProjection.project(
+            candidates: resolvedCandidates,
+            cgWindows: cgWindows,
+            displays: [display],
+            selfPID: 999
+        )
+
+        let item = state.itemsByDisplay["main"]?.first
+        #expect(state.itemsByDisplay["main"]?.count == 1)
+        #expect(Set(resolvedCandidates.compactMap(\.nativeTabGroupID)) == ["native-group"])
+        #expect(item?.id == "native-group")
+        #expect(item?.nativeTabs == tabs)
+        #expect(item?.isMinimized == true)
+    }
+
     @Test("cold-start projection includes an exactly identified minimized window")
     func minimizedWindowUsesExactOffScreenIdentity() {
         let frame = CGRect(x: 100, y: 100, width: 500, height: 300)

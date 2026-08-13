@@ -127,9 +127,11 @@ The same window offers public `SMAppService.mainApp` launch-at-login control and
 small typed preferences for active-window clicks, ordering, labels, button width,
 overflow behavior, bar size, and multi-display behavior.
 Every window button, including icon-only and truncated labels, shows a native hover
-card with its app icon and full wrapping title after a short delay. Full
-accessibility labels remain available independently. Invalid enum values use retained
-defaults, while corrupt pin/exclusion records are discarded individually.
+card with its app icon and full wrapping title after a short delay. When an app
+publishes a native Accessibility tab group, the same card lists every tab and lets the
+user select one directly. Full accessibility labels remain available independently.
+Invalid enum values use retained defaults, while corrupt pin/exclusion records are
+discarded individually.
 
 TinyTaskbar does not request Screen Recording. Window titles come from AX; Core
 Graphics is used only for owner, layer, on-screen, title, geometry, and numeric
@@ -177,10 +179,11 @@ App-provided AX metadata and notifications can be missing or malformed. A failin
 application or window is skipped and revisited on later system events. Hidden
 applications remain as dimmed taskbar items and are unhidden before activation.
 Exactly identified minimized windows also appear as dimmed taskbar items and restore
-on click, including after a TinyTaskbar restart; AX-only native tab
-siblings are not promoted through title/frame guesses. Stage Manager background sets
-are therefore omitted; fullscreen windows are included when Core Graphics reports
-them on-screen.
+on click, including after a TinyTaskbar restart. Native `AXTabGroup` members stay
+collapsed into one taskbar item when minimizing exposes each tab as a separate AX
+window; ambiguous AX-only siblings are not promoted without tab-group evidence. Stage
+Manager background sets are therefore omitted; fullscreen windows are included when
+Core Graphics reports them on-screen.
 
 ## Evidence status
 

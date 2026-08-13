@@ -73,6 +73,10 @@
             onChange?(.ordinary)
         }
 
+        func selectTab(_: TaskbarTab, in item: TaskbarItem) {
+            activate(item)
+        }
+
         func minimize(_ item: TaskbarItem) {
             minimizedItemIDs.insert(item.id)
             if activeItemID == item.id {

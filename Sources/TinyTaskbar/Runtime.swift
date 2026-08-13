@@ -1807,21 +1807,18 @@ final class TaskbarHoverCardViewController: NSViewController {
     static let iconSize: CGFloat = 24
     static let padding: CGFloat = 10
     static let spacing: CGFloat = 8
-    static let closeControlWidth: CGFloat = 32
     static let tabRowHeight: CGFloat = 26
     static let maximumTabListHeight: CGFloat = 234
 
     let applicationLabel: NSTextField
     let titleLabel: NSTextField
     let iconView: NSImageView
-    let closeItemButton: NSButton
     private(set) var tabButtons: [NSButton] = []
     private(set) var tabCloseButtons: [NSButton] = []
 
     private let tabs: [TaskbarTab]
     private let onSelectTab: @MainActor (TaskbarTab) -> Void
     private let onCloseTab: @MainActor (TaskbarTab) -> Void
-    private let onCloseItem: @MainActor () -> Void
     private let showsTabList: Bool
     private let headerHeight: CGFloat
     private let tabListHeight: CGFloat
@@ -1832,19 +1829,16 @@ final class TaskbarHoverCardViewController: NSViewController {
         icon: NSImage?,
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
-        onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
-        onCloseItem: @escaping @MainActor () -> Void = {}
+        onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in }
     ) {
         showsTabList = tabs.count > 1
         let displayedTitle = showsTabList ? "\(tabs.count) Tabs" : title
         applicationLabel = NSTextField(labelWithString: applicationName)
         titleLabel = NSTextField(wrappingLabelWithString: displayedTitle)
         iconView = NSImageView(image: icon ?? NSImage())
-        closeItemButton = TaskbarCloseButton()
         self.tabs = tabs
         self.onSelectTab = onSelectTab
         self.onCloseTab = onCloseTab
-        self.onCloseItem = onCloseItem
 
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .medium)
         let applicationFont = NSFont.systemFont(ofSize: 10, weight: .regular)
@@ -1887,8 +1881,7 @@ final class TaskbarHoverCardViewController: NSViewController {
             : 0
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(
-            width: Self.padding + Self.iconSize + Self.spacing + textWidth
-                + Self.closeControlWidth + Self.padding,
+            width: Self.padding + Self.iconSize + Self.spacing + textWidth + Self.padding,
             height: headerHeight + (tabListHeight > 0 ? 1 + tabListHeight : 0)
         )
     }
@@ -1926,16 +1919,6 @@ final class TaskbarHoverCardViewController: NSViewController {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(iconView)
         header.addSubview(textStack)
-        configureCloseButton(
-            closeItemButton,
-            accessibilityLabel: showsTabList
-                ? "Close all \(applicationLabel.stringValue) tabs"
-                : "Close \(applicationLabel.stringValue) window",
-            action: #selector(closeItem))
-        closeItemButton.image = closeItemButton.image?.withSymbolConfiguration(
-            NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        closeItemButton.contentTintColor = .labelColor
-        header.addSubview(closeItemButton)
         container.addSubview(header)
         var headerConstraints = [
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -1951,15 +1934,9 @@ final class TaskbarHoverCardViewController: NSViewController {
                 equalTo: iconView.trailingAnchor, constant: Self.spacing),
             textStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
         ]
-        headerConstraints += [
-            closeItemButton.trailingAnchor.constraint(
-                equalTo: header.trailingAnchor, constant: -6),
-            closeItemButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            closeItemButton.widthAnchor.constraint(equalToConstant: 28),
-            closeItemButton.heightAnchor.constraint(equalToConstant: 28),
+        headerConstraints.append(
             textStack.trailingAnchor.constraint(
-                lessThanOrEqualTo: closeItemButton.leadingAnchor, constant: -4),
-        ]
+                equalTo: header.trailingAnchor, constant: -Self.padding))
         NSLayoutConstraint.activate(headerConstraints)
 
         if tabListHeight > 0 {
@@ -2071,10 +2048,6 @@ final class TaskbarHoverCardViewController: NSViewController {
         onCloseTab(tabs[sender.tag])
     }
 
-    @objc private func closeItem() {
-        onCloseItem()
-    }
-
     private func configureCloseButton(
         _ button: NSButton,
         accessibilityLabel: String,
@@ -2115,7 +2088,6 @@ final class TaskbarHoverPresenter {
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
         onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
-        onCloseItem: @escaping @MainActor () -> Void = {},
         from anchor: TaskbarHoverButton
     ) {
         hide()
@@ -2141,10 +2113,6 @@ final class TaskbarHoverPresenter {
                 },
                 onCloseTab: { [weak self] tab in
                     onCloseTab(tab)
-                    self?.hide()
-                },
-                onCloseItem: { [weak self] in
-                    onCloseItem()
                     self?.hide()
                 }
             )
@@ -2575,9 +2543,6 @@ private final class TaskbarBarView: NSView {
                     },
                     onCloseTab: { [weak self] tab in
                         self?.onWindowCommand(.closeTab(current, tab))
-                    },
-                    onCloseItem: { [weak self] in
-                        self?.onWindowCommand(.closePreview(for: current))
                     },
                     from: anchor
                 )

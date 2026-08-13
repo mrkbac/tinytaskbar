@@ -231,19 +231,9 @@ enum NativeTabSelectionTarget {
     }
 }
 
-enum NativeTabCloseTarget {
-    static func resolve<Element>(
-        elements: [Element],
-        targetTitle: String,
-        isSelected: (Element) -> Bool,
-        title: (Element) -> String
-    ) -> Element? {
-        if let selected = elements.first(where: isSelected) { return selected }
-        let normalizedTitle = CGWindowMatcher.normalized(targetTitle)
-        let titleMatches = elements.filter {
-            CGWindowMatcher.normalized(title($0)) == normalizedTitle
-        }
-        return titleMatches.count == 1 ? titleMatches[0] : nil
+enum AXActionSupport {
+    static func contains(_ action: String, in advertisedActions: [String]) -> Bool {
+        advertisedActions.contains(action)
     }
 }
 
@@ -583,21 +573,36 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             return
         }
 
-        let selectError = AXUIElementPerformAction(tabElement, kAXPressAction as CFString)
-        guard selectError == .success else {
+        let exposesAlternateUI = supportsAction(
+            kAXShowAlternateUIAction as String,
+            on: tabElement)
+        if exposesAlternateUI {
+            _ = AXUIElementPerformAction(
+                tabElement,
+                kAXShowAlternateUIAction as CFString)
+        }
+        defer {
+            if exposesAlternateUI,
+                supportsAction(kAXShowDefaultUIAction as String, on: tabElement)
+            {
+                _ = AXUIElementPerformAction(
+                    tabElement,
+                    kAXShowDefaultUIAction as CFString)
+            }
+        }
+        guard let closeButton = tabCloseButton(for: tabElement) else {
             logger.debug(
-                "Tab close stopped because selecting the target failed pid=\(item.pid, privacy: .public) error=\(selectError.rawValue, privacy: .public)"
+                "Tab close stopped because the tab exposes no close control pid=\(item.pid, privacy: .public)"
             )
             return
         }
-        _ = snapshot()
-        guard let windowElement = selectedWindowElement(for: tab, in: item) else {
+        guard supportsAction(kAXPressAction as String, on: closeButton) else {
             logger.debug(
-                "Tab close stopped because no backing window exists pid=\(item.pid, privacy: .public)"
+                "Tab close stopped because the close control does not advertise AXPress pid=\(item.pid, privacy: .public)"
             )
             return
         }
-        let closeError = pressCloseButton(for: windowElement)
+        let closeError = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
         if closeError != .success {
             logger.debug(
                 "Tab close failed pid=\(item.pid, privacy: .public) error=\(closeError.rawValue, privacy: .public)"
@@ -683,24 +688,10 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         return groupsForPID.count == 1 ? groupsForPID[0] : []
     }
 
-    private func selectedWindowElement(
-        for tab: TaskbarTab,
-        in item: TaskbarItem
-    ) -> AXUIElement? {
-        let elementsForGroup = item.nativeTabGroupID.flatMap {
-            axWindowElementsByGroupID[$0]
+    private func tabCloseButton(for tabElement: AXUIElement) -> AXUIElement? {
+        axElementArray(kAXChildrenAttribute, from: tabElement).first { element in
+            stringAttribute(kAXSubroleAttribute, from: element) == kAXCloseButtonSubrole as String
         }
-        let groupsForPID = axWindowGroupsByPID[item.pid] ?? []
-        let windowElements =
-            elementsForGroup ?? (groupsForPID.count == 1 ? groupsForPID[0] : [])
-        return NativeTabCloseTarget.resolve(
-            elements: windowElements,
-            targetTitle: tab.title,
-            isSelected: {
-                boolAttribute(kAXMainAttribute, from: $0) == true
-                    || boolAttribute(kAXFocusedAttribute, from: $0) == true
-            },
-            title: { stringAttribute(kAXTitleAttribute, from: $0) ?? "" })
     }
 
     private func pressCloseButton(for element: AXUIElement) -> AXError {
@@ -719,6 +710,21 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             kAXPressAction as CFString)
     }
 
+    private func axElementArray(_ attribute: String, from element: AXUIElement) -> [AXUIElement] {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let rawValue
+        else { return [] }
+        if let elements = rawValue as? [AXUIElement] { return elements }
+        guard let array = rawValue as? NSArray else { return [] }
+        return array.compactMap { value in
+            let cfValue = value as CFTypeRef
+            guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
+            return (cfValue as! AXUIElement)
+        }
+    }
+
     private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
         var rawValue: CFTypeRef?
         guard
@@ -728,13 +734,12 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         return rawValue as? String
     }
 
-    private func boolAttribute(_ attribute: String, from element: AXUIElement) -> Bool? {
-        var rawValue: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
-            let rawValue
-        else { return nil }
-        return rawValue as? Bool
+    private func supportsAction(_ action: String, on element: AXUIElement) -> Bool {
+        var rawActions: CFArray?
+        guard AXUIElementCopyActionNames(element, &rawActions) == .success,
+            let actions = rawActions as? [String]
+        else { return false }
+        return AXActionSupport.contains(action, in: actions)
     }
 
     @discardableResult

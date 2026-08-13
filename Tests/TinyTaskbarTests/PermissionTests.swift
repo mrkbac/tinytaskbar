@@ -597,9 +597,7 @@ struct PermissionTests {
                 <= TaskbarHoverCardViewController.padding * 2
                 + TaskbarHoverCardViewController.iconSize
                 + TaskbarHoverCardViewController.spacing
-                + TaskbarHoverCardViewController.maximumTextWidth
-                + TaskbarHoverCardViewController.closeControlWidth)
-        #expect(controller.closeItemButton.image != nil)
+                + TaskbarHoverCardViewController.maximumTextWidth)
         #expect(controller.preferredContentSize.height > 44)
     }
 
@@ -613,15 +611,13 @@ struct PermissionTests {
         ]
         var selectedTab: TaskbarTab?
         var closedTab: TaskbarTab?
-        var didCloseItem = false
         let controller = TaskbarHoverCardViewController(
             applicationName: "Terminal",
             title: "Alpha project",
             icon: nil,
             tabs: tabs,
             onSelectTab: { selectedTab = $0 },
-            onCloseTab: { closedTab = $0 },
-            onCloseItem: { didCloseItem = true }
+            onCloseTab: { closedTab = $0 }
         )
         controller.loadView()
 
@@ -631,9 +627,6 @@ struct PermissionTests {
         #expect(controller.tabButtons[1].layer?.borderWidth == 0)
         #expect(controller.tabCloseButtons.count == tabs.count)
         #expect(controller.tabCloseButtons.allSatisfy { $0.acceptsFirstMouse(for: nil) })
-        #expect(controller.closeItemButton.image != nil)
-        #expect(controller.closeItemButton.acceptsFirstMouse(for: nil))
-        #expect(controller.closeItemButton.accessibilityLabel() == "Close all Terminal tabs")
         #expect(controller.applicationLabel.stringValue == "Terminal")
         #expect(controller.titleLabel.stringValue == "3 Tabs")
         #expect(controller.preferredContentSize.height > 100)
@@ -642,8 +635,6 @@ struct PermissionTests {
         #expect(selectedTab == tabs[1])
         controller.tabCloseButtons[2].performClick(nil)
         #expect(closedTab == tabs[2])
-        controller.closeItemButton.performClick(nil)
-        #expect(didCloseItem)
     }
 
     @Test("native tab context close dispatches the whole group")
@@ -716,46 +707,20 @@ struct PermissionTests {
             ) == "stable-beta")
     }
 
-    @Test("native tab close resolves the selected backing window before title fallback")
-    func nativeTabCloseResolvesBackingWindow() {
-        struct Window: Equatable {
-            let id: String
-            let title: String
-            let isSelected: Bool
-        }
-        let windows = [
-            Window(id: "alpha", title: "Same", isSelected: false),
-            Window(id: "beta", title: "Same", isSelected: true),
-        ]
+    @Test("native tab close uses only actions advertised by Accessibility")
+    func nativeTabCloseRequiresAdvertisedActions() {
         #expect(
-            NativeTabCloseTarget.resolve(
-                elements: windows, targetTitle: "Same",
-                isSelected: \.isSelected, title: \.title
-            ) == windows[1])
+            AXActionSupport.contains(
+                kAXPressAction as String,
+                in: [kAXPressAction as String]))
         #expect(
-            NativeTabCloseTarget.resolve(
-                elements: windows, targetTitle: "Missing",
-                isSelected: { _ in false }, title: \.title
-            ) == nil)
+            !AXActionSupport.contains(
+                kAXPressAction as String,
+                in: [kAXShowAlternateUIAction as String]))
         #expect(
-            NativeTabCloseTarget.resolve(
-                elements: windows, targetTitle: "Same",
-                isSelected: { _ in false }, title: \.title
-            ) == nil)
-    }
-
-    @Test("preview close is scoped to one taskbar item")
-    @MainActor
-    func previewCloseCommandScope() {
-        let tabs = [
-            TaskbarTab(id: "one", title: "One", isSelected: true),
-            TaskbarTab(id: "two", title: "Two", isSelected: false),
-        ]
-        let grouped = makeTaskbarItem(id: "grouped", nativeTabs: tabs)
-        let ordinary = makeTaskbarItem(id: "ordinary")
-
-        #expect(WindowCommand.closePreview(for: grouped) == .closeTabGroup(grouped))
-        #expect(WindowCommand.closePreview(for: ordinary) == .close(ordinary))
+            AXActionSupport.contains(
+                kAXShowAlternateUIAction as String,
+                in: [kAXShowAlternateUIAction as String, kAXShowDefaultUIAction as String]))
     }
 
     @Test("hover tracking emits balanced enter and exit events")
@@ -2228,8 +2193,7 @@ struct PermissionTests {
         id: String,
         title: String? = nil,
         isMinimized: Bool = false,
-        isActive: Bool = false,
-        nativeTabs: [TaskbarTab] = []
+        isActive: Bool = false
     ) -> TaskbarItem {
         TaskbarItem(
             id: id,
@@ -2239,9 +2203,7 @@ struct PermissionTests {
             displayIdentifier: "main",
             cgWindowNumber: nil,
             isMinimized: isMinimized,
-            isActive: isActive,
-            nativeTabGroupID: nativeTabs.count > 1 ? id : nil,
-            nativeTabs: nativeTabs
+            isActive: isActive
         )
     }
 

@@ -740,6 +740,7 @@ struct PermissionTests {
         #expect(!button.isPointerInside)
         #expect(button.acceptsFirstMouse(for: nil))
         #expect(TaskbarHoverPresenter.popoverBehavior == .applicationDefined)
+        #expect(TaskbarHoverPresenter.interactiveExitDelay == .milliseconds(350))
     }
 
     @Test("middle click emits exactly one semantic close command")

@@ -2115,14 +2115,13 @@ final class TaskbarHoverCardViewController: NSViewController {
 @MainActor
 final class TaskbarHoverPresenter {
     private static let delay = Duration.milliseconds(300)
-    private static let interactiveExitDelay = Duration.milliseconds(180)
+    static let interactiveExitDelay = Duration.milliseconds(350)
     static let popoverBehavior = NSPopover.Behavior.applicationDefined
 
     private var pendingShow: Task<Void, Never>?
     private var pendingHide: Task<Void, Never>?
     private weak var requestedAnchor: TaskbarHoverButton?
     private var popover: NSPopover?
-    private var isInteractive = false
 
     func schedule(
         applicationName: String,
@@ -2136,7 +2135,6 @@ final class TaskbarHoverPresenter {
     ) {
         hide()
         requestedAnchor = anchor
-        isInteractive = tabs.count > 1
         pendingShow = Task { @MainActor [weak self, weak anchor] in
             try? await Task.sleep(for: Self.delay)
             guard !Task.isCancelled,
@@ -2187,7 +2185,7 @@ final class TaskbarHoverPresenter {
 
     func pointerExited(from anchor: TaskbarHoverButton) {
         guard requestedAnchor === anchor else { return }
-        guard isInteractive, popover != nil else {
+        guard popover != nil else {
             hide(from: anchor)
             return
         }
@@ -2201,7 +2199,6 @@ final class TaskbarHoverPresenter {
         pendingHide?.cancel()
         pendingHide = nil
         requestedAnchor = nil
-        isInteractive = false
         popover?.performClose(nil)
         popover = nil
     }

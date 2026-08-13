@@ -597,7 +597,9 @@ struct PermissionTests {
                 <= TaskbarHoverCardViewController.padding * 2
                 + TaskbarHoverCardViewController.iconSize
                 + TaskbarHoverCardViewController.spacing
-                + TaskbarHoverCardViewController.maximumTextWidth)
+                + TaskbarHoverCardViewController.maximumTextWidth
+                + TaskbarHoverCardViewController.closeControlWidth)
+        #expect(controller.closeApplicationButton.image != nil)
         #expect(controller.preferredContentSize.height > 44)
     }
 
@@ -610,12 +612,16 @@ struct PermissionTests {
             TaskbarTab(id: "gamma", title: "Gamma shell", isSelected: false),
         ]
         var selectedTab: TaskbarTab?
+        var closedTab: TaskbarTab?
+        var didCloseApplication = false
         let controller = TaskbarHoverCardViewController(
             applicationName: "Terminal",
             title: "Alpha project",
             icon: nil,
             tabs: tabs,
-            onSelectTab: { selectedTab = $0 }
+            onSelectTab: { selectedTab = $0 },
+            onCloseTab: { closedTab = $0 },
+            onCloseApplication: { didCloseApplication = true }
         )
         controller.loadView()
 
@@ -623,12 +629,53 @@ struct PermissionTests {
         #expect(controller.tabButtons.allSatisfy { $0.image == nil })
         #expect(controller.tabButtons[0].layer?.borderWidth == 1)
         #expect(controller.tabButtons[1].layer?.borderWidth == 0)
+        #expect(controller.tabCloseButtons.count == tabs.count)
+        #expect(controller.closeApplicationButton.image != nil)
         #expect(controller.applicationLabel.stringValue == "Terminal")
         #expect(controller.titleLabel.stringValue == "3 Tabs")
         #expect(controller.preferredContentSize.height > 100)
         #expect(controller.view is TaskbarHoverCardView)
         controller.tabButtons[1].performClick(nil)
         #expect(selectedTab == tabs[1])
+        controller.tabCloseButtons[2].performClick(nil)
+        #expect(closedTab == tabs[2])
+        controller.closeApplicationButton.performClick(nil)
+        #expect(didCloseApplication)
+    }
+
+    @Test("native tab context close dispatches the whole group")
+    @MainActor
+    func nativeTabContextMenuClosesGroup() {
+        let tabs = [
+            TaskbarTab(id: "alpha", title: "Alpha", isSelected: true),
+            TaskbarTab(id: "beta", title: "Beta", isSelected: false),
+        ]
+        let item = TaskbarItem(
+            id: "native-group", pid: 42, applicationName: "Terminal", title: "Alpha",
+            displayIdentifier: "main", cgWindowNumber: 7, isActive: false,
+            nativeTabGroupID: "native-group", nativeTabs: tabs)
+        var command: WindowCommand?
+        var closedItem: TaskbarItem?
+        let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { closedItem = $0 },
+            onWindowCommand: { command = $0 })
+        defer { panel.close() }
+        update(panel, frame: frame, items: [item])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        guard let closeItem = taskbarButtons(in: panel).first?.contextualMenu?.items.last,
+            let action = closeItem.action
+        else {
+            Issue.record("native tab group Close command was not rendered")
+            return
+        }
+
+        #expect(closeItem.title == "Close All Tabs")
+        #expect(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
+        #expect(command == .closeTabGroup(item))
+        #expect(closedItem == nil)
     }
 
     @Test("native tab selection focuses the group before pressing the requested tab")
@@ -806,6 +853,60 @@ struct PermissionTests {
 
         #expect(provider.selectedTabIDs == ["tab-beta"])
         #expect(provider.activatedItemIDs == [item.id])
+    }
+
+    @Test("tab close commands route individual and whole-group intent")
+    @MainActor
+    func tabCloseCommandsRouteIntent() {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture item was not projected")
+            return
+        }
+        let tab = TaskbarTab(id: "tab-beta", title: "Beta", isSelected: false, index: 1)
+
+        store.execute(.closeTab(item, tab))
+        store.execute(.closeTabGroup(item))
+
+        #expect(provider.closedTabIDs == ["tab-beta"])
+        #expect(provider.closedGroupIDs == [item.id])
+    }
+
+    @Test("close application closes every projected window with the same identity")
+    @MainActor
+    func closeApplicationClosesMatchingWindows() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let candidates = ["One", "Two"].enumerated().map { index, title in
+            WindowCandidate(
+                stableKey: "window-\(index)", pid: fixturePID,
+                applicationName: "Fixture", applicationIdentity: "com.example.Fixture",
+                title: title, frame: frame.offsetBy(dx: CGFloat(index * 40), dy: 0))
+        }
+        let cgWindows = candidates.enumerated().map { index, candidate in
+            CGWindowMetadata(
+                windowNumber: UInt32(index + 1), ownerPID: fixturePID,
+                bounds: candidate.frame!, title: candidate.title)
+        }
+        let provider = MockWindowSnapshotProvider(
+            snapshot: RawWindowSnapshot(
+                candidates: candidates, cgWindows: cgWindows,
+                displays: [fixtureDisplay], frontmostPID: fixturePID))
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture windows were not projected")
+            return
+        }
+
+        store.execute(.closeApplication(item))
+
+        #expect(provider.closeCount == 2)
     }
 
     @Test("minimize all affects every eligible visible window")
@@ -2160,6 +2261,8 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var activationCount = 0
     var minimizeCount = 0
     var closeCount = 0
+    var closedTabIDs: [String] = []
+    var closedGroupIDs: [String] = []
     var activatedItemIDs: [String] = []
     var selectedTabIDs: [String] = []
     var minimizedItemIDs: [String] = []
@@ -2185,6 +2288,14 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     func selectTab(_ tab: TaskbarTab, in item: TaskbarItem) {
         selectedTabIDs.append(tab.id)
         activate(item)
+    }
+
+    func closeTab(_ tab: TaskbarTab, in _: TaskbarItem) {
+        closedTabIDs.append(tab.id)
+    }
+
+    func closeTabGroup(_ item: TaskbarItem) {
+        closedGroupIDs.append(item.id)
     }
 
     func minimize(_ item: TaskbarItem) {

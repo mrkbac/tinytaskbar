@@ -544,9 +544,10 @@ final class TaskbarStore {
         let requestedItem: TaskbarItem
         switch command {
         case .activate(let item), .minimize(let item), .restore(let item),
-            .close(let item), .minimizeOthers(let item):
+            .close(let item), .closeTabGroup(let item), .closeApplication(let item),
+            .minimizeOthers(let item):
             requestedItem = item
-        case .selectTab(let item, _):
+        case .selectTab(let item, _), .closeTab(let item, _):
             requestedItem = item
         case .minimizeAll:
             return
@@ -561,6 +562,15 @@ final class TaskbarStore {
             provider.minimize(item)
         case .selectTab(_, let tab):
             provider.selectTab(tab, in: item)
+        case .closeTab(_, let tab):
+            provider.closeTab(tab, in: item)
+            requestWindowDisappearanceConfirmation()
+        case .closeTabGroup:
+            provider.closeTabGroup(item)
+            requestWindowDisappearanceConfirmation()
+        case .closeApplication:
+            closeApplicationWindows(matching: item)
+            requestWindowDisappearanceConfirmation()
         case .close:
             provider.close(item)
             requestWindowDisappearanceConfirmation()
@@ -577,6 +587,25 @@ final class TaskbarStore {
             return
         }
         requestRefresh()
+    }
+
+    private func closeApplicationWindows(matching item: TaskbarItem) {
+        let items = WindowOrdering.sorted(Array(state.itemsByDisplay.values.joined()))
+        let matches = items.filter { candidate in
+            if let identity = item.applicationIdentity {
+                return candidate.applicationIdentity == identity
+            }
+            return candidate.pid == item.pid
+        }
+        var closedGroupIDs: Set<String> = []
+        for candidate in matches {
+            if let groupID = candidate.nativeTabGroupID {
+                guard closedGroupIDs.insert(groupID).inserted else { continue }
+                provider.closeTabGroup(candidate)
+            } else {
+                provider.close(candidate)
+            }
+        }
     }
 
     func close(_ item: TaskbarItem) {
@@ -1796,16 +1825,21 @@ final class TaskbarHoverCardViewController: NSViewController {
     static let iconSize: CGFloat = 24
     static let padding: CGFloat = 10
     static let spacing: CGFloat = 8
+    static let closeControlWidth: CGFloat = 32
     static let tabRowHeight: CGFloat = 26
     static let maximumTabListHeight: CGFloat = 234
 
     let applicationLabel: NSTextField
     let titleLabel: NSTextField
     let iconView: NSImageView
+    let closeApplicationButton: NSButton
     private(set) var tabButtons: [NSButton] = []
+    private(set) var tabCloseButtons: [NSButton] = []
 
     private let tabs: [TaskbarTab]
     private let onSelectTab: @MainActor (TaskbarTab) -> Void
+    private let onCloseTab: @MainActor (TaskbarTab) -> Void
+    private let onCloseApplication: @MainActor () -> Void
     private let showsTabList: Bool
     private let headerHeight: CGFloat
     private let tabListHeight: CGFloat
@@ -1815,15 +1849,20 @@ final class TaskbarHoverCardViewController: NSViewController {
         title: String,
         icon: NSImage?,
         tabs: [TaskbarTab] = [],
-        onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in }
+        onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
+        onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
+        onCloseApplication: @escaping @MainActor () -> Void = {}
     ) {
         showsTabList = tabs.count > 1
         let displayedTitle = showsTabList ? "\(tabs.count) Tabs" : title
         applicationLabel = NSTextField(labelWithString: applicationName)
         titleLabel = NSTextField(wrappingLabelWithString: displayedTitle)
         iconView = NSImageView(image: icon ?? NSImage())
+        closeApplicationButton = NSButton()
         self.tabs = tabs
         self.onSelectTab = onSelectTab
+        self.onCloseTab = onCloseTab
+        self.onCloseApplication = onCloseApplication
 
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .medium)
         let applicationFont = NSFont.systemFont(ofSize: 10, weight: .regular)
@@ -1841,7 +1880,7 @@ final class TaskbarHoverCardViewController: NSViewController {
             : 0
         let tabNaturalWidth =
             tabs.map {
-                ceil(($0.title as NSString).size(withAttributes: [.font: titleFont]).width) + 12
+                ceil(($0.title as NSString).size(withAttributes: [.font: titleFont]).width) + 36
             }.max() ?? 0
         let textWidth = min(
             Self.maximumTextWidth,
@@ -1866,7 +1905,8 @@ final class TaskbarHoverCardViewController: NSViewController {
             : 0
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(
-            width: Self.padding + Self.iconSize + Self.spacing + textWidth + Self.padding,
+            width: Self.padding + Self.iconSize + Self.spacing + textWidth
+                + Self.closeControlWidth + Self.padding,
             height: headerHeight + (tabListHeight > 0 ? 1 + tabListHeight : 0)
         )
     }
@@ -1904,8 +1944,16 @@ final class TaskbarHoverCardViewController: NSViewController {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(iconView)
         header.addSubview(textStack)
+        configureCloseButton(
+            closeApplicationButton,
+            accessibilityLabel: "Close all \(applicationLabel.stringValue) windows",
+            action: #selector(closeApplication))
+        closeApplicationButton.image = closeApplicationButton.image?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        closeApplicationButton.contentTintColor = .labelColor
+        header.addSubview(closeApplicationButton)
         container.addSubview(header)
-        NSLayoutConstraint.activate([
+        var headerConstraints = [
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             header.topAnchor.constraint(equalTo: container.topAnchor),
@@ -1917,10 +1965,18 @@ final class TaskbarHoverCardViewController: NSViewController {
             iconView.heightAnchor.constraint(equalToConstant: Self.iconSize),
             textStack.leadingAnchor.constraint(
                 equalTo: iconView.trailingAnchor, constant: Self.spacing),
-            textStack.trailingAnchor.constraint(
-                equalTo: header.trailingAnchor, constant: -Self.padding),
             textStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-        ])
+        ]
+        headerConstraints += [
+            closeApplicationButton.trailingAnchor.constraint(
+                equalTo: header.trailingAnchor, constant: -6),
+            closeApplicationButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            closeApplicationButton.widthAnchor.constraint(equalToConstant: 28),
+            closeApplicationButton.heightAnchor.constraint(equalToConstant: 28),
+            textStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: closeApplicationButton.leadingAnchor, constant: -4),
+        ]
+        NSLayoutConstraint.activate(headerConstraints)
 
         if tabListHeight > 0 {
             addTabList(to: container, below: header)
@@ -1948,7 +2004,11 @@ final class TaskbarHoverCardViewController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
 
-        tabButtons = tabs.enumerated().map { index, tab in
+        tabButtons = []
+        tabCloseButtons = []
+        for (index, tab) in tabs.enumerated() {
+            let row = NSView()
+            row.translatesAutoresizingMaskIntoConstraints = false
             let button = TaskbarTabButton(
                 title: tab.title,
                 target: self,
@@ -1967,12 +2027,29 @@ final class TaskbarHoverCardViewController: NSViewController {
             button.setAccessibilityLabel(tab.title)
             button.setAccessibilityValue(tab.isSelected ? "Selected tab" : "Tab")
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.heightAnchor.constraint(equalToConstant: Self.tabRowHeight).isActive = true
-            button.widthAnchor.constraint(
-                equalToConstant: preferredContentSize.width - 12
-            ).isActive = true
-            stack.addArrangedSubview(button)
-            return button
+            let closeButton = NSButton()
+            closeButton.tag = index
+            configureCloseButton(
+                closeButton,
+                accessibilityLabel: "Close \(tab.title)",
+                action: #selector(closeTab(_:)))
+            row.addSubview(button)
+            row.addSubview(closeButton)
+            NSLayoutConstraint.activate([
+                row.widthAnchor.constraint(equalToConstant: preferredContentSize.width - 12),
+                row.heightAnchor.constraint(equalToConstant: Self.tabRowHeight),
+                button.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                button.topAnchor.constraint(equalTo: row.topAnchor),
+                button.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+                button.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -2),
+                closeButton.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -2),
+                closeButton.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                closeButton.widthAnchor.constraint(equalToConstant: 22),
+                closeButton.heightAnchor.constraint(equalToConstant: 22),
+            ])
+            stack.addArrangedSubview(row)
+            tabButtons.append(button)
+            tabCloseButtons.append(closeButton)
         }
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 6),
@@ -2004,6 +2081,35 @@ final class TaskbarHoverCardViewController: NSViewController {
         guard tabs.indices.contains(sender.tag) else { return }
         onSelectTab(tabs[sender.tag])
     }
+
+    @objc private func closeTab(_ sender: NSButton) {
+        guard tabs.indices.contains(sender.tag) else { return }
+        onCloseTab(tabs[sender.tag])
+    }
+
+    @objc private func closeApplication() {
+        onCloseApplication()
+    }
+
+    private func configureCloseButton(
+        _ button: NSButton,
+        accessibilityLabel: String,
+        action: Selector
+    ) {
+        button.target = self
+        button.action = action
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        button.image = button.image?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 10, weight: .medium))
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = accessibilityLabel
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setAccessibilityLabel(accessibilityLabel)
+    }
 }
 
 @MainActor
@@ -2024,6 +2130,8 @@ final class TaskbarHoverPresenter {
         icon: NSImage?,
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
+        onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
+        onCloseApplication: @escaping @MainActor () -> Void = {},
         from anchor: TaskbarHoverButton
     ) {
         hide()
@@ -2046,6 +2154,14 @@ final class TaskbarHoverPresenter {
                 tabs: tabs,
                 onSelectTab: { [weak self] tab in
                     onSelectTab(tab)
+                    self?.hide()
+                },
+                onCloseTab: { [weak self] tab in
+                    onCloseTab(tab)
+                    self?.hide()
+                },
+                onCloseApplication: { [weak self] in
+                    onCloseApplication()
                     self?.hide()
                 }
             )
@@ -2453,6 +2569,12 @@ private final class TaskbarBarView: NSView {
                     onSelectTab: { [weak self] tab in
                         self?.onWindowCommand(.selectTab(current, tab))
                     },
+                    onCloseTab: { [weak self] tab in
+                        self?.onWindowCommand(.closeTab(current, tab))
+                    },
+                    onCloseApplication: { [weak self] in
+                        self?.onWindowCommand(.closeApplication(current))
+                    },
                     from: anchor
                 )
             } else {
@@ -2532,7 +2654,8 @@ private final class TaskbarBarView: NSView {
         menu.addItem(.separator())
         menu.addItem(tinyTaskbarMenuItem(for: item))
         menu.addItem(.separator())
-        menu.addItem(windowMenuItem("Close", action: #selector(closeWindow(_:)), item: item))
+        let closeTitle = item.nativeTabs.count > 1 ? "Close All Tabs" : "Close"
+        menu.addItem(windowMenuItem(closeTitle, action: #selector(closeWindow(_:)), item: item))
         return menu
     }
 
@@ -2732,7 +2855,11 @@ private final class TaskbarBarView: NSView {
         else {
             return
         }
-        onClose(item)
+        if item.nativeTabs.count > 1 {
+            onWindowCommand(.closeTabGroup(item))
+        } else {
+            onClose(item)
+        }
     }
 
     private func currentItem(_ sender: NSMenuItem) -> TaskbarItem? {

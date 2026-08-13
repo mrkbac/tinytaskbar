@@ -77,6 +77,14 @@
             activate(item)
         }
 
+        func closeTab(_: TaskbarTab, in item: TaskbarItem) {
+            close(item)
+        }
+
+        func closeTabGroup(_ item: TaskbarItem) {
+            close(item)
+        }
+
         func minimize(_ item: TaskbarItem) {
             minimizedItemIDs.insert(item.id)
             if activeItemID == item.id {

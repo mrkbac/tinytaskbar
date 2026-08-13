@@ -169,6 +169,9 @@ enum WindowCommand: Equatable, Sendable {
     case minimizeAll
     case restore(TaskbarItem)
     case selectTab(TaskbarItem, TaskbarTab)
+    case closeTab(TaskbarItem, TaskbarTab)
+    case closeTabGroup(TaskbarItem)
+    case closeApplication(TaskbarItem)
     case close(TaskbarItem)
     case minimizeOthers(TaskbarItem)
 }

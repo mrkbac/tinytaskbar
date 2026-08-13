@@ -30,6 +30,8 @@ protocol WindowSnapshotProvider: AnyObject {
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
     func selectTab(_ tab: TaskbarTab, in item: TaskbarItem)
+    func closeTab(_ tab: TaskbarTab, in item: TaskbarItem)
+    func closeTabGroup(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
     @discardableResult
@@ -252,6 +254,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var axTabElementsByID: [String: AXUIElement] = [:]
     private var axTabElementsByGroupID: [String: [AXUIElement]] = [:]
     private var axTabGroupsByPID: [Int32: [[AXUIElement]]] = [:]
+    private var axWindowElementsByGroupID: [String: [AXUIElement]] = [:]
+    private var axWindowGroupsByPID: [Int32: [[AXUIElement]]] = [:]
 
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
@@ -291,6 +295,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         var nextTabElements: [String: AXUIElement] = [:]
         var nextTabElementsByGroupID: [String: [AXUIElement]] = [:]
         var nextTabGroupsByPID: [Int32: [[AXUIElement]]] = [:]
+        var nextWindowElementsByGroupID: [String: [AXUIElement]] = [:]
+        var nextWindowGroupsByPID: [Int32: [String: [AXUIElement]]] = [:]
         var nextPhysicalElements: [AXPhysicalWindowIdentity: AXUIElement] = [:]
         var ambiguousPhysicalIdentities: Set<AXPhysicalWindowIdentity> = []
         var axWindowListReadPIDs: Set<Int32> = []
@@ -329,6 +335,12 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                     nextTabElementsByGroupID[groupID] = record.tabElements
                     nextTabGroupsByPID[record.candidate.pid, default: []].append(
                         record.tabElements)
+                }
+                if let groupID = record.candidate.nativeTabGroupID {
+                    nextWindowElementsByGroupID[groupID, default: []].append(record.element)
+                    nextWindowGroupsByPID[record.candidate.pid, default: [:]][
+                        groupID, default: []
+                    ].append(record.element)
                 }
             }
             let startIndex = allRecords.count
@@ -403,6 +415,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         axTabElementsByID = nextTabElements
         axTabElementsByGroupID = nextTabElementsByGroupID
         axTabGroupsByPID = nextTabGroupsByPID
+        axWindowElementsByGroupID = nextWindowElementsByGroupID
+        axWindowGroupsByPID = nextWindowGroupsByPID.mapValues { Array($0.values) }
 
         return RawWindowSnapshot(
             candidates: candidates,
@@ -538,6 +552,49 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         }
     }
 
+    func closeTab(_ tab: TaskbarTab, in item: TaskbarItem) {
+        _ = snapshot()
+        let currentElements = currentTabElements(for: item)
+        guard
+            let tabElement = NativeTabSelectionTarget.resolve(
+                stableElement: axTabElementsByID[tab.id],
+                currentElements: currentElements,
+                index: tab.index),
+            let closeButton = tabCloseButton(for: tabElement)
+        else {
+            logger.debug(
+                "Tab close stopped because no current close control exists for \(tab.id, privacy: .public)"
+            )
+            return
+        }
+        let error = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+        if error != .success {
+            logger.debug(
+                "Tab close failed pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
+            )
+        }
+        onChange?(error == .success ? .windowDestroyed : .ordinary)
+    }
+
+    func closeTabGroup(_ item: TaskbarItem) {
+        _ = snapshot()
+        let elementsForGroup = item.nativeTabGroupID.flatMap {
+            axWindowElementsByGroupID[$0]
+        }
+        let groupsForPID = axWindowGroupsByPID[item.pid] ?? []
+        let windowElements =
+            elementsForGroup ?? (groupsForPID.count == 1 ? groupsForPID[0] : [])
+        guard !windowElements.isEmpty else {
+            close(item)
+            return
+        }
+        var didCloseWindow = false
+        for element in windowElements {
+            didCloseWindow = pressCloseButton(for: element) == .success || didCloseWindow
+        }
+        onChange?(didCloseWindow ? .windowDestroyed : .ordinary)
+    }
+
     func minimize(_ item: TaskbarItem) {
         guard let element = actionableElement(for: item) else {
             logger.debug(
@@ -566,24 +623,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             return
         }
 
-        var rawCloseButton: CFTypeRef?
-        let copyError = AXUIElementCopyAttributeValue(
-            element,
-            kAXCloseButtonAttribute as CFString,
-            &rawCloseButton
-        )
-        guard copyError == .success,
-            let rawCloseButton,
-            CFGetTypeID(rawCloseButton) == AXUIElementGetTypeID()
-        else {
-            logger.debug(
-                "Close button unavailable pid=\(item.pid, privacy: .public) error=\(copyError.rawValue, privacy: .public)"
-            )
-            return
-        }
-
-        let closeButton = rawCloseButton as! AXUIElement
-        let pressError = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+        let pressError = pressCloseButton(for: element)
         if pressError == .success {
             axElementsByStableKey.removeValue(forKey: item.id)
             if let cgWindowNumber = item.cgWindowNumber {
@@ -601,6 +641,62 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         // press was delivered. Refresh once and let the target application's
         // resulting window state remain authoritative.
         onChange?(pressError == .success ? .windowDestroyed : .ordinary)
+    }
+
+    private func currentTabElements(for item: TaskbarItem) -> [AXUIElement] {
+        if let groupID = item.nativeTabGroupID,
+            let elements = axTabElementsByGroupID[groupID]
+        {
+            return elements
+        }
+        let groupsForPID = axTabGroupsByPID[item.pid] ?? []
+        return groupsForPID.count == 1 ? groupsForPID[0] : []
+    }
+
+    private func tabCloseButton(for tabElement: AXUIElement) -> AXUIElement? {
+        axElementArray(kAXChildrenAttribute, from: tabElement).first { element in
+            stringAttribute(kAXSubroleAttribute, from: element) == kAXCloseButtonSubrole as String
+        }
+    }
+
+    private func pressCloseButton(for element: AXUIElement) -> AXError {
+        var rawCloseButton: CFTypeRef?
+        let copyError = AXUIElementCopyAttributeValue(
+            element,
+            kAXCloseButtonAttribute as CFString,
+            &rawCloseButton
+        )
+        guard copyError == .success,
+            let rawCloseButton,
+            CFGetTypeID(rawCloseButton) == AXUIElementGetTypeID()
+        else { return copyError }
+        return AXUIElementPerformAction(
+            rawCloseButton as! AXUIElement,
+            kAXPressAction as CFString)
+    }
+
+    private func axElementArray(_ attribute: String, from element: AXUIElement) -> [AXUIElement] {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let rawValue
+        else { return [] }
+        if let elements = rawValue as? [AXUIElement] { return elements }
+        guard let array = rawValue as? NSArray else { return [] }
+        return array.compactMap { value in
+            let cfValue = value as CFTypeRef
+            guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
+            return (cfValue as! AXUIElement)
+        }
+    }
+
+    private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let rawValue
+        else { return nil }
+        return rawValue as? String
     }
 
     @discardableResult

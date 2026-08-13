@@ -19,9 +19,14 @@ private struct AXPhysicalWindowIdentity: Hashable {
     let cgWindowNumber: UInt32
 }
 
+enum WindowSnapshotChange: Equatable, Sendable {
+    case ordinary
+    case windowDestroyed
+}
+
 @MainActor
 protocol WindowSnapshotProvider: AnyObject {
-    var onChange: (@MainActor @Sendable () -> Void)? { get set }
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func activate(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
@@ -196,8 +201,10 @@ struct WindowElementIdentityRegistry<Element> {
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
     private lazy var inspector = AXWindowInspector(logger: logger)
-    private lazy var observerRegistry = AXObserverRegistry(logger: logger) { [weak self] in
-        self?.onChange?()
+    private lazy var observerRegistry = AXObserverRegistry(logger: logger) {
+        [weak self] notification in
+        self?.onChange?(
+            notification == kAXUIElementDestroyedNotification ? .windowDestroyed : .ordinary)
     }
     private var identityRegistry = WindowElementIdentityRegistry<AXUIElement> {
         CFEqual($0, $1)
@@ -205,7 +212,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var axElementsByStableKey: [String: AXUIElement] = [:]
     private var axElementsByPhysicalIdentity: [AXPhysicalWindowIdentity: AXUIElement] = [:]
 
-    var onChange: (@MainActor @Sendable () -> Void)?
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
     init() {
         let error = AXUIElementSetMessagingTimeout(
@@ -415,7 +422,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             )
         }
 
-        onChange?()
+        onChange?(.ordinary)
     }
 
     func minimize(_ item: TaskbarItem) {
@@ -436,7 +443,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 "Minimize failed pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
             )
         }
-        onChange?()
+        onChange?(.ordinary)
     }
 
     func close(_ item: TaskbarItem) {
@@ -480,7 +487,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         // A modal save prompt can make AX report cannotComplete even though the
         // press was delivered. Refresh once and let the target application's
         // resulting window state remain authoritative.
-        onChange?()
+        onChange?(pressError == .success ? .windowDestroyed : .ordinary)
     }
 
     @discardableResult
@@ -743,12 +750,12 @@ private struct AXApplicationRecord {
 @MainActor
 private final class AXObserverRegistry {
     private let logger: Logger
-    private let onNotification: @MainActor @Sendable () -> Void
+    private let onNotification: @MainActor @Sendable (String) -> Void
     private var observers: [pid_t: AXApplicationObserver] = [:]
 
     init(
         logger: Logger,
-        onNotification: @escaping @MainActor @Sendable () -> Void
+        onNotification: @escaping @MainActor @Sendable (String) -> Void
     ) {
         self.logger = logger
         self.onNotification = onNotification
@@ -789,7 +796,7 @@ private final class AXObserverRegistry {
 private final class AXApplicationObserver: @unchecked Sendable {
     private let pid: pid_t
     private let logger: Logger
-    private let onNotification: @MainActor @Sendable () -> Void
+    private let onNotification: @MainActor @Sendable (String) -> Void
     private var observer: AXObserver?
     private var applicationElement: AXUIElement
     private var windowElements: [String: AXUIElement] = [:]
@@ -798,7 +805,7 @@ private final class AXApplicationObserver: @unchecked Sendable {
         pid: pid_t,
         applicationElement: AXUIElement,
         logger: Logger,
-        onNotification: @escaping @MainActor @Sendable () -> Void
+        onNotification: @escaping @MainActor @Sendable (String) -> Void
     ) {
         self.pid = pid
         self.applicationElement = applicationElement
@@ -878,13 +885,13 @@ private final class AXApplicationObserver: @unchecked Sendable {
         }
     }
 
-    private func handleNotification() {
-        onNotification()
+    private func handleNotification(_ notification: String) {
+        onNotification(notification)
     }
 
-    nonisolated func notificationReceived() {
+    nonisolated func notificationReceived(_ notification: String) {
         Task { @MainActor [weak self] in
-            self?.handleNotification()
+            self?.handleNotification(notification)
         }
     }
 }
@@ -892,12 +899,12 @@ private final class AXApplicationObserver: @unchecked Sendable {
 private func axObserverCallback(
     _: AXObserver,
     _: AXUIElement,
-    _: CFString,
+    notification: CFString,
     _ refcon: UnsafeMutableRawPointer?
 ) {
     guard let refcon else { return }
     let observer = Unmanaged<AXApplicationObserver>.fromOpaque(refcon).takeUnretainedValue()
-    observer.notificationReceived()
+    observer.notificationReceived(notification as String)
 }
 
 enum CGWindowReader {

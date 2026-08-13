@@ -78,8 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let provider = self.provider
         let store = self.store
-        provider.onChange = { [weak store] in
+        provider.onChange = { [weak store] change in
             store?.requestRefresh()
+            if change == .windowDestroyed {
+                store?.requestWindowDisappearanceConfirmation()
+            }
         }
         store.onStateChange = { [weak self] state in
             self?.render(state: state)

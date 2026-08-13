@@ -1141,6 +1141,44 @@ struct PermissionTests {
         #expect(provider.snapshotCount == 1)
     }
 
+    @Test("close confirms disappearance after an early stale snapshot")
+    @MainActor
+    func closeSchedulesSettledConfirmation() async {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        await waitForSnapshot(from: provider)
+
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture item was not projected")
+            return
+        }
+        store.execute(.close(item))
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            provider.snapshotValue = RawWindowSnapshot(
+                candidates: [],
+                cgWindows: [],
+                displays: [fixtureDisplay],
+                frontmostPID: nil,
+                evidence: WindowSnapshotEvidence(
+                    isComplete: true,
+                    knownApplicationPIDs: [fixturePID],
+                    axWindowListReadPIDs: [fixturePID]))
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while !store.state.itemsByDisplay.isEmpty, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(store.state.itemsByDisplay.isEmpty)
+        #expect(provider.closeCount == 1)
+        #expect(provider.snapshotCount >= 4)
+    }
+
     @Test("repeated AX/CG gaps retain item identity and order for a long move")
     func transientSnapshotContinuity() {
         let display = DisplayDescriptor(
@@ -1951,7 +1989,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var activatedItemIDs: [String] = []
     var minimizedItemIDs: [String] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
-    var onChange: (@MainActor @Sendable () -> Void)?
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
     init(snapshot: RawWindowSnapshot? = nil) {
         if let snapshot {

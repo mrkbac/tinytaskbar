@@ -281,9 +281,11 @@ private struct TaskbarWorkAreaAdjustment {
 @MainActor
 final class TaskbarStore {
     private static let maximumWorkAreaAdjustmentAttempts = 5
+    private static let windowDisappearanceConfirmationDelay = Duration.milliseconds(350)
     private let provider: any WindowSnapshotProvider
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "refresh")
     private var pendingRefresh: Task<Void, Never>?
+    private var pendingWindowDisappearanceConfirmation: Task<Void, Never>?
     private var pendingWorkAreaVerification: Task<Void, Never>?
     private var continuity = TaskbarStateContinuity()
     private var pendingRefreshCause: TaskbarRefreshCause = .ordinary
@@ -328,6 +330,8 @@ final class TaskbarStore {
         guard available else {
             pendingRefresh?.cancel()
             pendingRefresh = nil
+            pendingWindowDisappearanceConfirmation?.cancel()
+            pendingWindowDisappearanceConfirmation = nil
             pendingRefreshCause = .ordinary
             removeActiveSpaceObserver()
             if state != .empty {
@@ -357,6 +361,17 @@ final class TaskbarStore {
             guard !Task.isCancelled else { return }
             self?.pendingRefresh = nil
             self?.refreshNow()
+        }
+    }
+
+    func requestWindowDisappearanceConfirmation() {
+        guard accessibilityAvailable else { return }
+        pendingWindowDisappearanceConfirmation?.cancel()
+        pendingWindowDisappearanceConfirmation = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.windowDisappearanceConfirmationDelay)
+            guard !Task.isCancelled, let self, self.accessibilityAvailable else { return }
+            self.pendingWindowDisappearanceConfirmation = nil
+            self.refreshNow()
         }
     }
 
@@ -492,6 +507,7 @@ final class TaskbarStore {
             provider.minimize(item)
         case .close:
             provider.close(item)
+            requestWindowDisappearanceConfirmation()
         case .minimizeOthers:
             let currentItems = state.itemsByDisplay[item.displayIdentifier] ?? []
             for other in currentItems
@@ -511,12 +527,15 @@ final class TaskbarStore {
         guard accessibilityAvailable else { return }
         provider.close(item)
         requestRefresh()
+        requestWindowDisappearanceConfirmation()
     }
 
     func stop() {
         releaseTaskbarWorkAreas()
         pendingRefresh?.cancel()
         pendingRefresh = nil
+        pendingWindowDisappearanceConfirmation?.cancel()
+        pendingWindowDisappearanceConfirmation = nil
         pendingWorkAreaVerification?.cancel()
         pendingWorkAreaVerification = nil
         pendingRefreshCause = .ordinary

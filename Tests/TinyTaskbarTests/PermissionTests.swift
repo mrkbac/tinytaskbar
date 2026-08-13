@@ -600,10 +600,12 @@ struct PermissionTests {
     func hoverCardShowsFullTitle() {
         let title = String(repeating: "A very long document title ", count: 12)
         let icon = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
+        var didCloseWindow = false
         let controller = TaskbarHoverCardViewController(
             applicationName: "Editor",
             title: title,
-            icon: icon
+            icon: icon,
+            onCloseWindow: { didCloseWindow = true }
         )
         controller.loadView()
 
@@ -618,7 +620,13 @@ struct PermissionTests {
                 <= TaskbarHoverCardViewController.padding * 2
                 + TaskbarHoverCardViewController.iconSize
                 + TaskbarHoverCardViewController.spacing
-                + TaskbarHoverCardViewController.maximumTextWidth)
+                + TaskbarHoverCardViewController.maximumTextWidth
+                + TaskbarHoverCardViewController.closeControlWidth)
+        #expect(controller.closeWindowButton?.image != nil)
+        #expect(controller.closeWindowButton?.acceptsFirstMouse(for: nil) == true)
+        #expect(controller.closeWindowButton?.accessibilityLabel() == "Close Editor window")
+        controller.closeWindowButton?.performClick(nil)
+        #expect(didCloseWindow)
         #expect(controller.preferredContentSize.height > 44)
     }
 
@@ -648,6 +656,7 @@ struct PermissionTests {
         #expect(controller.tabButtons[1].layer?.borderWidth == 0)
         #expect(controller.tabCloseButtons.count == tabs.count)
         #expect(controller.tabCloseButtons.allSatisfy { $0.acceptsFirstMouse(for: nil) })
+        #expect(controller.closeWindowButton == nil)
         #expect(controller.applicationLabel.stringValue == "Terminal")
         #expect(controller.titleLabel.stringValue == "3 Tabs")
         #expect(controller.preferredContentSize.height > 100)

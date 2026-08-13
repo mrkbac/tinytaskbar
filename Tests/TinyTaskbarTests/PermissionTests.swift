@@ -373,6 +373,55 @@ struct PermissionTests {
         )
     }
 
+    @Test("taskbar bottom edge activates the aligned window button")
+    @MainActor
+    func taskbarBottomEdgeClick() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let item = makeTaskbarItem(id: "bottom-edge")
+        var activatedItem: TaskbarItem?
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { activatedItem = $0 },
+            onClose: { _ in })
+        defer { panel.close() }
+
+        update(panel, frame: frame, items: [item])
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let contentView = panel.contentView,
+            let button = taskbarButtons(in: panel).first
+        else {
+            Issue.record("taskbar button was not rendered")
+            return
+        }
+
+        let buttonFrame = contentView.convert(button.bounds, from: button)
+        let bottomEdgePoint = NSPoint(
+            x: buttonFrame.midX,
+            y: contentView.bounds.minY + 0.25)
+        #expect(!buttonFrame.contains(bottomEdgePoint))
+        #expect(contentView.hitTest(bottomEdgePoint) === contentView)
+
+        guard
+            let event = NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: contentView.convert(bottomEdgePoint, to: nil),
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: panel.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1)
+        else {
+            Issue.record("bottom-edge mouse event could not be created")
+            return
+        }
+
+        contentView.mouseDown(with: event)
+        #expect(activatedItem?.id == item.id)
+    }
+
     @Test("ordered taskbar document, stack, and button stay vertically centered")
     @MainActor
     func taskbarDocumentAndButtonMidpoints() {

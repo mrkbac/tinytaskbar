@@ -1840,6 +1840,25 @@ private final class TaskbarBarView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Preserve the bottom edge as a Fitts's-law target. The visible controls
+        // remain vertically inset, but the otherwise empty strip at y == 0 must
+        // behave like the control directly above it.
+        if bottomEdgeControl(at: point) != nil {
+            return self
+        }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard event.buttonNumber == 0, let control = bottomEdgeControl(at: point) else {
+            super.mouseDown(with: event)
+            return
+        }
+        control.performClick(nil)
+    }
+
     override func layout() {
         super.layout()
         visualEffectView.frame = bounds
@@ -1898,6 +1917,18 @@ private final class TaskbarBarView: NSView {
         if scrollView.contentView.bounds.origin.x > maximumX {
             scrollView.contentView.scroll(to: NSPoint(x: maximumX, y: 0))
             scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+    }
+
+    private func bottomEdgeControl(at point: NSPoint) -> NSButton? {
+        guard bounds.contains(point),
+            point.y >= bounds.minY,
+            point.y < scrollView.frame.minY
+        else { return nil }
+
+        let stackPoint = stackView.convert(point, from: self)
+        return stackView.arrangedSubviews.compactMap { $0 as? NSButton }.first {
+            stackPoint.x >= $0.frame.minX && stackPoint.x < $0.frame.maxX
         }
     }
 

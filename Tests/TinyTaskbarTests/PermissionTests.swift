@@ -373,6 +373,26 @@ struct PermissionTests {
         )
     }
 
+    @Test("taskbar button content keeps a small leading inset")
+    @MainActor
+    func taskbarButtonContentLeadingInset() {
+        let button = TaskbarButton(frame: NSRect(x: 0, y: 0, width: 180, height: 27))
+        guard let cell = button.cell as? TaskbarButtonCell else {
+            Issue.record("taskbar button did not install its content cell")
+            return
+        }
+        let original = NSRect(x: 2, y: 3, width: 174, height: 20)
+        let imageFrame = cell.insetImageFrame(original)
+        let titleFrame = cell.insetTitleFrame(original)
+
+        #expect(imageFrame.minX == original.minX + TaskbarButtonCell.contentLeadingInset)
+        #expect(imageFrame.size == original.size)
+        #expect(titleFrame.minX == original.minX + TaskbarButtonCell.contentLeadingInset)
+        #expect(titleFrame.maxX == original.maxX)
+        #expect(titleFrame.minY == original.minY)
+        #expect(titleFrame.height == original.height)
+    }
+
     @Test("taskbar bottom edge activates the aligned window button")
     @MainActor
     func taskbarBottomEdgeClick() {

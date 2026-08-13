@@ -1492,6 +1492,35 @@ class TaskbarHoverButton: NSButton {
 }
 
 @MainActor
+final class TaskbarButtonCell: NSButtonCell {
+    static let contentLeadingInset: CGFloat = 3
+
+    override func drawImage(_ image: NSImage, withFrame frame: NSRect, in controlView: NSView) {
+        super.drawImage(image, withFrame: insetImageFrame(frame), in: controlView)
+    }
+
+    override func drawTitle(
+        _ title: NSAttributedString,
+        withFrame frame: NSRect,
+        in controlView: NSView
+    ) -> NSRect {
+        super.drawTitle(title, withFrame: insetTitleFrame(frame), in: controlView)
+    }
+
+    func insetImageFrame(_ frame: NSRect) -> NSRect {
+        frame.offsetBy(dx: Self.contentLeadingInset, dy: 0)
+    }
+
+    func insetTitleFrame(_ frame: NSRect) -> NSRect {
+        NSRect(
+            x: frame.minX + Self.contentLeadingInset,
+            y: frame.minY,
+            width: max(0, frame.width - Self.contentLeadingInset),
+            height: frame.height)
+    }
+}
+
+@MainActor
 final class TaskbarButton: TaskbarHoverButton {
     var contextualMenu: NSMenu?
     var itemID = ""
@@ -1503,6 +1532,16 @@ final class TaskbarButton: TaskbarHoverButton {
         didSet { invalidateIntrinsicContentSize() }
     }
     private(set) var presentsActiveFocus = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        cell = TaskbarButtonCell(textCell: "")
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        cell = TaskbarButtonCell(textCell: "")
+    }
 
     override var intrinsicContentSize: NSSize {
         var size = super.intrinsicContentSize
@@ -1559,7 +1598,6 @@ final class TaskbarButton: TaskbarHoverButton {
             ? NSColor.controlAccentColor.withAlphaComponent(0.48).cgColor
             : NSColor.clear.cgColor
     }
-
 }
 
 @MainActor

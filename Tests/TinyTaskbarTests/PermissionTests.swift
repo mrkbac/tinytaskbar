@@ -740,7 +740,13 @@ struct PermissionTests {
         #expect(!button.isPointerInside)
         #expect(button.acceptsFirstMouse(for: nil))
         #expect(TaskbarHoverPresenter.popoverBehavior == .applicationDefined)
-        #expect(TaskbarHoverPresenter.interactiveExitDelay == .milliseconds(350))
+        #expect(TaskbarHoverPresenter.interactivePollDelay == .milliseconds(80))
+        let corridor = TaskbarHoverPresenter.interactionCorridor(
+            anchorFrame: NSRect(x: 100, y: 0, width: 120, height: 30),
+            popoverFrame: NSRect(x: 80, y: 36, width: 200, height: 180))
+        #expect(corridor.contains(NSPoint(x: 160, y: 33)))
+        #expect(corridor.contains(NSPoint(x: 270, y: 200)))
+        #expect(!corridor.contains(NSPoint(x: 300, y: 33)))
     }
 
     @Test("middle click emits exactly one semantic close command")

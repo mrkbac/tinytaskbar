@@ -2115,7 +2115,8 @@ final class TaskbarHoverCardViewController: NSViewController {
 @MainActor
 final class TaskbarHoverPresenter {
     private static let delay = Duration.milliseconds(300)
-    static let interactiveExitDelay = Duration.milliseconds(350)
+    static let interactivePollDelay = Duration.milliseconds(80)
+    static let interactionMargin: CGFloat = 8
     static let popoverBehavior = NSPopover.Behavior.applicationDefined
 
     private var pendingShow: Task<Void, Never>?
@@ -2206,10 +2207,32 @@ final class TaskbarHoverPresenter {
     private func scheduleInteractiveHide() {
         pendingHide?.cancel()
         pendingHide = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.interactiveExitDelay)
-            guard !Task.isCancelled else { return }
-            self?.hide()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.interactivePollDelay)
+                guard !Task.isCancelled, let self else { return }
+                if self.pointerIsInsideInteractionCorridor { continue }
+                self.hide()
+                return
+            }
         }
+    }
+
+    private var pointerIsInsideInteractionCorridor: Bool {
+        guard let anchor = requestedAnchor,
+            let anchorWindow = anchor.window,
+            let popoverWindow = popover?.contentViewController?.view.window
+        else { return false }
+        let anchorFrame = anchorWindow.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+        return Self.interactionCorridor(
+            anchorFrame: anchorFrame,
+            popoverFrame: popoverWindow.frame
+        ).contains(NSEvent.mouseLocation)
+    }
+
+    static func interactionCorridor(anchorFrame: NSRect, popoverFrame: NSRect) -> NSRect {
+        anchorFrame.union(popoverFrame).insetBy(
+            dx: -interactionMargin,
+            dy: -interactionMargin)
     }
 }
 

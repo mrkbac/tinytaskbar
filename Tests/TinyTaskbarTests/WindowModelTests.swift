@@ -594,7 +594,8 @@ struct WindowModelTests {
             pid: 10,
             applicationName: "Video",
             title: "Fullscreen",
-            frame: right.frame,
+            frame: CGRect(x: 1_440, y: 120, width: 1_920, height: 960),
+            isFullscreen: true,
             isFocused: true,
             isMain: true)
         let ordinary = WindowCandidate(
@@ -610,7 +611,7 @@ struct WindowModelTests {
                 CGWindowMetadata(
                     windowNumber: 10,
                     ownerPID: 10,
-                    bounds: right.frame,
+                    bounds: fullscreen.frame!,
                     title: fullscreen.title),
                 CGWindowMetadata(
                     windowNumber: 20,
@@ -623,6 +624,33 @@ struct WindowModelTests {
             frontmostPID: 10)
 
         #expect(state.fullscreenDisplayIdentifiers == ["right"])
+    }
+
+    @Test("full-display geometry remains a fullscreen fallback")
+    func fullscreenGeometryFallbackIdentifiesDisplay() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900))
+        let candidate = WindowCandidate(
+            stableKey: "borderless-fullscreen",
+            pid: 10,
+            applicationName: "Player",
+            title: "Video",
+            frame: display.frame)
+
+        let state = WindowProjection.project(
+            candidates: [candidate],
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 10,
+                    ownerPID: 10,
+                    bounds: display.frame,
+                    title: candidate.title)
+            ],
+            displays: [display],
+            selfPID: 99)
+
+        #expect(state.fullscreenDisplayIdentifiers == ["main"])
     }
 
     @Test("hidden and minimized fullscreen windows do not suppress taskbars")

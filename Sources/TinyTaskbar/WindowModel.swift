@@ -87,6 +87,7 @@ struct WindowCandidate: Equatable, Sendable {
     let frame: CGRect?
     let isHidden: Bool
     let isMinimized: Bool
+    let isFullscreen: Bool
     let isFocused: Bool
     let isMain: Bool
     let nativeTabGroupID: String?
@@ -109,6 +110,7 @@ struct WindowCandidate: Equatable, Sendable {
         frame: CGRect?,
         isHidden: Bool = false,
         isMinimized: Bool = false,
+        isFullscreen: Bool = false,
         isFocused: Bool = false,
         isMain: Bool = false,
         nativeTabGroupID: String? = nil,
@@ -130,6 +132,7 @@ struct WindowCandidate: Equatable, Sendable {
         self.frame = frame
         self.isHidden = isHidden
         self.isMinimized = isMinimized
+        self.isFullscreen = isFullscreen
         self.isFocused = isFocused
         self.isMain = isMain
         self.nativeTabGroupID = nativeTabGroupID
@@ -158,6 +161,7 @@ struct WindowCandidate: Equatable, Sendable {
             frame: frame,
             isHidden: isHidden,
             isMinimized: isMinimized,
+            isFullscreen: isFullscreen,
             isFocused: isFocused,
             isMain: isMain,
             nativeTabGroupID: id,
@@ -987,11 +991,17 @@ enum WindowProjection {
             if !candidate.applicationIsHidden,
                 !candidate.isHidden,
                 !candidate.isMinimized,
-                let fullscreenDisplayIdentifier = FullscreenWindowDetection.displayIdentifier(
+                candidate.isFullscreen
+            {
+                fullscreenDisplayIdentifiers.insert(displayIdentifier)
+            } else if !candidate.applicationIsHidden,
+                !candidate.isHidden,
+                !candidate.isMinimized,
+                let geometryDisplayIdentifier = FullscreenWindowDetection.displayIdentifier(
                     for: cgWindow,
                     displays: displays)
             {
-                fullscreenDisplayIdentifiers.insert(fullscreenDisplayIdentifier)
+                fullscreenDisplayIdentifiers.insert(geometryDisplayIdentifier)
             }
 
             let id =

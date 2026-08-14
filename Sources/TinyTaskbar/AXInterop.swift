@@ -798,6 +798,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
 @MainActor
 private final class AXWindowInspector {
+    private static let fullscreenAttribute =
+        NSAccessibility.Attribute(rawValue: "AXFullScreen").rawValue
     private static let windowAttributes: [String] = [
         kAXRoleAttribute,
         kAXSubroleAttribute,
@@ -915,6 +917,7 @@ private final class AXWindowInspector {
                 frame: AXScreenCoordinateMapper.toCGScreen(axFrame),
                 isHidden: boolValue(values[5]) ?? false,
                 isMinimized: boolValue(values[6]) ?? false,
+                isFullscreen: boolAttribute(Self.fullscreenAttribute, from: element) ?? false,
                 isFocused: boolValue(values[7]) ?? false,
                 isMain: boolValue(values[8]) ?? false
             )
@@ -1078,6 +1081,15 @@ private final class AXWindowInspector {
 
     private func boolValue(_ value: Any) -> Bool? {
         (value as? NSNumber)?.boolValue
+    }
+
+    private func boolAttribute(_ attribute: String, from element: AXUIElement) -> Bool? {
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let rawValue
+        else { return nil }
+        return boolValue(rawValue)
     }
 
     private func pointValue(_ value: Any) -> CGPoint? {

@@ -1224,6 +1224,80 @@ struct PermissionTests {
         #expect(provider.heightUpdates.last?.height == nativeWorkArea.height)
     }
 
+    @Test("hiding one display taskbar restores only that display's work area")
+    @MainActor
+    func perDisplayTaskbarHidingRestoresWorkArea() {
+        let left = DisplayDescriptor(
+            identifier: "left",
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            appKitFrame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            appKitVisibleFrame: CGRect(x: 0, y: 30, width: 800, height: 570))
+        let right = DisplayDescriptor(
+            identifier: "right",
+            frame: CGRect(x: 800, y: 0, width: 800, height: 600),
+            appKitFrame: CGRect(x: 800, y: 0, width: 800, height: 600),
+            appKitVisibleFrame: CGRect(x: 800, y: 30, width: 800, height: 570))
+        let leftWorkArea = TaskbarPanelLayout.nativeWindowWorkArea(for: left)
+        let rightWorkArea = TaskbarPanelLayout.nativeWindowWorkArea(for: right)
+
+        func snapshot(leftFrame: CGRect, rightFrame: CGRect) -> RawWindowSnapshot {
+            let leftWindow = WindowCandidate(
+                stableKey: "left-window",
+                pid: 10,
+                applicationName: "Left",
+                title: "Left",
+                frame: leftFrame)
+            let rightWindow = WindowCandidate(
+                stableKey: "right-window",
+                pid: 20,
+                applicationName: "Right",
+                title: "Right",
+                frame: rightFrame)
+            return RawWindowSnapshot(
+                candidates: [leftWindow, rightWindow],
+                cgWindows: [
+                    CGWindowMetadata(
+                        windowNumber: 10,
+                        ownerPID: 10,
+                        bounds: leftFrame,
+                        title: leftWindow.title),
+                    CGWindowMetadata(
+                        windowNumber: 20,
+                        ownerPID: 20,
+                        bounds: rightFrame,
+                        title: rightWindow.title),
+                ],
+                displays: [left, right],
+                frontmostPID: 10)
+        }
+
+        let provider = MockWindowSnapshotProvider(
+            snapshot: snapshot(leftFrame: leftWorkArea, rightFrame: rightWorkArea))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+
+        store.setTaskbarWorkAreaHeights(["left": 30, "right": 30])
+        #expect(provider.heightUpdates.count == 2)
+
+        let constrainedLeft = CGRect(
+            origin: leftWorkArea.origin,
+            size: CGSize(width: leftWorkArea.width, height: 540))
+        let constrainedRight = CGRect(
+            origin: rightWorkArea.origin,
+            size: CGSize(width: rightWorkArea.width, height: 540))
+        provider.snapshotValue = snapshot(
+            leftFrame: constrainedLeft,
+            rightFrame: constrainedRight)
+        store.refreshNow()
+
+        store.setTaskbarWorkAreaHeights(["right": 30])
+        #expect(provider.heightUpdates.count == 3)
+        #expect(provider.heightUpdates.last?.itemID == "left-window")
+        #expect(provider.heightUpdates.last?.height == leftWorkArea.height)
+    }
+
     @Test("a later maximize and concurrent tile are constrained without overriding manual resize")
     @MainActor
     func maximizeEventAndManualResizeAreSafe() {

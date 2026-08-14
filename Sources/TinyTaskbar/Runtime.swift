@@ -77,7 +77,8 @@ struct TaskbarStateContinuity {
         }
         return TaskbarState(
             displays: incoming.displays,
-            itemsByDisplay: resolvedItemsByDisplay
+            itemsByDisplay: resolvedItemsByDisplay,
+            fullscreenDisplayIdentifiers: incoming.fullscreenDisplayIdentifiers
         )
     }
 
@@ -320,6 +321,7 @@ struct TaskbarStateContinuity {
 }
 
 private struct TaskbarWorkAreaAdjustment {
+    let displayIdentifier: String
     let originalFrame: CGRect
     var appliedFrame: CGRect
     var hasObservedAppliedFrame: Bool
@@ -476,6 +478,9 @@ final class TaskbarStore {
     func setTaskbarWorkAreaHeights(_ heightsByDisplay: [String: CGFloat]) {
         guard accessibilityAvailable else { return }
         let positiveHeights = heightsByDisplay.filter { $0.value > 0 }
+        let removedDisplayIdentifiers = Set(taskbarHeightsByDisplay.keys).subtracting(
+            positiveHeights.keys)
+        releaseTaskbarWorkAreas(on: removedDisplayIdentifiers)
         if positiveHeights.isEmpty {
             releaseTaskbarWorkAreas()
             taskbarHeightsByDisplay = [:]
@@ -671,6 +676,7 @@ final class TaskbarStore {
             else { continue }
             _ = provider.setHeight(target.height, for: item)
             workAreaAdjustments[item.id] = TaskbarWorkAreaAdjustment(
+                displayIdentifier: item.displayIdentifier,
                 originalFrame: currentFrame,
                 appliedFrame: target,
                 hasObservedAppliedFrame: false,
@@ -713,6 +719,32 @@ final class TaskbarStore {
             _ = provider.setHeight(adjustment.originalFrame.height, for: item)
         }
         workAreaAdjustments = [:]
+    }
+
+    private func releaseTaskbarWorkAreas(on displayIdentifiers: Set<String>) {
+        guard !displayIdentifiers.isEmpty else { return }
+        guard accessibilityAvailable else {
+            workAreaAdjustments = workAreaAdjustments.filter {
+                !displayIdentifiers.contains($0.value.displayIdentifier)
+            }
+            return
+        }
+        let itemsByID = Dictionary(
+            uniqueKeysWithValues: state.itemsByDisplay.values.joined().map { ($0.id, $0) })
+        let adjustmentIDs = workAreaAdjustments.compactMap { itemID, adjustment in
+            displayIdentifiers.contains(adjustment.displayIdentifier) ? itemID : nil
+        }
+        for itemID in adjustmentIDs {
+            guard let adjustment = workAreaAdjustments.removeValue(forKey: itemID),
+                let item = itemsByID[itemID],
+                let currentFrame = latestFramesByItemID[itemID],
+                currentFrame.approximatelyEquals(adjustment.appliedFrame, tolerance: 4)
+                    || (!adjustment.hasObservedAppliedFrame
+                        && currentFrame.approximatelyEquals(
+                            adjustment.originalFrame, tolerance: 4))
+            else { continue }
+            _ = provider.setHeight(adjustment.originalFrame.height, for: item)
+        }
     }
 
     private func observeActiveSpaceChanges() {

@@ -581,6 +581,94 @@ struct WindowModelTests {
         #expect(negativeFrame.minY == -100)
     }
 
+    @Test("fullscreen windows suppress only their own display taskbar")
+    func fullscreenWindowsIdentifyTheirDisplay() {
+        let left = DisplayDescriptor(
+            identifier: "left",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900))
+        let right = DisplayDescriptor(
+            identifier: "right",
+            frame: CGRect(x: 1_440, y: 0, width: 1_920, height: 1_080))
+        let fullscreen = WindowCandidate(
+            stableKey: "fullscreen",
+            pid: 10,
+            applicationName: "Video",
+            title: "Fullscreen",
+            frame: right.frame,
+            isFocused: true,
+            isMain: true)
+        let ordinary = WindowCandidate(
+            stableKey: "ordinary",
+            pid: 20,
+            applicationName: "Editor",
+            title: "Document",
+            frame: CGRect(x: 100, y: 100, width: 900, height: 700))
+
+        let state = WindowProjection.project(
+            candidates: [fullscreen, ordinary],
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 10,
+                    ownerPID: 10,
+                    bounds: right.frame,
+                    title: fullscreen.title),
+                CGWindowMetadata(
+                    windowNumber: 20,
+                    ownerPID: 20,
+                    bounds: ordinary.frame!,
+                    title: ordinary.title),
+            ],
+            displays: [left, right],
+            selfPID: 99,
+            frontmostPID: 10)
+
+        #expect(state.fullscreenDisplayIdentifiers == ["right"])
+    }
+
+    @Test("hidden and minimized fullscreen windows do not suppress taskbars")
+    func inactiveFullscreenWindowsDoNotSuppressTaskbars() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900))
+        let hidden = WindowCandidate(
+            stableKey: "hidden",
+            cgWindowNumber: 10,
+            pid: 10,
+            applicationName: "Hidden",
+            applicationIsHidden: true,
+            title: "Hidden Fullscreen",
+            frame: display.frame)
+        let minimized = WindowCandidate(
+            stableKey: "minimized",
+            cgWindowNumber: 20,
+            pid: 20,
+            applicationName: "Minimized",
+            title: "Minimized Fullscreen",
+            frame: display.frame,
+            isMinimized: true)
+
+        let state = WindowProjection.project(
+            candidates: [hidden, minimized],
+            cgWindows: [
+                CGWindowMetadata(
+                    windowNumber: 10,
+                    ownerPID: 10,
+                    bounds: display.frame,
+                    title: hidden.title,
+                    isOnScreen: false),
+                CGWindowMetadata(
+                    windowNumber: 20,
+                    ownerPID: 20,
+                    bounds: display.frame,
+                    title: minimized.title,
+                    isOnScreen: false),
+            ],
+            displays: [display],
+            selfPID: 99)
+
+        #expect(state.fullscreenDisplayIdentifiers.isEmpty)
+    }
+
     @Test("ordering stays stable when the active window changes")
     func stableOrdering() {
         let items = [

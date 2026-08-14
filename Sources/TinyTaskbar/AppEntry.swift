@@ -147,14 +147,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let presentation = TaskbarPresentationBuilder.build(
             state: state, preferences: preferencesStore.values)
         let taskbarHeight = preferencesStore.values.density.panelHeight
+        let visibleDisplays = presentation.displays.filter {
+            !state.fullscreenDisplayIdentifiers.contains($0.identifier)
+        }
         store.setTaskbarWorkAreaHeights(
             Dictionary(
-                uniqueKeysWithValues: presentation.displays.map {
+                uniqueKeysWithValues: visibleDisplays.map {
                     ($0.identifier, taskbarHeight)
                 }))
 
         let displayIDs = Set(presentation.displays.map(\.identifier))
         for display in presentation.displays {
+            if state.fullscreenDisplayIdentifiers.contains(display.identifier) {
+                panels[display.identifier]?.orderOut(nil)
+                continue
+            }
             let panel: TaskbarPanel
             if let existing = panels[display.identifier] {
                 panel = existing

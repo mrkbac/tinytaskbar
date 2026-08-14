@@ -247,6 +247,17 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
 struct TaskbarState: Equatable, Sendable {
     let displays: [DisplayDescriptor]
     let itemsByDisplay: [String: [TaskbarItem]]
+    let fullscreenDisplayIdentifiers: Set<String>
+
+    init(
+        displays: [DisplayDescriptor],
+        itemsByDisplay: [String: [TaskbarItem]],
+        fullscreenDisplayIdentifiers: Set<String> = []
+    ) {
+        self.displays = displays
+        self.itemsByDisplay = itemsByDisplay
+        self.fullscreenDisplayIdentifiers = fullscreenDisplayIdentifiers
+    }
 
     static let empty = TaskbarState(displays: [], itemsByDisplay: [:])
 }
@@ -609,6 +620,24 @@ enum TaskbarPanelLayout {
     }
 }
 
+enum FullscreenWindowDetection {
+    static func displayIdentifier(
+        for window: CGWindowMetadata,
+        displays: [DisplayDescriptor],
+        tolerance: CGFloat = 4
+    ) -> String? {
+        guard window.layer == 0, window.isOnScreen, window.bounds.isFiniteGeometry else {
+            return nil
+        }
+        return displays.first { display in
+            abs(window.bounds.minX - display.frame.minX) <= tolerance
+                && abs(window.bounds.minY - display.frame.minY) <= tolerance
+                && abs(window.bounds.maxX - display.frame.maxX) <= tolerance
+                && abs(window.bounds.maxY - display.frame.maxY) <= tolerance
+        }?.identifier
+    }
+}
+
 enum TaskbarButtonLayout {
     static let titleOnMinimumWidth: CGFloat = 110
     static let titleOffMinimumWidth: CGFloat = 72
@@ -926,6 +955,7 @@ enum WindowProjection {
         eligibility: WindowEligibility = WindowEligibility()
     ) -> TaskbarState {
         var projected: [TaskbarItem] = []
+        var fullscreenDisplayIdentifiers: Set<String> = []
         let assignments = WindowCGAssignment.assign(
             candidates: candidates,
             cgWindows: cgWindows,
@@ -953,6 +983,16 @@ enum WindowProjection {
             guard let cgWindowIndex = assignments[candidateIndex] else { continue }
             let cgWindow = cgWindows[cgWindowIndex]
             guard cgWindow.isOnScreen || candidate.isMinimized else { continue }
+
+            if !candidate.applicationIsHidden,
+                !candidate.isHidden,
+                !candidate.isMinimized,
+                let fullscreenDisplayIdentifier = FullscreenWindowDetection.displayIdentifier(
+                    for: cgWindow,
+                    displays: displays)
+            {
+                fullscreenDisplayIdentifiers.insert(fullscreenDisplayIdentifier)
+            }
 
             let id =
                 WindowObservationKey.itemKey(
@@ -988,7 +1028,10 @@ enum WindowProjection {
         }
         let ordered = grouped.mapValues(WindowOrdering.sorted)
         let orderedDisplays = displays.sorted(by: preferredDisplay)
-        return TaskbarState(displays: orderedDisplays, itemsByDisplay: ordered)
+        return TaskbarState(
+            displays: orderedDisplays,
+            itemsByDisplay: ordered,
+            fullscreenDisplayIdentifiers: fullscreenDisplayIdentifiers)
     }
 
     private static func preferredDisplay(_ lhs: DisplayDescriptor, _ rhs: DisplayDescriptor) -> Bool

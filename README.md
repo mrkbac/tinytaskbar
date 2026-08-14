@@ -169,9 +169,11 @@ use each screen's full and visible AppKit
 frames: a bottom Dock lifts the bar exactly to the visible-frame boundary, while a
 side Dock trims its horizontal span without changing its vertical position. There is
 no additional floating outer margin.
-A per-display panel uses public AppKit collection behavior for all Spaces,
-fullscreen auxiliary participation, and Stage Manager/system-overlay joining;
-real-machine behavior still needs validation. Settings can keep windows on their owning
+A per-display panel uses public AppKit collection behavior for all Spaces and
+Stage Manager/system-overlay joining. When Accessibility reports an on-screen window
+in fullscreen mode, TinyTaskbar hides the panel and releases its work-area reservation
+on that display until fullscreen ends; real-machine behavior still needs validation.
+Settings can keep windows on their owning
 display, mirror all current-Space windows on every display, or show one taskbar with all
 windows on the main display.
 

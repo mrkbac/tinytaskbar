@@ -956,6 +956,7 @@ enum WindowProjection {
     static func project(
         candidates: [WindowCandidate],
         cgWindows: [CGWindowMetadata],
+        assignments suppliedAssignments: [Int: Int]? = nil,
         displays: [DisplayDescriptor],
         selfPID: Int32,
         frontmostPID: Int32? = nil,
@@ -963,12 +964,14 @@ enum WindowProjection {
     ) -> TaskbarState {
         var projected: [TaskbarItem] = []
         var fullscreenDisplayIdentifiers: Set<String> = []
-        let assignments = WindowCGAssignment.assign(
-            candidates: candidates,
-            cgWindows: cgWindows,
-            selfPID: selfPID,
-            eligibility: WindowEligibility(minimumSize: eligibility.minimumSize)
-        )
+        let assignments =
+            suppliedAssignments
+            ?? WindowCGAssignment.assign(
+                candidates: candidates,
+                cgWindows: cgWindows,
+                selfPID: selfPID,
+                eligibility: WindowEligibility(minimumSize: eligibility.minimumSize)
+            )
 
         for candidateIndex in candidates.indices {
             let candidate = candidates[candidateIndex]

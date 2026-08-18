@@ -122,6 +122,7 @@ struct WindowSnapshotEvidence: Equatable, Sendable {
 struct RawWindowSnapshot: Equatable, Sendable {
     let candidates: [WindowCandidate]
     let cgWindows: [CGWindowMetadata]
+    let cgAssignments: [Int: Int]?
     let displays: [DisplayDescriptor]
     let frontmostPID: Int32?
     let evidence: WindowSnapshotEvidence
@@ -129,12 +130,14 @@ struct RawWindowSnapshot: Equatable, Sendable {
     init(
         candidates: [WindowCandidate],
         cgWindows: [CGWindowMetadata],
+        cgAssignments: [Int: Int]? = nil,
         displays: [DisplayDescriptor],
         frontmostPID: Int32?,
         evidence: WindowSnapshotEvidence = .unknown
     ) {
         self.candidates = candidates
         self.cgWindows = cgWindows
+        self.cgAssignments = cgAssignments
         self.displays = displays
         self.frontmostPID = frontmostPID
         self.evidence = evidence
@@ -447,6 +450,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         return RawWindowSnapshot(
             candidates: candidates,
             cgWindows: cgWindows,
+            cgAssignments: assignments,
             displays: displays,
             frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
             evidence: WindowSnapshotEvidence(

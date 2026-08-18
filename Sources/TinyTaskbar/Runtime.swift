@@ -357,6 +357,7 @@ final class TaskbarStore {
     private var latestDisplaysByID: [String: DisplayDescriptor] = [:]
     private var taskbarHeightsByDisplay: [String: CGFloat] = [:]
     private var workAreaAdjustments: [String: TaskbarWorkAreaAdjustment] = [:]
+    private var workAreaApplicationCount: UInt = 0
     private var primaryClickFocusReturn: PrimaryClickFocusReturn?
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
@@ -460,6 +461,7 @@ final class TaskbarStore {
         let projected = WindowProjection.project(
             candidates: snapshot.candidates,
             cgWindows: snapshot.cgWindows,
+            assignments: snapshot.cgAssignments,
             displays: snapshot.displays,
             selfPID: ProcessInfo.processInfo.processIdentifier,
             frontmostPID: snapshot.frontmostPID
@@ -483,6 +485,7 @@ final class TaskbarStore {
             "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(self.metrics.lastVisibleWindowCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
         )
 
+        let workAreaApplicationCountBeforePublish = workAreaApplicationCount
         if resolved != state {
             state = resolved
             onStateChange?(state)
@@ -492,7 +495,9 @@ final class TaskbarStore {
             // Desktop even when its projected taskbar contents equal the old state.
             onStateChange?(state)
         }
-        applyTaskbarWorkAreas()
+        if workAreaApplicationCount == workAreaApplicationCountBeforePublish {
+            applyTaskbarWorkAreas()
+        }
     }
 
     func setTaskbarWorkAreaHeights(_ heightsByDisplay: [String: CGFloat]) {
@@ -646,6 +651,7 @@ final class TaskbarStore {
 
     private func applyTaskbarWorkAreas() {
         guard accessibilityAvailable, !taskbarHeightsByDisplay.isEmpty else { return }
+        workAreaApplicationCount &+= 1
         let itemsByID = Dictionary(
             uniqueKeysWithValues: state.itemsByDisplay.values.joined().map { ($0.id, $0) })
         workAreaAdjustments = workAreaAdjustments.filter { itemsByID[$0.key] != nil }
@@ -2603,6 +2609,24 @@ private final class TaskbarBarView: NSView {
             return item
         }
         guard entries != currentEntries || preferences != currentPreferences else { return }
+        let previousItemsByID = Dictionary(
+            uniqueKeysWithValues: currentItems.map { ($0.id, $0) })
+        let previousLaunchersByID = Dictionary(
+            uniqueKeysWithValues: currentEntries.compactMap {
+                entry -> (String, ApplicationRecord)? in
+                guard case .launcher(let application) = entry else { return nil }
+                return (entry.id, application)
+            })
+        let previousEntryIDs = currentEntries.map(\.id)
+        let densityChanged = preferences.density != currentPreferences.density
+        let buttonPresentationChanged =
+            preferences.labelMode != currentPreferences.labelMode
+            || densityChanged
+            || preferences.buttonWidth != currentPreferences.buttonWidth
+        let layoutChanged =
+            entries.map(\.id) != previousEntryIDs
+            || buttonPresentationChanged
+            || preferences.overflowBehavior != currentPreferences.overflowBehavior
         currentItems = items
         currentEntries = entries
         currentPreferences = preferences
@@ -2632,9 +2656,11 @@ private final class TaskbarBarView: NSView {
 
         for item in items {
             if let button = buttonsByID[item.id] {
-                updateButton(
-                    button, for: item, labelMode: preferences.labelMode,
-                    density: preferences.density)
+                if previousItemsByID[item.id] != item || buttonPresentationChanged {
+                    updateButton(
+                        button, for: item, labelMode: preferences.labelMode,
+                        density: preferences.density)
+                }
             } else {
                 let button = makeButton(
                     for: item, labelMode: preferences.labelMode,
@@ -2648,10 +2674,17 @@ private final class TaskbarBarView: NSView {
             case .window:
                 break
             case .launcher(let application):
-                let button = launchersByID[entry.id] ?? makeLauncher(application)
-                button.identifier = NSUserInterfaceItemIdentifier(entry.id)
-                updateLauncher(button, application: application, density: preferences.density)
-                if launchersByID[entry.id] == nil {
+                if let button = launchersByID[entry.id] {
+                    if previousLaunchersByID[entry.id] != application
+                        || densityChanged
+                    {
+                        updateLauncher(
+                            button, application: application, density: preferences.density)
+                    }
+                } else {
+                    let button = makeLauncher(application)
+                    button.identifier = NSUserInterfaceItemIdentifier(entry.id)
+                    updateLauncher(button, application: application, density: preferences.density)
                     launchersByID[entry.id] = button
                     stackView.addArrangedSubview(button)
                 }
@@ -2676,7 +2709,7 @@ private final class TaskbarBarView: NSView {
             result[ObjectIdentifier(button)] = item
         }
         reorderViewsIfNeeded(to: desiredIDs)
-        needsLayout = true
+        if layoutChanged { needsLayout = true }
     }
 
     private func makeButton(
@@ -2699,7 +2732,6 @@ private final class TaskbarBarView: NSView {
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
         button.setAccessibilityRole(.button)
-        button.contextualMenu = makeContextualMenu(for: item)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthConstraint = button.widthAnchor.constraint(
             equalToConstant: TaskbarButtonLayout.preferredWidth(
@@ -2784,7 +2816,9 @@ private final class TaskbarBarView: NSView {
             buttonWidth: currentPreferences.buttonWidth)
         button.heightConstraint?.constant = density.buttonHeight
         button.image?.size = NSSize(width: density.iconSize, height: density.iconSize)
-        button.contextualMenu = makeContextualMenu(for: item)
+        if button.contextualMenu == nil {
+            button.contextualMenu = makeContextualMenu(for: item)
+        }
         button.setActiveFocus(item.isActive)
     }
 

@@ -222,6 +222,40 @@ struct WindowModelTests {
             CGWindowMatcher.match(candidate: candidate, windows: [ambiguousA, ambiguousB]) == nil)
     }
 
+    @Test("projection reuses supplied Core Graphics assignments")
+    func projectionUsesSuppliedAssignments() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let candidate = WindowCandidate(
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: frame)
+        let window = CGWindowMetadata(
+            windowNumber: 12,
+            ownerPID: 10,
+            bounds: frame,
+            title: candidate.title)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900))
+
+        let withoutAssignment = WindowProjection.project(
+            candidates: [candidate],
+            cgWindows: [window],
+            assignments: [:],
+            displays: [display],
+            selfPID: 999)
+        let withAssignment = WindowProjection.project(
+            candidates: [candidate],
+            cgWindows: [window],
+            assignments: [0: 0],
+            displays: [display],
+            selfPID: 999)
+
+        #expect(withoutAssignment.itemsByDisplay["main"] == nil)
+        #expect(withAssignment.itemsByDisplay["main"]?.count == 1)
+    }
+
     @Test("projection does not promote AX-only minimized native tabs")
     func minimizedNativeTabsRequirePriorPhysicalEvidence() {
         let frame = CGRect(x: 100, y: 100, width: 500, height: 300)

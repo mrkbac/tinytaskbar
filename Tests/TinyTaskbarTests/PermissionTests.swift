@@ -278,6 +278,7 @@ struct PermissionTests {
         #expect(
             updatedFirst.contextualMenu?.items.first?.representedObject as? String
                 == activeFirst.id)
+        #expect(updatedSecond.onMenuRequested?().items.first?.title == "Restore")
 
         update(
             panel,
@@ -1058,6 +1059,23 @@ struct PermissionTests {
                 ])
         launcher.performClick(nil)
         #expect(launched == app)
+
+        var renamed = app
+        renamed.localizedName = "Renamed Editor"
+        preferences.pinnedApplications = [renamed]
+        preferences.density = .compact
+        panel.update(frame: frame, entries: [.launcher(renamed)], preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        guard
+            let updatedLauncher = panel.contentView.map({ allSubviews(of: $0) })?
+                .compactMap({ $0 as? TaskbarLauncherButton }).first
+        else {
+            Issue.record("updated launcher was not rendered")
+            return
+        }
+        #expect(ObjectIdentifier(updatedLauncher) == ObjectIdentifier(launcher))
+        #expect(updatedLauncher.accessibilityLabel() == "Open Renamed Editor")
+        #expect(updatedLauncher.heightConstraint?.constant == TaskbarDensity.compact.buttonHeight)
     }
 
     @Test("closed pinned launcher sits directly beside windows")
@@ -1259,6 +1277,46 @@ struct PermissionTests {
         store.setTaskbarWorkAreaHeights([:])
         #expect(provider.heightUpdates.count == 4)
         #expect(provider.heightUpdates.last?.height == nativeWorkArea.height)
+    }
+
+    @Test("publishing a refresh applies each work-area correction once")
+    @MainActor
+    func publishedRefreshAppliesWorkAreaOnce() {
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            appKitFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            appKitVisibleFrame: CGRect(x: 80, y: 50, width: 1_360, height: 825))
+        let frame = TaskbarPanelLayout.nativeWindowWorkArea(for: display)
+        let candidate = WindowCandidate(
+            stableKey: "maximized-window",
+            pid: fixturePID,
+            applicationName: "Fixture",
+            title: "Maximized",
+            frame: frame,
+            isFocused: true,
+            isMain: true)
+        let provider = MockWindowSnapshotProvider(
+            snapshot: RawWindowSnapshot(
+                candidates: [candidate],
+                cgWindows: [
+                    CGWindowMetadata(
+                        windowNumber: 88,
+                        ownerPID: fixturePID,
+                        bounds: frame,
+                        title: candidate.title)
+                ],
+                displays: [display],
+                frontmostPID: fixturePID))
+        let store = TaskbarStore(provider: provider)
+        store.onStateChange = { [weak store] _ in
+            store?.setTaskbarWorkAreaHeights(["main": 30])
+        }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+
+        #expect(provider.heightUpdates.count == 1)
     }
 
     @Test("hiding one display taskbar restores only that display's work area")

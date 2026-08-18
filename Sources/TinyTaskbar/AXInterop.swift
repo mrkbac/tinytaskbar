@@ -219,6 +219,26 @@ enum NativeTabSelectionSequence {
     }
 }
 
+enum WindowActivationStep: Equatable {
+    case unminimize
+    case makeMain
+    case makeFocusedWindow
+    case activateApplication
+    case focus
+    case raise
+}
+
+enum WindowActivationSequence {
+    static let steps: [WindowActivationStep] = [
+        .unminimize,
+        .makeMain,
+        .makeFocusedWindow,
+        .activateApplication,
+        .focus,
+        .raise,
+    ]
+}
+
 enum NativeTabSelectionTarget {
     static func resolve<Element>(
         stableElement: Element?,
@@ -451,68 +471,69 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             return
         }
 
+        // Prepare the selected window before activating its application. AppKit activation
+        // then brings forward only that main/key window; an app-wide AXFrontmost write here
+        // can promote sibling windows too (notably separate Chrome windows).
+        //
         // The snapshot can race a minimize or focus change. Each operation is best effort;
         // AX documents invalid references and unsupported attributes as ordinary failures.
         var failures: [String] = []
-        let minimizeError = AXUIElementSetAttributeValue(
-            element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-        if minimizeError != .success {
-            failures.append("unminimize=\(minimizeError.rawValue)")
-        }
-
-        let mainError = AXUIElementSetAttributeValue(
-            element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        if mainError != .success {
-            failures.append("main=\(mainError.rawValue)")
-        }
-
-        if let application {
-            if !application.activate(options: []) {
-                failures.append("activate=false")
-            }
-        } else {
-            failures.append("application=missing")
-        }
-
         let applicationElement = AXUIElementCreateApplication(item.pid)
-        let frontmostError = AXUIElementSetAttributeValue(
-            applicationElement,
-            kAXFrontmostAttribute as CFString,
-            kCFBooleanTrue
-        )
-        if frontmostError != .success {
-            failures.append("frontmost=\(frontmostError.rawValue)")
-        }
-
-        var focusedWindowIsSettable = DarwinBoolean(false)
-        let focusedWindowSettableError = AXUIElementIsAttributeSettable(
-            applicationElement,
-            kAXFocusedWindowAttribute as CFString,
-            &focusedWindowIsSettable
-        )
-        if focusedWindowSettableError == .success, focusedWindowIsSettable.boolValue {
-            let focusedWindowError = AXUIElementSetAttributeValue(
-                applicationElement,
-                kAXFocusedWindowAttribute as CFString,
-                element
-            )
-            if focusedWindowError != .success {
-                failures.append("focused_window=\(focusedWindowError.rawValue)")
+        for step in WindowActivationSequence.steps {
+            switch step {
+            case .unminimize:
+                let error = AXUIElementSetAttributeValue(
+                    element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+                if error != .success {
+                    failures.append("unminimize=\(error.rawValue)")
+                }
+            case .makeMain:
+                let error = AXUIElementSetAttributeValue(
+                    element, kAXMainAttribute as CFString, kCFBooleanTrue)
+                if error != .success {
+                    failures.append("main=\(error.rawValue)")
+                }
+            case .makeFocusedWindow:
+                var isSettable = DarwinBoolean(false)
+                let settableError = AXUIElementIsAttributeSettable(
+                    applicationElement,
+                    kAXFocusedWindowAttribute as CFString,
+                    &isSettable
+                )
+                if settableError == .success, isSettable.boolValue {
+                    let error = AXUIElementSetAttributeValue(
+                        applicationElement,
+                        kAXFocusedWindowAttribute as CFString,
+                        element
+                    )
+                    if error != .success {
+                        failures.append("focused_window=\(error.rawValue)")
+                    }
+                } else if settableError != .success {
+                    failures.append("focused_window_settable=\(settableError.rawValue)")
+                } else {
+                    failures.append("focused_window=not_settable")
+                }
+            case .activateApplication:
+                if let application {
+                    if !application.activate(options: []) {
+                        failures.append("activate=false")
+                    }
+                } else {
+                    failures.append("application=missing")
+                }
+            case .focus:
+                let error = AXUIElementSetAttributeValue(
+                    element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                if error != .success {
+                    failures.append("focus=\(error.rawValue)")
+                }
+            case .raise:
+                let error = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+                if error != .success {
+                    failures.append("raise=\(error.rawValue)")
+                }
             }
-        } else if focusedWindowSettableError != .success {
-            failures.append("focused_window_settable=\(focusedWindowSettableError.rawValue)")
-        } else {
-            failures.append("focused_window=not_settable")
-        }
-
-        let focusError = AXUIElementSetAttributeValue(
-            element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        if focusError != .success {
-            failures.append("focus=\(focusError.rawValue)")
-        }
-        let raiseError = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-        if raiseError != .success {
-            failures.append("raise=\(raiseError.rawValue)")
         }
         if !failures.isEmpty {
             let summary = failures.joined(separator: ",")

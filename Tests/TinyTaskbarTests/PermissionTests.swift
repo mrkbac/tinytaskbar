@@ -735,6 +735,19 @@ struct PermissionTests {
         #expect(events == ["activate", "refresh-group", "press", "refresh"])
     }
 
+    @Test("window activation prepares only the selected window before activating its app")
+    func windowActivationOrder() {
+        #expect(
+            WindowActivationSequence.steps == [
+                .unminimize,
+                .makeMain,
+                .makeFocusedWindow,
+                .activateApplication,
+                .focus,
+                .raise,
+            ])
+    }
+
     @Test("native tab selection falls back to the current element at the requested index")
     func nativeTabSelectionResolvesStaleIdentity() {
         #expect(
@@ -2209,6 +2222,36 @@ struct PermissionTests {
         #expect(provider.activationCount == 1)
     }
 
+    @Test("second primary click leaves the app before minimizing its active window")
+    @MainActor
+    func primaryClickReturnsBeforeMinimizing() {
+        let provider = MockWindowSnapshotProvider(
+            snapshot: focusToggleSnapshot(activeWindow: "chatgpt"))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+
+        let initialItems = Array(store.state.itemsByDisplay.values.joined())
+        guard let chatGPT = initialItems.first(where: { $0.title == "ChatGPT" }),
+            let chromeOne = initialItems.first(where: { $0.title == "Chrome One" }),
+            let chromeTwo = initialItems.first(where: { $0.title == "Chrome Two" })
+        else {
+            Issue.record("focus-toggle fixture windows were not projected")
+            return
+        }
+
+        store.performPrimaryClick(chromeOne, activeWindowBehavior: .minimize)
+        #expect(provider.events == [.activate(chromeOne.id)])
+
+        provider.events = []
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
+        store.performPrimaryClick(chromeOne, activeWindowBehavior: .minimize)
+
+        #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+        #expect(!provider.activatedItemIDs.contains(chromeTwo.id))
+    }
+
     @Test("primary click follows physical identity through AX identity turnover")
     @MainActor
     func primaryClickSurvivesIdentityTurnover() {
@@ -2292,6 +2335,49 @@ struct PermissionTests {
                 axWindowListReadPIDs: [fixturePID],
                 observedAXWindowIDs: [stableKey]
             )
+        )
+    }
+
+    private func focusToggleSnapshot(activeWindow: String) -> RawWindowSnapshot {
+        let inputs: [(key: String, pid: Int32, app: String, title: String, frame: CGRect)] = [
+            (
+                "chatgpt", fixturePID, "ChatGPT", "ChatGPT",
+                CGRect(x: 50, y: 100, width: 300, height: 500)
+            ),
+            (
+                "chrome-one", fixturePID + 1, "Google Chrome", "Chrome One",
+                CGRect(x: 400, y: 100, width: 300, height: 500)
+            ),
+            (
+                "chrome-two", fixturePID + 1, "Google Chrome", "Chrome Two",
+                CGRect(x: 750, y: 100, width: 300, height: 500)
+            ),
+        ]
+        let candidates = inputs.map { input in
+            WindowCandidate(
+                stableKey: input.key,
+                pid: input.pid,
+                applicationName: input.app,
+                title: input.title,
+                frame: input.frame,
+                isFocused: input.key == activeWindow,
+                isMain: input.key == activeWindow
+            )
+        }
+        let cgWindows = inputs.enumerated().map { index, input in
+            CGWindowMetadata(
+                windowNumber: UInt32(100 + index),
+                ownerPID: input.pid,
+                bounds: input.frame,
+                title: input.title
+            )
+        }
+        let activePID = inputs.first(where: { $0.key == activeWindow })?.pid
+        return RawWindowSnapshot(
+            candidates: candidates,
+            cgWindows: cgWindows,
+            displays: [fixtureDisplay],
+            frontmostPID: activePID
         )
     }
 
@@ -2381,6 +2467,11 @@ struct PermissionTests {
 
 @MainActor
 private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
+    enum Event: Equatable {
+        case activate(String)
+        case minimize(String)
+    }
+
     var snapshotValue: RawWindowSnapshot = RawWindowSnapshot(
         candidates: [], cgWindows: [], displays: [], frontmostPID: nil)
     var snapshotCount = 0
@@ -2392,6 +2483,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var activatedItemIDs: [String] = []
     var selectedTabIDs: [String] = []
     var minimizedItemIDs: [String] = []
+    var events: [Event] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
@@ -2409,6 +2501,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     func activate(_ item: TaskbarItem) {
         activationCount += 1
         activatedItemIDs.append(item.id)
+        events.append(.activate(item.id))
     }
 
     func selectTab(_ tab: TaskbarTab, in item: TaskbarItem) {
@@ -2427,6 +2520,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     func minimize(_ item: TaskbarItem) {
         minimizeCount += 1
         minimizedItemIDs.append(item.id)
+        events.append(.minimize(item.id))
     }
 
     func close(_: TaskbarItem) {

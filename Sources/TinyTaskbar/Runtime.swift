@@ -32,6 +32,14 @@ enum TaskbarItemResolver {
         }
         return physicalMatches.count == 1 ? physicalMatches[0] : nil
     }
+
+    static func representsSameWindow(_ lhs: TaskbarItem, _ rhs: TaskbarItem) -> Bool {
+        if lhs.id == rhs.id { return true }
+        guard let lhsWindowNumber = lhs.cgWindowNumber,
+            let rhsWindowNumber = rhs.cgWindowNumber
+        else { return false }
+        return lhs.pid == rhs.pid && lhsWindowNumber == rhsWindowNumber
+    }
 }
 
 struct TaskbarStateContinuity {
@@ -330,6 +338,11 @@ private struct TaskbarWorkAreaAdjustment {
 
 @MainActor
 final class TaskbarStore {
+    private struct PrimaryClickFocusReturn {
+        let activatedItem: TaskbarItem
+        let returnItem: TaskbarItem
+    }
+
     private static let maximumWorkAreaAdjustmentAttempts = 5
     private static let windowDisappearanceConfirmationDelay = Duration.milliseconds(350)
     private let provider: any WindowSnapshotProvider
@@ -344,6 +357,7 @@ final class TaskbarStore {
     private var latestDisplaysByID: [String: DisplayDescriptor] = [:]
     private var taskbarHeightsByDisplay: [String: CGFloat] = [:]
     private var workAreaAdjustments: [String: TaskbarWorkAreaAdjustment] = [:]
+    private var primaryClickFocusReturn: PrimaryClickFocusReturn?
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
     private(set) var accessibilityAvailable = false
@@ -383,6 +397,7 @@ final class TaskbarStore {
             pendingWindowDisappearanceConfirmation?.cancel()
             pendingWindowDisappearanceConfirmation = nil
             pendingRefreshCause = .ordinary
+            primaryClickFocusReturn = nil
             removeActiveSpaceObserver()
             if state != .empty {
                 state = .empty
@@ -528,9 +543,16 @@ final class TaskbarStore {
 
         if item.isActive {
             if activeWindowBehavior == .minimize {
+                if let returnItem = primaryClickReturnItem(for: item) {
+                    // Move focus away first. Minimizing a frontmost window can make macOS
+                    // promote a sibling from the same app before another app is activated.
+                    provider.activate(returnItem)
+                }
+                primaryClickFocusReturn = nil
                 provider.minimize(item)
             }
         } else {
+            rememberPrimaryClickReturn(for: item)
             provider.activate(item)
         }
         requestRefresh()
@@ -612,6 +634,7 @@ final class TaskbarStore {
         pendingWorkAreaVerification?.cancel()
         pendingWorkAreaVerification = nil
         pendingRefreshCause = .ordinary
+        primaryClickFocusReturn = nil
         removeActiveSpaceObserver()
         lifecycleState = LifecycleReducer.reduce(state: lifecycleState, event: .stopped)
         accessibilityAvailable = false
@@ -688,6 +711,22 @@ final class TaskbarStore {
                 attemptCount: 1)
             scheduleWorkAreaVerification()
         }
+    }
+
+    private func rememberPrimaryClickReturn(for item: TaskbarItem) {
+        let activeItem = state.itemsByDisplay.values.joined().first {
+            $0.isActive && !TaskbarItemResolver.representsSameWindow($0, item)
+        }
+        primaryClickFocusReturn = activeItem.map {
+            PrimaryClickFocusReturn(activatedItem: item, returnItem: $0)
+        }
+    }
+
+    private func primaryClickReturnItem(for item: TaskbarItem) -> TaskbarItem? {
+        guard let focusReturn = primaryClickFocusReturn,
+            TaskbarItemResolver.representsSameWindow(focusReturn.activatedItem, item)
+        else { return nil }
+        return TaskbarItemResolver.currentItem(for: focusReturn.returnItem, in: state)
     }
 
     private func scheduleWorkAreaVerification() {

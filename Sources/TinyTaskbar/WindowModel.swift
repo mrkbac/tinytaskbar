@@ -345,6 +345,7 @@ enum NativeTabGroupMembershipResolver {
 
 struct TinyTaskbarPreferences: Equatable, Sendable {
     var onboardingComplete = false
+    var hideMacDock = false
     var activeWindowClickBehavior = ActiveWindowClickBehavior.minimize
     var orderingMode = TaskbarOrderingMode.windowOrder
     var labelMode = TaskbarLabelMode.windowTitle
@@ -357,6 +358,7 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
 
     init(
         onboardingComplete: Bool = false,
+        hideMacDock: Bool = false,
         activeWindowClickBehavior: ActiveWindowClickBehavior = .minimize,
         orderingMode: TaskbarOrderingMode = .windowOrder,
         labelMode: TaskbarLabelMode = .windowTitle,
@@ -368,6 +370,7 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
         excludedApplications: [ApplicationRecord] = []
     ) {
         self.onboardingComplete = onboardingComplete
+        self.hideMacDock = hideMacDock
         self.activeWindowClickBehavior = activeWindowClickBehavior
         self.orderingMode = orderingMode
         self.labelMode = labelMode

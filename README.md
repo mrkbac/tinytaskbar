@@ -10,9 +10,9 @@ Clicking an item activates, focuses, and raises its owning window.
 The executable is an `LSUIElement` AppKit application with no Dock icon during
 normal taskbar operation, no helper, updater, analytics, thumbnail capture, or
 third-party runtime dependency. It includes one small native onboarding/settings
-window for Accessibility, launch-at-login, click behavior, ordering, labels,
-button width, overflow behavior, bar size, multi-display behavior, and application
-lists; there is no SwiftUI or general-purpose settings framework.
+window for Accessibility, launch-at-login, optional Mac Dock hiding, click behavior,
+ordering, labels, button width, overflow behavior, bar size, multi-display behavior,
+and application lists; there is no SwiftUI or general-purpose settings framework.
 
 A permanent native menu-bar item can show or hide all taskbars, open Settings, or
 quit even when Accessibility access is unavailable. Taskbar visibility is not
@@ -22,6 +22,14 @@ Close, and complete native context menus. Frequently used window actions stay in
 main menu with Close at its bottom edge; TinyTaskbar preferences and Quit are isolated
 in a submenu. Applications can be pinned as icon-only launchers or excluded
 by stable identity; both lists are managed from the Applications sheet.
+
+The optional **Fully hide the Mac Dock** setting moves the Dock away from the bottom
+edge and prevents it from revealing while TinyTaskbar is running. TinyTaskbar saves
+the affected per-user Dock preferences before enabling it and restores them when the
+setting is disabled or the app quits. The saved backup survives an interrupted run so
+the original preferences can still be restored at the next launch. Applying or
+restoring the setting restarts the Dock process, which can briefly affect the desktop
+and minimized windows.
 
 While Settings is visible, the app temporarily uses the regular activation policy so
 WindowServer will present the normal window; macOS may show a Dock icon during that
@@ -48,7 +56,8 @@ preference migration and corruption recovery, pin/exclusion conflicts, grouped
 ordering, launchers, pointer command scope, compact/icon-only geometry, injected
 permission/window providers, shrink-before-scroll overflow, automatic icon-only
 fallback, multi-display presentation policies, and the 120-window projection path. They do
-not replace tests on a real multi-display,
+include isolated coverage for preserving and restoring Dock preferences; those tests
+do not change the live Dock. They do not replace tests on a real multi-display,
 Spaces, fullscreen, or Stage Manager session.
 
 ## Local app bundle

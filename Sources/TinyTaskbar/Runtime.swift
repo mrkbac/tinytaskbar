@@ -857,6 +857,7 @@ struct SettingsActivationPolicyState: Equatable, Sendable {
 @MainActor
 final class TinyTaskbarPreferencesStore {
     private static let onboardingCompleteKey = "onboardingComplete"
+    private static let hideMacDockKey = "hideMacDock"
     private static let activeWindowClickBehaviorKey = "activeWindowClickBehavior"
     private static let orderingModeKey = "orderingMode"
     private static let labelModeKey = "labelMode"
@@ -878,6 +879,8 @@ final class TinyTaskbarPreferencesStore {
         values = TinyTaskbarPreferences(
             onboardingComplete: defaults.object(forKey: Self.onboardingCompleteKey) as? Bool
                 ?? TinyTaskbarPreferences.defaults.onboardingComplete,
+            hideMacDock: defaults.object(forKey: Self.hideMacDockKey) as? Bool
+                ?? TinyTaskbarPreferences.defaults.hideMacDock,
             activeWindowClickBehavior: ActiveWindowClickBehavior(
                 rawValue: defaults.string(forKey: Self.activeWindowClickBehaviorKey) ?? "")
                 ?? .minimize,
@@ -907,6 +910,11 @@ final class TinyTaskbarPreferencesStore {
     func setOnboardingComplete(_ complete: Bool) {
         values.onboardingComplete = complete
         defaults.set(complete, forKey: Self.onboardingCompleteKey)
+    }
+
+    func setHideMacDock(_ hidden: Bool) {
+        values.hideMacDock = hidden
+        defaults.set(hidden, forKey: Self.hideMacDockKey)
     }
 
     func setActiveWindowClickBehavior(_ behavior: ActiveWindowClickBehavior) {
@@ -1103,9 +1111,11 @@ final class TinyTaskbarSettingsModel: ObservableObject {
     @Published private(set) var accessibilityRequestWasMade = false
     @Published private(set) var preferences = TinyTaskbarPreferences.defaults
     @Published private(set) var launchAtLoginError: String?
+    @Published private(set) var dockVisibilityError: String?
 
     var onSelectedSectionChanged: (@MainActor (TinyTaskbarSettingsSection) -> Void)?
     var onAccessibilityRequest: (@MainActor () -> Void)?
+    var onHideMacDockChanged: (@MainActor (Bool) -> String?)?
     var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)?
     var onOrderingChanged: (@MainActor (TaskbarOrderingMode) -> Void)?
     var onLabelModeChanged: (@MainActor (TaskbarLabelMode) -> Void)?
@@ -1152,6 +1162,7 @@ final class TinyTaskbarSettingsModel: ObservableObject {
         self.preferences = preferences
         self.accessibilityRequestWasMade = accessibilityRequestWasMade
         launchAtLoginError = nil
+        dockVisibilityError = nil
     }
 
     func select(_ section: TinyTaskbarSettingsSection) {
@@ -1172,6 +1183,15 @@ final class TinyTaskbarSettingsModel: ObservableObject {
         } catch {
             launchAtLoginError = "Could not update: \(error.localizedDescription)"
         }
+    }
+
+    func setHideMacDock(_ hidden: Bool) {
+        if let error = onHideMacDockChanged?(hidden) {
+            dockVisibilityError = error
+            return
+        }
+        preferences.hideMacDock = hidden
+        dockVisibilityError = nil
     }
 
     func setActiveWindowClick(_ value: ActiveWindowClickBehavior) {
@@ -1279,6 +1299,27 @@ private struct TinyTaskbarSettingsDetail: View {
             } footer: {
                 if let status = model.launchAtLoginStatus {
                     Text(status)
+                }
+            }
+            Section {
+                Toggle(
+                    isOn: Binding(
+                        get: { model.preferences.hideMacDock },
+                        set: { model.setHideMacDock($0) }
+                    )
+                ) {
+                    Text("Fully hide the Mac Dock")
+                    Text("Prevent edge reveal while TinyTaskbar is running.")
+                }
+            } header: {
+                Text("Desktop")
+            } footer: {
+                if let error = model.dockVisibilityError {
+                    Text(error)
+                } else {
+                    Text(
+                        "Your previous Dock settings are restored when TinyTaskbar quits. Applying or restoring this restarts the Dock, which can briefly affect the desktop and minimized windows."
+                    )
                 }
             }
         }
@@ -1424,6 +1465,9 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDele
 
     var onAccessibilityRequest: (@MainActor () -> Void)? {
         didSet { model.onAccessibilityRequest = onAccessibilityRequest }
+    }
+    var onHideMacDockChanged: (@MainActor (Bool) -> String?)? {
+        didSet { model.onHideMacDockChanged = onHideMacDockChanged }
     }
     var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)? {
         didSet { model.onActiveWindowClickChanged = onActiveWindowClickChanged }

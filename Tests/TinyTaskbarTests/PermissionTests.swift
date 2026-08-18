@@ -54,16 +54,24 @@ struct PermissionTests {
         let model = TinyTaskbarSettingsModel()
         var receivedOrdering: TaskbarOrderingMode?
         var receivedDensity: TaskbarDensity?
+        var receivedDockVisibility: Bool?
         model.onOrderingChanged = { receivedOrdering = $0 }
         model.onDensityChanged = { receivedDensity = $0 }
+        model.onHideMacDockChanged = {
+            receivedDockVisibility = $0
+            return nil
+        }
 
         model.setOrdering(.groupByApplication)
         model.setDensity(.compact)
+        model.setHideMacDock(true)
 
         #expect(model.preferences.orderingMode == .groupByApplication)
         #expect(model.preferences.density == .compact)
+        #expect(model.preferences.hideMacDock)
         #expect(receivedOrdering == .groupByApplication)
         #expect(receivedDensity == .compact)
+        #expect(receivedDockVisibility == true)
     }
 
     @Test("Settings application summary follows refreshed preferences")
@@ -578,6 +586,7 @@ struct PermissionTests {
         #expect(store.values == .defaults)
 
         store.setOnboardingComplete(true)
+        store.setHideMacDock(true)
         store.setLabelMode(.applicationName)
         store.setButtonWidth(.wide)
         store.setOverflowBehavior(.automaticIcons)
@@ -585,6 +594,7 @@ struct PermissionTests {
         let reloaded = TinyTaskbarPreferencesStore(defaults: defaults)
         var expected = TinyTaskbarPreferences.defaults
         expected.onboardingComplete = true
+        expected.hideMacDock = true
         expected.labelMode = .applicationName
         expected.buttonWidth = .wide
         expected.overflowBehavior = .automaticIcons

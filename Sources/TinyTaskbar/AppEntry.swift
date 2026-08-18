@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let provider: any WindowSnapshotProvider
     private let store: TaskbarStore
     private let applicationLauncher: any ApplicationLaunching
+    private let dockVisibilityManager: any DockVisibilityManaging
     private let skipsOnboarding: Bool
     private var eventObserver: SystemEventObserver?
     private let preferencesStore: TinyTaskbarPreferencesStore
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return AppDelegate(
                     accessibilityProvider: DebugFixturePermissionProvider(),
                     provider: DebugFixtureWindowSnapshotProvider(fixture: fixture),
+                    dockVisibilityManager: NoopDockVisibilityManager(),
                     preferencesStore: TinyTaskbarPreferencesStore(defaults: defaults),
                     temporaryPreferencesSuiteName: suiteName,
                     skipsOnboarding: true
@@ -63,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SystemAccessibilityPermissionProvider(),
         provider: any WindowSnapshotProvider = SystemWindowSnapshotProvider(),
         applicationLauncher: any ApplicationLaunching = WorkspaceApplicationLauncher(),
+        dockVisibilityManager: any DockVisibilityManaging = DockVisibilityController(),
         preferencesStore: TinyTaskbarPreferencesStore = TinyTaskbarPreferencesStore(),
         temporaryPreferencesSuiteName: String? = nil,
         skipsOnboarding: Bool = false
@@ -71,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.provider = provider
         self.store = TaskbarStore(provider: provider)
         self.applicationLauncher = applicationLauncher
+        self.dockVisibilityManager = dockVisibilityManager
         self.preferencesStore = preferencesStore
         self.temporaryPreferencesSuiteName = temporaryPreferencesSuiteName
         self.skipsOnboarding = skipsOnboarding
@@ -80,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installStatusItem()
+        applySavedDockVisibility()
 
         let provider = self.provider
         let store = self.store
@@ -132,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.stop()
         discardTaskbarPanels()
         settingsWindow?.orderOut(nil)
+        restoreDockOnTermination()
         if let temporaryPreferencesSuiteName {
             UserDefaults().removePersistentDomain(forName: temporaryPreferencesSuiteName)
         }
@@ -293,6 +299,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onAccessibilityRequest = { [weak self] in
             self?.requestAccessibility()
         }
+        settingsWindow.onHideMacDockChanged = { [weak self] hidden in
+            self?.setDockHidden(hidden)
+        }
         settingsWindow.onActiveWindowClickChanged = { [weak self] behavior in
             self?.preferencesStore.setActiveWindowClickBehavior(behavior)
         }
@@ -340,6 +349,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreAccessoryActivationPolicy() {
         _ = settingsActivationState.apply(.close)
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func applySavedDockVisibility() {
+        do {
+            try dockVisibilityManager.setHidden(preferencesStore.values.hideMacDock)
+        } catch {
+            logger.error(
+                "could not apply Dock visibility: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func setDockHidden(_ hidden: Bool) -> String? {
+        do {
+            try dockVisibilityManager.setHidden(hidden)
+            preferencesStore.setHideMacDock(hidden)
+            return nil
+        } catch {
+            logger.error(
+                "could not update Dock visibility hidden=\(hidden, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return error.localizedDescription
+        }
+    }
+
+    private func restoreDockOnTermination() {
+        do {
+            try dockVisibilityManager.setHidden(false)
+        } catch {
+            logger.error(
+                "could not restore Dock visibility on termination: \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     private func showApplicationsWindow() {

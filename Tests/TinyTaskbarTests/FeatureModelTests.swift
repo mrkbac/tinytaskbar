@@ -7,6 +7,7 @@ struct FeatureModelTests {
     @Test("retained defaults preserve existing behavior")
     func retainedDefaults() {
         let preferences = TinyTaskbarPreferences.defaults
+        #expect(!preferences.hideMacDock)
         #expect(preferences.activeWindowClickBehavior == .minimize)
         #expect(preferences.orderingMode == .windowOrder)
         #expect(preferences.labelMode == .windowTitle)

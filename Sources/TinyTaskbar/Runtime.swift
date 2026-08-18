@@ -471,6 +471,11 @@ final class TaskbarStore {
         if resolved != state {
             state = resolved
             onStateChange?(state)
+        } else if cause == .activeSpaceChanged {
+            // Rendering must still run for an empty or otherwise identical Space:
+            // AppDelegate may need to create or reuse the panel attached to that
+            // Desktop even when its projected taskbar contents equal the old state.
+            onStateChange?(state)
         }
         applyTaskbarWorkAreas()
     }
@@ -1582,7 +1587,7 @@ final class TaskbarPanel: NSPanel {
         hasShadow = false
         level = .statusBar
         collectionBehavior = [
-            .canJoinAllSpaces,
+            .managed,
             .canJoinAllApplications,
             .fullScreenAuxiliary,
             .ignoresCycle,

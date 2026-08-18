@@ -30,7 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsActivationState = SettingsActivationPolicyState()
     private var settingsWindow: TinyTaskbarSettingsWindow?
     private var applicationsWindow: ApplicationsManagementWindow?
-    private var panels: [String: TaskbarPanel] = [:]
+    // Keep each panel attached to the Space where it was created. A single
+    // `.canJoinAllSpaces` panel is cloned by WindowServer during an interactive
+    // Space swipe, so both halves necessarily show the same (source-Space)
+    // contents. Cached per-Space panels let WindowServer compose each Desktop
+    // with the taskbar state last observed there.
+    private var panelsByDisplay: [String: [TaskbarPanel]] = [:]
     private var statusItem: NSStatusItem?
     private var taskbarsVisible = true
 
@@ -125,10 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_: Notification) {
         eventObserver?.stop()
         store.stop()
-        for panel in panels.values {
-            panel.orderOut(nil)
-        }
-        panels.removeAll()
+        discardTaskbarPanels()
         settingsWindow?.orderOut(nil)
         if let temporaryPreferencesSuiteName {
             UserDefaults().removePersistentDomain(forName: temporaryPreferencesSuiteName)
@@ -138,9 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func render(state: TaskbarState) {
         guard store.accessibilityAvailable, taskbarsVisible else {
             store.setTaskbarWorkAreaHeights([:])
-            for panel in panels.values {
-                panel.orderOut(nil)
-            }
+            discardTaskbarPanels()
             return
         }
 
@@ -159,36 +159,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let displayIDs = Set(presentation.displays.map(\.identifier))
         for display in presentation.displays {
             if state.fullscreenDisplayIdentifiers.contains(display.identifier) {
-                panels[display.identifier]?.orderOut(nil)
+                for panel in panelsByDisplay[display.identifier] ?? []
+                where panel.isOnActiveSpace {
+                    panel.orderOut(nil)
+                }
                 continue
             }
             let panel: TaskbarPanel
-            if let existing = panels[display.identifier] {
+            if let existing = activeTaskbarPanel(for: display.identifier) {
                 panel = existing
             } else {
-                panel = TaskbarPanel(
-                    frame: TaskbarPanelLayout.frame(
-                        for: display, height: preferencesStore.values.density.panelHeight),
-                    onActivate: { [weak self] item in
-                        self?.handlePrimaryClick(item)
-                    },
-                    onClose: { [weak self] item in
-                        self?.store.execute(.close(item))
-                    },
-                    onWindowCommand: { [weak self] command in
-                        guard let self else { return }
-                        self.store.execute(
-                            command,
-                            excludingApplicationIdentities: Set(
-                                self.preferencesStore.values.excludedApplications.map(\.identity)))
-                    },
-                    onApplicationCommand: { [weak self] command in
-                        self?.execute(command)
-                    },
-                    onGlobalCommand: { [weak self] command in
-                        self?.execute(command)
-                    })
-                panels[display.identifier] = panel
+                panel = makeTaskbarPanel(for: display)
+                panelsByDisplay[display.identifier, default: []].append(panel)
             }
 
             let frame = TaskbarPanelLayout.frame(
@@ -203,10 +185,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        for (identifier, panel) in panels where !displayIDs.contains(identifier) {
-            panel.orderOut(nil)
-            panels.removeValue(forKey: identifier)
+        let removedDisplayIDs = Set(panelsByDisplay.keys).subtracting(displayIDs)
+        for identifier in removedDisplayIDs {
+            for panel in panelsByDisplay.removeValue(forKey: identifier) ?? [] {
+                panel.orderOut(nil)
+            }
         }
+    }
+
+    private func activeTaskbarPanel(for displayIdentifier: String) -> TaskbarPanel? {
+        guard var cachedPanels = panelsByDisplay[displayIdentifier] else { return nil }
+        let activePanels = cachedPanels.filter(\.isOnActiveSpace)
+        guard let selectedPanel = activePanels.last else { return nil }
+
+        // Removing a Desktop can migrate its windows onto another Desktop. If
+        // that leaves multiple cached taskbars active, retain the newest panel
+        // and discard the migrated duplicates.
+        let duplicates = Array(activePanels.dropLast())
+        for panel in duplicates {
+            panel.orderOut(nil)
+        }
+        cachedPanels.removeAll { candidate in
+            duplicates.contains { $0 === candidate }
+        }
+        panelsByDisplay[displayIdentifier] = cachedPanels
+        return selectedPanel
+    }
+
+    private func makeTaskbarPanel(for display: DisplayDescriptor) -> TaskbarPanel {
+        TaskbarPanel(
+            frame: TaskbarPanelLayout.frame(
+                for: display, height: preferencesStore.values.density.panelHeight),
+            onActivate: { [weak self] item in
+                self?.handlePrimaryClick(item)
+            },
+            onClose: { [weak self] item in
+                self?.store.execute(.close(item))
+            },
+            onWindowCommand: { [weak self] command in
+                guard let self else { return }
+                self.store.execute(
+                    command,
+                    excludingApplicationIdentities: Set(
+                        self.preferencesStore.values.excludedApplications.map(\.identity)))
+            },
+            onApplicationCommand: { [weak self] command in
+                self?.execute(command)
+            },
+            onGlobalCommand: { [weak self] command in
+                self?.execute(command)
+            })
+    }
+
+    private func discardTaskbarPanels() {
+        for panel in panelsByDisplay.values.joined() {
+            panel.orderOut(nil)
+        }
+        panelsByDisplay.removeAll()
     }
 
     private func refreshPermissionStatus() {

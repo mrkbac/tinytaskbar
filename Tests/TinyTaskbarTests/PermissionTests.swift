@@ -200,6 +200,20 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
+    @Test("taskbar panels remain attached to one Space")
+    @MainActor
+    func taskbarPanelUsesPerSpaceWindowBehavior() {
+        let panel = TaskbarPanel(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 30),
+            onActivate: { _ in },
+            onClose: { _ in })
+        defer { panel.close() }
+
+        #expect(panel.collectionBehavior.contains(.managed))
+        #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+        #expect(!panel.collectionBehavior.contains(.moveToActiveSpace))
+    }
+
     @Test("retained taskbar buttons update active and minimized state in place")
     @MainActor
     func retainedButtonsUpdateInPlace() {
@@ -1413,6 +1427,30 @@ struct PermissionTests {
         await waitForSnapshot(from: provider)
 
         #expect(provider.snapshotCount == 1)
+    }
+
+    @Test("active Space refresh republishes an unchanged state")
+    @MainActor
+    func activeSpaceRefreshRepublishesUnchangedState() async {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+
+        store.start(accessibilityTrusted: true)
+        await waitForSnapshot(from: provider)
+        let initialSnapshotCount = provider.snapshotCount
+        var publicationCount = 0
+        store.onStateChange = { _ in publicationCount += 1 }
+
+        store.requestRefresh(cause: .activeSpaceChanged)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while provider.snapshotCount == initialSnapshotCount, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(provider.snapshotCount == initialSnapshotCount + 1)
+        #expect(publicationCount == 1)
     }
 
     @Test("close confirms disappearance after an early stale snapshot")

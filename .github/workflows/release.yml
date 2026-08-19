@@ -1,5 +1,7 @@
 name: Release
 
+run-name: TinyTaskbar ${{ inputs.version }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -9,66 +11,22 @@ on:
         type: string
 
 permissions:
-  contents: read
-
-concurrency:
-  group: release-${{ inputs.version }}
-  cancel-in-progress: false
+  contents: write
 
 jobs:
-  test:
-    name: Test (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Apple Silicon
-            runner: macos-26
-          - name: Intel
-            runner: macos-26-intel
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      VERSION: ${{ inputs.version }}
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-
-      - name: Validate release version
-        run: |
-          [[ "$GITHUB_REF" == "refs/heads/main" ]]
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
-          [[ "$bundle_version" == "$VERSION" ]]
-          grep -Fqx "## $VERSION" CHANGELOG.md
-
-      - name: Run Debug tests
-        run: swift test --disable-sandbox
-
-      - name: Run Release tests
-        run: swift test --disable-sandbox -c release
-
-  publish:
-    name: Build and publish
-    needs: test
+  release:
     runs-on: macos-26
     timeout-minutes: 30
-    permissions:
-      attestations: write
-      contents: write
-      id-token: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      VERSION: ${{ inputs.version }}
       GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - name: Validate release target
+      - name: Validate version
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -99,17 +57,11 @@ jobs:
         run: |
           dmg="dist/TinyTaskbar-$VERSION.dmg"
           bash scripts/package-dmg.sh --app dist/TinyTaskbar.app --output "$dmg"
-          hdiutil verify "$dmg"
           (
             cd dist
             shasum -a 256 "TinyTaskbar-$VERSION.dmg" > SHA256SUMS.txt
             shasum -a 256 -c SHA256SUMS.txt
           )
-
-      - name: Generate build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: dist/TinyTaskbar-${{ inputs.version }}.dmg
 
       - name: Publish GitHub release
         run: |

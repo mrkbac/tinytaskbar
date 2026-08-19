@@ -4,6 +4,64 @@ import Testing
 @testable import TinyTaskbar
 
 struct WindowModelTests {
+    @Test("candidate frame replacement preserves window identity and state")
+    func candidateFrameReplacement() {
+        let original = WindowCandidate(
+            stableKey: "window-1",
+            cgWindowNumber: 42,
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: CGRect(x: 10, y: 20, width: 800, height: 600),
+            isFocused: true,
+            nativeTabGroupID: "group-1",
+            nativeTabs: [TaskbarTab(id: "tab-1", title: "Document", isSelected: true)]
+        )
+        let replacement = CGRect(x: 10, y: 20, width: 800, height: 570)
+
+        let updated = original.replacingFrame(replacement)
+
+        #expect(updated.frame == replacement)
+        #expect(updated.replacingFrame(original.frame!) == original)
+    }
+
+    @Test("candidate matches only the selected physical window or native tab group")
+    func candidateRepresentsTaskbarItem() {
+        let candidate = WindowCandidate(
+            stableKey: "window-1",
+            cgWindowNumber: 42,
+            pid: 10,
+            applicationName: "Editor",
+            title: "Document",
+            frame: CGRect(x: 10, y: 20, width: 800, height: 600)
+        )
+        let exact = TaskbarItem(
+            id: "window-1", pid: 10, applicationName: "Editor", title: "Document",
+            displayIdentifier: "main", cgWindowNumber: 42, isActive: false)
+        let samePhysicalWindow = TaskbarItem(
+            id: "different-stable-key", pid: 10, applicationName: "Editor",
+            title: "Document", displayIdentifier: "main", cgWindowNumber: 42,
+            isActive: false)
+        let sibling = TaskbarItem(
+            id: "window-2", pid: 10, applicationName: "Editor", title: "Other",
+            displayIdentifier: "main", cgWindowNumber: 43, isActive: false)
+
+        #expect(candidate.represents(exact))
+        #expect(candidate.represents(samePhysicalWindow))
+        #expect(!candidate.represents(sibling))
+
+        let groupedCandidate = candidate.assigningNativeTabGroup(
+            id: "group-1",
+            tabs: [TaskbarTab(id: "tab-1", title: "Document", isSelected: true)]
+        )
+        let groupedItem = TaskbarItem(
+            id: "group-1", pid: 10, applicationName: "Editor", title: "Document",
+            displayIdentifier: "main", cgWindowNumber: 42, isActive: false,
+            nativeTabGroupID: "group-1")
+        #expect(groupedCandidate.represents(groupedItem))
+        #expect(!candidate.represents(groupedItem))
+    }
+
     @Test("window identities do not depend on hash uniqueness")
     func collisionSafeWindowIdentityRegistry() {
         struct CollidingElement: Hashable {

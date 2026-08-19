@@ -91,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let provider = self.provider
         let store = self.store
         provider.onChange = { [weak store] change in
-            store?.requestRefresh()
+            store?.requestRefresh(change: change)
             if change == .windowDestroyed {
                 store?.requestWindowDisappearanceConfirmation()
             }
@@ -100,8 +100,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.render(state: state)
         }
 
-        let eventObserver = SystemEventObserver { [weak store] in
-            store?.requestRefresh()
+        let eventObserver = SystemEventObserver { [weak provider, weak store] change in
+            if let pid = change.applicationPID {
+                provider?.invalidateApplication(pid)
+            } else {
+                provider?.invalidateAllApplications()
+            }
+            if change.invalidatesWindowServer {
+                provider?.invalidateWindowServer()
+            }
+            store?.requestRefresh(change: change.refreshChange)
         }
         eventObserver.start()
         self.eventObserver = eventObserver

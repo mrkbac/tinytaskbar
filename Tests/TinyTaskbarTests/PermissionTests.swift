@@ -784,6 +784,59 @@ struct PermissionTests {
         #expect(resolved == ["current": 20, "retained": 10, "replacement": 30])
     }
 
+    @Test("AX refresh planning reads only dirty and newly launched applications")
+    func axApplicationRefreshPlanning() {
+        let targeted = AXApplicationRefreshPlan.resolve(
+            runningApplicationPIDs: [1, 2, 3],
+            cachedApplicationPIDs: [1, 2],
+            dirtyApplicationPIDs: [2, 99],
+            refreshAll: false
+        )
+        let complete = AXApplicationRefreshPlan.resolve(
+            runningApplicationPIDs: [1, 2, 3],
+            cachedApplicationPIDs: [1, 2, 3],
+            dirtyApplicationPIDs: [],
+            refreshAll: true
+        )
+        let unchanged = AXApplicationRefreshPlan.resolve(
+            runningApplicationPIDs: [1, 2, 3],
+            cachedApplicationPIDs: [1, 2, 3],
+            dirtyApplicationPIDs: [],
+            refreshAll: false
+        )
+        let retry = AXApplicationRefreshPlan.remainingDirtyApplicationPIDs(
+            current: [2],
+            attempted: [2, 3],
+            successfullyRead: [3],
+            running: [1, 2, 3]
+        )
+
+        #expect(targeted.applicationPIDs == [2, 3])
+        #expect(complete.applicationPIDs == [1, 2, 3])
+        #expect(unchanged.applicationPIDs.isEmpty)
+        #expect(retry == [2])
+    }
+
+    @Test("cached AX identities survive snapshots that reuse an application")
+    func retainedAXApplicationIdentity() {
+        var registry = WindowElementIdentityRegistry<Int>(elementsEqual: ==)
+        registry.beginSnapshot()
+        let original = registry.identifier(for: 42, namespace: "123")
+        registry.endSnapshot()
+
+        registry.beginSnapshot()
+        registry.retain(namespace: "123")
+        registry.endSnapshot()
+        registry.beginSnapshot()
+        registry.retain(namespace: "123")
+        registry.endSnapshot()
+        registry.beginSnapshot()
+        let reused = registry.identifier(for: 42, namespace: "123")
+        registry.endSnapshot()
+
+        #expect(reused == original)
+    }
+
     @Test("native tab selection falls back to the current element at the requested index")
     func nativeTabSelectionResolvesStaleIdentity() {
         #expect(
@@ -1048,9 +1101,13 @@ struct PermissionTests {
         #expect(provider.heightUpdates.count == 1)
         #expect(provider.heightUpdates.last?.itemID == "maximized-window")
         #expect(provider.heightUpdates.last?.height == constrainedFrame.height)
-        // A successful AX write can still be immediately overwritten by another window
-        // manager. Until the applied frame is observed, verification retries the correction.
+        // Rendering an unchanged taskbar must not immediately repeat the AX write.
         store.setTaskbarWorkAreaHeights(["main": 30])
+        #expect(provider.heightUpdates.count == 1)
+
+        // A later verification snapshot still retries if another window manager
+        // overwrote the change before the applied frame was observed.
+        store.refreshNow()
         #expect(provider.heightUpdates.count == 2)
 
         provider.snapshotValue = snapshot(frame: constrainedFrame)
@@ -1298,6 +1355,68 @@ struct PermissionTests {
         #expect(provider.snapshotCount == 1)
     }
 
+    @Test("noisy AX changes use a trailing debounce")
+    @MainActor
+    func deferredRefreshRequestsSettleBeforeSnapshot() async {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+
+        store.start(accessibilityTrusted: true)
+        await waitForSnapshot(from: provider)
+        let initialSnapshotCount = provider.snapshotCount
+
+        store.requestRefresh(change: .deferred)
+        try? await Task.sleep(for: .milliseconds(150))
+        store.requestRefresh(change: .deferred)
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(provider.snapshotCount == initialSnapshotCount)
+
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(provider.snapshotCount == initialSnapshotCount + 1)
+    }
+
+    @Test("ordinary events preempt deferred refreshes")
+    @MainActor
+    func ordinaryRefreshPreemptsDeferredRefresh() async {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+
+        store.start(accessibilityTrusted: true)
+        await waitForSnapshot(from: provider)
+        let initialSnapshotCount = provider.snapshotCount
+
+        store.requestRefresh(change: .deferred)
+        store.requestRefresh()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        #expect(provider.snapshotCount == initialSnapshotCount + 1)
+    }
+
+    @Test("AX notification classes protect full refreshes from noisy streams")
+    func axNotificationRefreshClassification() {
+        #expect(WindowSnapshotChange.fromAXNotification("AXWindowMoved") == .deferred)
+        #expect(WindowSnapshotChange.fromAXNotification("AXWindowResized") == .deferred)
+        #expect(WindowSnapshotChange.fromAXNotification("AXTitleChanged") == .deferred)
+        #expect(
+            WindowSnapshotChange.fromAXNotification("AXFocusedWindowChanged") == .deferred)
+        #expect(
+            WindowSnapshotChange.fromAXNotification("AXUIElementDestroyed")
+                == .windowDestroyed)
+        #expect(
+            WindowSnapshotChange.fromAXNotification("AXWindowCreated") == .ordinary)
+        #expect(
+            WindowSnapshotChange.invalidatesWindowServer(
+                forAXNotification: "AXWindowMiniaturized"))
+        #expect(
+            !WindowSnapshotChange.invalidatesWindowServer(
+                forAXNotification: "AXFocusedWindowChanged"))
+        #expect(
+            !WindowSnapshotChange.invalidatesWindowServer(
+                forAXNotification: "AXTitleChanged"))
+    }
+
     @Test("active Space refresh republishes an unchanged state")
     @MainActor
     func activeSpaceRefreshRepublishesUnchangedState() async {
@@ -1320,6 +1439,7 @@ struct PermissionTests {
 
         #expect(provider.snapshotCount == initialSnapshotCount + 1)
         #expect(publicationCount == 1)
+        #expect(provider.invalidateAllCount == 1)
     }
 
     @Test("close confirms disappearance after an early stale snapshot")
@@ -2061,12 +2181,14 @@ struct PermissionTests {
         store.performPrimaryClick(staleInactiveItem)
         #expect(provider.minimizeCount == 1)
         #expect(provider.activationCount == 0)
+        #expect(provider.invalidatedPIDs == [activeItem.pid])
 
         provider.snapshotValue = makeFixtureSnapshot(isActive: false)
         let staleActiveItem = copy(activeItem, isActive: true)
         store.performPrimaryClick(staleActiveItem)
         #expect(provider.minimizeCount == 1)
         #expect(provider.activationCount == 1)
+        #expect(provider.invalidatedPIDs == [activeItem.pid, activeItem.pid])
 
         store.setAccessibilityAvailable(false)
         store.performPrimaryClick(staleActiveItem)
@@ -2382,6 +2504,9 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var minimizedItemIDs: [String] = []
     var events: [Event] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
+    var invalidatedPIDs: [pid_t] = []
+    var invalidateAllCount = 0
+    var invalidateWindowServerCount = 0
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
     init(snapshot: RawWindowSnapshot? = nil) {
@@ -2393,6 +2518,18 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     func snapshot() -> RawWindowSnapshot {
         snapshotCount += 1
         return snapshotValue
+    }
+
+    func invalidateApplication(_ pid: pid_t) {
+        invalidatedPIDs.append(pid)
+    }
+
+    func invalidateAllApplications() {
+        invalidateAllCount += 1
+    }
+
+    func invalidateWindowServer() {
+        invalidateWindowServerCount += 1
     }
 
     func activate(_ item: TaskbarItem) {

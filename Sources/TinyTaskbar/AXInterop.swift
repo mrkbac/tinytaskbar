@@ -40,13 +40,80 @@ enum ActionableReferenceContinuity {
 
 enum WindowSnapshotChange: Equatable, Sendable {
     case ordinary
+    case deferred
     case windowDestroyed
+
+    static func fromAXNotification(_ notification: String) -> Self {
+        switch notification {
+        case kAXWindowMovedNotification,
+            kAXWindowResizedNotification,
+            kAXTitleChangedNotification,
+            kAXFocusedWindowChangedNotification,
+            kAXMainWindowChangedNotification:
+            // These notifications can arrive continuously while a window moves,
+            // resizes, or updates a dynamic title. Wait for the burst to settle
+            // before reading that application's AX windows and WindowServer state.
+            .deferred
+        case kAXUIElementDestroyedNotification:
+            .windowDestroyed
+        default:
+            .ordinary
+        }
+    }
+
+    static func invalidatesWindowServer(forAXNotification notification: String) -> Bool {
+        switch notification {
+        case kAXWindowCreatedNotification,
+            kAXUIElementDestroyedNotification,
+            kAXWindowMovedNotification,
+            kAXWindowResizedNotification,
+            kAXWindowMiniaturizedNotification,
+            kAXWindowDeminiaturizedNotification,
+            kAXApplicationHiddenNotification,
+            kAXApplicationShownNotification:
+            true
+        default:
+            false
+        }
+    }
+}
+
+struct AXApplicationRefreshPlan: Equatable, Sendable {
+    let applicationPIDs: Set<pid_t>
+
+    static func resolve(
+        runningApplicationPIDs: Set<pid_t>,
+        cachedApplicationPIDs: Set<pid_t>,
+        dirtyApplicationPIDs: Set<pid_t>,
+        refreshAll: Bool
+    ) -> Self {
+        let missing = runningApplicationPIDs.subtracting(cachedApplicationPIDs)
+        let requested =
+            refreshAll
+            ? runningApplicationPIDs
+            : dirtyApplicationPIDs.union(missing).intersection(runningApplicationPIDs)
+        return AXApplicationRefreshPlan(applicationPIDs: requested)
+    }
+
+    static func remainingDirtyApplicationPIDs(
+        current: Set<pid_t>,
+        attempted: Set<pid_t>,
+        successfullyRead: Set<pid_t>,
+        running: Set<pid_t>
+    ) -> Set<pid_t> {
+        current.union(attempted)
+            .subtracting(successfullyRead)
+            .intersection(running)
+    }
 }
 
 @MainActor
 protocol WindowSnapshotProvider: AnyObject {
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
+    func invalidateApplication(_ pid: pid_t)
+    func invalidateAllApplications()
+    func invalidateWindowServer()
     func activate(_ item: TaskbarItem)
     func selectTab(_ tab: TaskbarTab, in item: TaskbarItem)
     func closeTab(_ tab: TaskbarTab, in item: TaskbarItem)
@@ -55,6 +122,12 @@ protocol WindowSnapshotProvider: AnyObject {
     func close(_ item: TaskbarItem)
     @discardableResult
     func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool
+}
+
+extension WindowSnapshotProvider {
+    func invalidateApplication(_: pid_t) {}
+    func invalidateAllApplications() {}
+    func invalidateWindowServer() {}
 }
 
 @MainActor
@@ -169,6 +242,14 @@ struct WindowElementIdentityRegistry<Element> {
         return identifier
     }
 
+    mutating func retain(namespace: String) {
+        guard var entries = entriesByNamespace[namespace] else { return }
+        for index in entries.indices {
+            entries[index].lastSeenGeneration = generation
+        }
+        entriesByNamespace[namespace] = entries
+    }
+
     mutating func endSnapshot() {
         let oldestRetainedGeneration = generation > 1 ? generation - 1 : 0
         entriesByNamespace = entriesByNamespace.compactMapValues { entries in
@@ -240,11 +321,15 @@ enum AXActionSupport {
 @MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
+    private let selfPID = ProcessInfo.processInfo.processIdentifier
     private lazy var inspector = AXWindowInspector(logger: logger)
     private lazy var observerRegistry = AXObserverRegistry(logger: logger) {
-        [weak self] notification in
-        self?.onChange?(
-            notification == kAXUIElementDestroyedNotification ? .windowDestroyed : .ordinary)
+        [weak self] pid, notification in
+        self?.invalidateApplication(pid)
+        if WindowSnapshotChange.invalidatesWindowServer(forAXNotification: notification) {
+            self?.invalidateWindowServer()
+        }
+        self?.onChange?(.fromAXNotification(notification))
     }
     private var identityRegistry = WindowElementIdentityRegistry<AXUIElement> {
         CFEqual($0, $1)
@@ -262,6 +347,13 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var axTabGroupsByPID: [Int32: [[AXUIElement]]] = [:]
     private var axWindowElementsByGroupID: [String: [AXUIElement]] = [:]
     private var axWindowGroupsByPID: [Int32: [[AXUIElement]]] = [:]
+    private var activationPoliciesByPID: [pid_t: NSApplication.ActivationPolicy] = [:]
+    private var cachedEnumerationsByPID: [pid_t: AXWindowEnumerationResult] = [:]
+    private var dirtyApplicationPIDs: Set<pid_t> = []
+    private var refreshAllApplications = true
+    private var lastFrontmostPID: pid_t?
+    private var cachedCGWindows: [CGWindowMetadata]?
+    private var refreshWindowServer = true
 
     var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
 
@@ -277,6 +369,20 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         }
     }
 
+    func invalidateApplication(_ pid: pid_t) {
+        guard pid != selfPID else { return }
+        dirtyApplicationPIDs.insert(pid)
+    }
+
+    func invalidateAllApplications() {
+        refreshAllApplications = true
+        invalidateWindowServer()
+    }
+
+    func invalidateWindowServer() {
+        refreshWindowServer = true
+    }
+
     func snapshot() -> RawWindowSnapshot {
         identityRegistry.beginSnapshot()
         tabGroupIdentityRegistry.beginSnapshot()
@@ -286,13 +392,55 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             tabGroupIdentityRegistry.endSnapshot()
             tabIdentityRegistry.endSnapshot()
         }
-        let cgWindows = CGWindowReader.allWindows()
+        let cgWindows: [CGWindowMetadata]
+        if refreshWindowServer || cachedCGWindows == nil {
+            let freshCGWindows = CGWindowReader.allWindows()
+            cachedCGWindows = freshCGWindows
+            refreshWindowServer = false
+            cgWindows = freshCGWindows
+        } else {
+            cgWindows = cachedCGWindows ?? []
+        }
         let displays = DisplayReader.current()
-        let applications = NSWorkspace.shared.runningApplications.filter { application in
-            application.activationPolicy == .regular && !application.isTerminated
-                && application.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let runningApplications = NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated && $0.processIdentifier != selfPID
+        }
+        let runningPIDs = Set(runningApplications.map(\.processIdentifier))
+        activationPoliciesByPID = activationPoliciesByPID.filter {
+            runningPIDs.contains($0.key)
+        }
+        let applications = runningApplications.filter { application in
+            let pid = application.processIdentifier
+            let policy: NSApplication.ActivationPolicy
+            if pid == frontmostPID || activationPoliciesByPID[pid] == nil {
+                policy = application.activationPolicy
+                activationPoliciesByPID[pid] = policy
+            } else {
+                policy = activationPoliciesByPID[pid] ?? .prohibited
+            }
+            return policy == .regular
         }
         let knownApplicationPIDs = Set(applications.map(\.processIdentifier))
+        if frontmostPID != lastFrontmostPID {
+            if let lastFrontmostPID {
+                dirtyApplicationPIDs.insert(lastFrontmostPID)
+            }
+            if let frontmostPID {
+                dirtyApplicationPIDs.insert(frontmostPID)
+            }
+            lastFrontmostPID = frontmostPID
+        }
+        cachedEnumerationsByPID = cachedEnumerationsByPID.filter {
+            knownApplicationPIDs.contains($0.key)
+        }
+        dirtyApplicationPIDs.formIntersection(knownApplicationPIDs)
+        let refreshPlan = AXApplicationRefreshPlan.resolve(
+            runningApplicationPIDs: knownApplicationPIDs,
+            cachedApplicationPIDs: Set(cachedEnumerationsByPID.keys),
+            dirtyApplicationPIDs: dirtyApplicationPIDs,
+            refreshAll: refreshAllApplications
+        )
 
         var candidates: [WindowCandidate] = []
         var applicationInputs: [AXApplicationInput] = []
@@ -309,29 +457,51 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         var observedAXWindowIDs: Set<String> = []
 
         for application in applications {
-            let namespace = String(application.processIdentifier)
-            let enumeration = inspector.enumerate(
-                application,
-                stableKeyForElement: { [unowned self] element in
-                    identityRegistry.identifier(for: element, namespace: namespace)
-                },
-                stableKeyForTabGroup: { [unowned self] element in
-                    tabGroupIdentityRegistry.identifier(
-                        for: element,
-                        namespace: "tab-group:\(namespace)"
-                    )
-                },
-                stableKeyForTab: { [unowned self] element in
-                    tabIdentityRegistry.identifier(
-                        for: element,
-                        namespace: "tab:\(namespace)"
-                    )
+            let pid = application.processIdentifier
+            let namespace = String(pid)
+            let enumeration: AXWindowEnumerationResult
+            if refreshPlan.applicationPIDs.contains(pid) {
+                let freshEnumeration = inspector.enumerate(
+                    application,
+                    applicationIsRegular: true,
+                    stableKeyForElement: { [unowned self] element in
+                        identityRegistry.identifier(for: element, namespace: namespace)
+                    },
+                    stableKeyForTabGroup: { [unowned self] element in
+                        tabGroupIdentityRegistry.identifier(
+                            for: element,
+                            namespace: "tab-group:\(namespace)"
+                        )
+                    },
+                    stableKeyForTab: { [unowned self] element in
+                        tabIdentityRegistry.identifier(
+                            for: element,
+                            namespace: "tab:\(namespace)"
+                        )
+                    }
+                )
+                if freshEnumeration.didReadWindowList {
+                    cachedEnumerationsByPID[pid] = freshEnumeration
+                    axWindowListReadPIDs.insert(pid)
+                    observedAXWindowIDs.formUnion(freshEnumeration.observedWindowIDs)
+                    enumeration = freshEnumeration
+                } else if let cachedEnumeration = cachedEnumerationsByPID[pid] {
+                    retainIdentityNamespaces(for: namespace)
+                    enumeration = cachedEnumeration
+                } else {
+                    enumeration = freshEnumeration
                 }
-            )
-            if enumeration.didReadWindowList {
-                axWindowListReadPIDs.insert(application.processIdentifier)
+            } else if let cachedEnumeration = cachedEnumerationsByPID[pid] {
+                retainIdentityNamespaces(for: namespace)
+                enumeration = cachedEnumeration
+            } else {
+                // Every uncached application is included by AXApplicationRefreshPlan.
+                // Keep this defensive fallback inconclusive if runtime state changes
+                // unexpectedly while a snapshot is being assembled.
+                dirtyApplicationPIDs.insert(pid)
+                enumeration = AXWindowEnumerationResult(
+                    records: [], observedWindowIDs: [], didReadWindowList: false)
             }
-            observedAXWindowIDs.formUnion(enumeration.observedWindowIDs)
             let records = enumeration.records
             for record in records {
                 nextTabElements.merge(record.tabElementsByID) { current, _ in current }
@@ -354,13 +524,20 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             candidates.append(contentsOf: records.map(\.candidate))
             applicationInputs.append(
                 AXApplicationInput(
-                    pid: application.processIdentifier,
-                    applicationElement: AXUIElementCreateApplication(application.processIdentifier),
+                    pid: pid,
+                    applicationElement: AXUIElementCreateApplication(pid),
                     records: records,
                     startIndex: startIndex
                 )
             )
         }
+        dirtyApplicationPIDs = AXApplicationRefreshPlan.remainingDirtyApplicationPIDs(
+            current: dirtyApplicationPIDs,
+            attempted: refreshPlan.applicationPIDs,
+            successfullyRead: axWindowListReadPIDs,
+            running: knownApplicationPIDs
+        )
+        refreshAllApplications = false
 
         let assignments = WindowCGAssignment.assign(
             candidates: candidates,
@@ -449,7 +626,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             cgWindows: cgWindows,
             cgAssignments: assignments,
             displays: displays,
-            frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            frontmostPID: frontmostPID,
             evidence: WindowSnapshotEvidence(
                 isComplete: true,
                 knownApplicationPIDs: knownApplicationPIDs,
@@ -457,6 +634,12 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 observedAXWindowIDs: observedAXWindowIDs
             )
         )
+    }
+
+    private func retainIdentityNamespaces(for namespace: String) {
+        identityRegistry.retain(namespace: namespace)
+        tabGroupIdentityRegistry.retain(namespace: "tab-group:\(namespace)")
+        tabIdentityRegistry.retain(namespace: "tab:\(namespace)")
     }
 
     func activate(_ item: TaskbarItem) {
@@ -543,14 +726,17 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             )
         }
 
-        onChange?(.ordinary)
+        publishChange(.ordinary, for: item.pid)
     }
 
     func selectTab(_ tab: TaskbarTab, in item: TaskbarItem) {
         var foundCurrentElement = false
         let pressError = NativeTabSelectionSequence.perform(
             activateGroup: { activate(item) },
-            refreshGroup: { _ = snapshot() },
+            refreshGroup: {
+                invalidateApplication(item.pid)
+                _ = snapshot()
+            },
             pressTab: {
                 let elementsForGroup = item.nativeTabGroupID.flatMap {
                     axTabElementsByGroupID[$0]
@@ -567,7 +753,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 foundCurrentElement = true
                 return AXUIElementPerformAction(tabElement, kAXPressAction as CFString)
             },
-            refresh: { onChange?(.ordinary) }
+            refresh: { publishChange(.ordinary, for: item.pid) }
         )
         if !foundCurrentElement {
             logger.debug(
@@ -581,6 +767,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func closeTab(_ tab: TaskbarTab, in item: TaskbarItem) {
+        invalidateApplication(item.pid)
         _ = snapshot()
         let currentElements = currentTabElements(for: item)
         guard
@@ -630,10 +817,14 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 "Tab close failed pid=\(item.pid, privacy: .public) error=\(closeError.rawValue, privacy: .public)"
             )
         }
-        onChange?(closeError == .success ? .windowDestroyed : .ordinary)
+        publishChange(
+            closeError == .success ? .windowDestroyed : .ordinary,
+            for: item.pid
+        )
     }
 
     func closeTabGroup(_ item: TaskbarItem) {
+        invalidateApplication(item.pid)
         _ = snapshot()
         let elementsForGroup = item.nativeTabGroupID.flatMap {
             axWindowElementsByGroupID[$0]
@@ -649,7 +840,10 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         for element in windowElements {
             didCloseWindow = pressCloseButton(for: element) == .success || didCloseWindow
         }
-        onChange?(didCloseWindow ? .windowDestroyed : .ordinary)
+        publishChange(
+            didCloseWindow ? .windowDestroyed : .ordinary,
+            for: item.pid
+        )
     }
 
     func minimize(_ item: TaskbarItem) {
@@ -670,7 +864,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 "Minimize failed pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
             )
         }
-        onChange?(.ordinary)
+        publishChange(.ordinary, for: item.pid)
     }
 
     func close(_ item: TaskbarItem) {
@@ -697,7 +891,10 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         // A modal save prompt can make AX report cannotComplete even though the
         // press was delivered. Refresh once and let the target application's
         // resulting window state remain authoritative.
-        onChange?(pressError == .success ? .windowDestroyed : .ordinary)
+        publishChange(
+            pressError == .success ? .windowDestroyed : .ordinary,
+            for: item.pid
+        )
     }
 
     private func currentTabElements(for item: TaskbarItem) -> [AXUIElement] {
@@ -805,8 +1002,54 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             logger.debug(
                 "Height update failed pid=\(item.pid, privacy: .public) error=\(sizeError.rawValue, privacy: .public)"
             )
+        } else {
+            updateCachedHeight(height, for: item)
         }
         return succeeded
+    }
+
+    private func updateCachedHeight(_ height: CGFloat, for item: TaskbarItem) {
+        if let enumeration = cachedEnumerationsByPID[item.pid] {
+            let records = enumeration.records.map { record in
+                guard record.candidate.represents(item), var frame = record.candidate.frame else {
+                    return record
+                }
+                frame.size.height = height
+                return AXWindowRecord(
+                    candidate: record.candidate.replacingFrame(frame),
+                    element: record.element,
+                    tabElementsByID: record.tabElementsByID,
+                    tabElements: record.tabElements
+                )
+            }
+            cachedEnumerationsByPID[item.pid] = AXWindowEnumerationResult(
+                records: records,
+                observedWindowIDs: enumeration.observedWindowIDs,
+                didReadWindowList: enumeration.didReadWindowList
+            )
+        }
+        guard let cgWindowNumber = item.cgWindowNumber else { return }
+        cachedCGWindows = cachedCGWindows?.map { window in
+            guard window.ownerPID == item.pid, window.windowNumber == cgWindowNumber else {
+                return window
+            }
+            var bounds = window.bounds
+            bounds.size.height = height
+            return CGWindowMetadata(
+                windowNumber: window.windowNumber,
+                ownerPID: window.ownerPID,
+                layer: window.layer,
+                bounds: bounds,
+                title: window.title,
+                isOnScreen: window.isOnScreen
+            )
+        }
+    }
+
+    private func publishChange(_ change: WindowSnapshotChange, for pid: pid_t) {
+        invalidateApplication(pid)
+        invalidateWindowServer()
+        onChange?(change)
     }
 
     private func actionableElement(for item: TaskbarItem) -> AXUIElement? {
@@ -842,6 +1085,7 @@ private final class AXWindowInspector {
 
     func enumerate(
         _ application: NSRunningApplication,
+        applicationIsRegular: Bool,
         stableKeyForElement: (AXUIElement) -> String,
         stableKeyForTabGroup: (AXUIElement) -> String,
         stableKeyForTab: (AXUIElement) -> String
@@ -931,7 +1175,7 @@ private final class AXWindowInspector {
                     ?? application.executableURL?.standardizedFileURL.path,
                 localizedApplicationName: applicationName,
                 applicationIsRunning: !application.isTerminated,
-                applicationIsRegular: application.activationPolicy == .regular,
+                applicationIsRegular: applicationIsRegular,
                 applicationIsHidden: application.isHidden,
                 role: role,
                 subrole: subrole,
@@ -1182,12 +1426,12 @@ private struct AXApplicationRecord {
 @MainActor
 private final class AXObserverRegistry {
     private let logger: Logger
-    private let onNotification: @MainActor @Sendable (String) -> Void
+    private let onNotification: @MainActor @Sendable (pid_t, String) -> Void
     private var observers: [pid_t: AXApplicationObserver] = [:]
 
     init(
         logger: Logger,
-        onNotification: @escaping @MainActor @Sendable (String) -> Void
+        onNotification: @escaping @MainActor @Sendable (pid_t, String) -> Void
     ) {
         self.logger = logger
         self.onNotification = onNotification
@@ -1228,7 +1472,7 @@ private final class AXObserverRegistry {
 private final class AXApplicationObserver: @unchecked Sendable {
     private let pid: pid_t
     private let logger: Logger
-    private let onNotification: @MainActor @Sendable (String) -> Void
+    private let onNotification: @MainActor @Sendable (pid_t, String) -> Void
     private var observer: AXObserver?
     private var applicationElement: AXUIElement
     private var windowElements: [String: AXUIElement] = [:]
@@ -1237,7 +1481,7 @@ private final class AXApplicationObserver: @unchecked Sendable {
         pid: pid_t,
         applicationElement: AXUIElement,
         logger: Logger,
-        onNotification: @escaping @MainActor @Sendable (String) -> Void
+        onNotification: @escaping @MainActor @Sendable (pid_t, String) -> Void
     ) {
         self.pid = pid
         self.applicationElement = applicationElement
@@ -1318,7 +1562,7 @@ private final class AXApplicationObserver: @unchecked Sendable {
     }
 
     private func handleNotification(_ notification: String) {
-        onNotification(notification)
+        onNotification(pid, notification)
     }
 
     nonisolated func notificationReceived(_ notification: String) {

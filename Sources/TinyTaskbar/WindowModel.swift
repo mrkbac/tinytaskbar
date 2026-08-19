@@ -143,6 +143,20 @@ struct WindowCandidate: Equatable, Sendable {
         nativeTabGroupID == nil || !nativeTabs.isEmpty
     }
 
+    func represents(_ item: TaskbarItem) -> Bool {
+        guard pid == item.pid else { return false }
+        if let groupID = item.nativeTabGroupID {
+            return nativeTabGroupID == groupID
+        }
+        if let stableKey, stableKey == item.id {
+            return true
+        }
+        guard let cgWindowNumber, let itemWindowNumber = item.cgWindowNumber else {
+            return false
+        }
+        return cgWindowNumber == itemWindowNumber
+    }
+
     func assigningNativeTabGroup(id: String, tabs: [TaskbarTab]) -> WindowCandidate {
         WindowCandidate(
             stableKey: stableKey,
@@ -166,6 +180,32 @@ struct WindowCandidate: Equatable, Sendable {
             isMain: isMain,
             nativeTabGroupID: id,
             nativeTabs: tabs
+        )
+    }
+
+    func replacingFrame(_ frame: CGRect) -> WindowCandidate {
+        WindowCandidate(
+            stableKey: stableKey,
+            cgWindowNumber: cgWindowNumber,
+            pid: pid,
+            applicationName: applicationName,
+            applicationIdentity: applicationIdentity,
+            applicationBundlePath: applicationBundlePath,
+            localizedApplicationName: localizedApplicationName,
+            applicationIsRunning: applicationIsRunning,
+            applicationIsRegular: applicationIsRegular,
+            applicationIsHidden: applicationIsHidden,
+            role: role,
+            subrole: subrole,
+            title: title,
+            frame: frame,
+            isHidden: isHidden,
+            isMinimized: isMinimized,
+            isFullscreen: isFullscreen,
+            isFocused: isFocused,
+            isMain: isMain,
+            nativeTabGroupID: nativeTabGroupID,
+            nativeTabs: nativeTabs
         )
     }
 }

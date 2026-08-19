@@ -8,6 +8,7 @@ struct RefreshMetrics: Equatable, Sendable {
     fileprivate(set) var refreshCount = 0
     fileprivate(set) var lastCandidateCount = 0
     fileprivate(set) var lastVisibleWindowCount = 0
+    fileprivate(set) var lastAXApplicationReadCount = 0
     fileprivate(set) var lastDurationMilliseconds = 0.0
 }
 
@@ -344,9 +345,12 @@ final class TaskbarStore {
 
     private static let maximumWorkAreaAdjustmentAttempts = 5
     private static let windowDisappearanceConfirmationDelay = Duration.milliseconds(350)
+    nonisolated static let ordinaryRefreshDelay = Duration.milliseconds(50)
+    nonisolated static let deferredRefreshDelay = Duration.milliseconds(250)
     private let provider: any WindowSnapshotProvider
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "refresh")
     private var pendingRefresh: Task<Void, Never>?
+    private var pendingRefreshIsDeferred = false
     private var pendingWindowDisappearanceConfirmation: Task<Void, Never>?
     private var pendingWorkAreaVerification: Task<Void, Never>?
     private var continuity = TaskbarStateContinuity()
@@ -394,6 +398,7 @@ final class TaskbarStore {
         guard available else {
             pendingRefresh?.cancel()
             pendingRefresh = nil
+            pendingRefreshIsDeferred = false
             pendingWindowDisappearanceConfirmation?.cancel()
             pendingWindowDisappearanceConfirmation = nil
             pendingRefreshCause = .ordinary
@@ -406,25 +411,44 @@ final class TaskbarStore {
             return
         }
 
+        provider.invalidateAllApplications()
         observeActiveSpaceChanges()
         requestRefresh()
     }
 
-    func requestRefresh(cause: TaskbarRefreshCause = .ordinary) {
+    func requestRefresh(
+        cause: TaskbarRefreshCause = .ordinary,
+        change: WindowSnapshotChange = .ordinary
+    ) {
         guard accessibilityAvailable else { return }
         if cause == .activeSpaceChanged {
+            provider.invalidateAllApplications()
             pendingRefreshCause = .activeSpaceChanged
         }
-        guard pendingRefresh == nil else { return }
+
+        let isDeferred = change == .deferred && cause != .activeSpaceChanged
+        if pendingRefresh != nil {
+            if isDeferred, pendingRefreshIsDeferred {
+                // Geometry and title streams use a trailing debounce.
+                pendingRefresh?.cancel()
+                pendingRefresh = nil
+            } else if isDeferred || !pendingRefreshIsDeferred {
+                return
+            } else {
+                // Focus, lifecycle, and Space changes should not wait behind a
+                // pending low-priority geometry or title update.
+                pendingRefresh?.cancel()
+                pendingRefresh = nil
+            }
+        }
+        pendingRefreshIsDeferred = isDeferred
+        let delay = isDeferred ? Self.deferredRefreshDelay : Self.ordinaryRefreshDelay
 
         pendingRefresh = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            } catch {
-                return
-            }
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             self?.pendingRefresh = nil
+            self?.pendingRefreshIsDeferred = false
             self?.refreshNow()
         }
     }
@@ -479,9 +503,10 @@ final class TaskbarStore {
         metrics.refreshCount += 1
         metrics.lastCandidateCount = snapshot.candidates.count
         metrics.lastVisibleWindowCount = resolved.itemsByDisplay.values.reduce(0) { $0 + $1.count }
+        metrics.lastAXApplicationReadCount = snapshot.evidence.axWindowListReadPIDs.count
         metrics.lastDurationMilliseconds = durationMilliseconds
         logger.debug(
-            "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(self.metrics.lastVisibleWindowCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
+            "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(self.metrics.lastVisibleWindowCount, privacy: .public) ax_apps_read=\(self.metrics.lastAXApplicationReadCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
         )
 
         let workAreaApplicationCountBeforePublish = workAreaApplicationCount
@@ -502,6 +527,7 @@ final class TaskbarStore {
     func setTaskbarWorkAreaHeights(_ heightsByDisplay: [String: CGFloat]) {
         guard accessibilityAvailable else { return }
         let positiveHeights = heightsByDisplay.filter { $0.value > 0 }
+        guard positiveHeights != taskbarHeightsByDisplay else { return }
         let removedDisplayIdentifiers = Set(taskbarHeightsByDisplay.keys).subtracting(
             positiveHeights.keys)
         releaseTaskbarWorkAreas(on: removedDisplayIdentifiers)
@@ -520,6 +546,7 @@ final class TaskbarStore {
         // A rendered item can be one event behind the actual frontmost window.
         // Refresh synchronously so a second click toggles the window that is truly
         // focused now, rather than trusting stale button presentation state.
+        provider.invalidateApplication(item.pid)
         refreshNow()
         guard
             let currentItem = TaskbarItemResolver.currentItem(for: item, in: state)
@@ -537,6 +564,7 @@ final class TaskbarStore {
 
     func performPrimaryClick(_ requestedItem: TaskbarItem) {
         guard accessibilityAvailable else { return }
+        provider.invalidateApplication(requestedItem.pid)
         refreshNow()
         guard
             let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
@@ -559,7 +587,6 @@ final class TaskbarStore {
 
     func execute(_ command: WindowCommand) {
         guard accessibilityAvailable else { return }
-        refreshNow()
         let requestedItem: TaskbarItem
         switch command {
         case .activate(let item), .minimize(let item), .restore(let item),
@@ -568,6 +595,8 @@ final class TaskbarStore {
         case .selectTab(let item, _), .closeTab(let item, _):
             requestedItem = item
         }
+        provider.invalidateApplication(requestedItem.pid)
+        refreshNow()
         guard
             let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return }
@@ -602,6 +631,7 @@ final class TaskbarStore {
         releaseTaskbarWorkAreas()
         pendingRefresh?.cancel()
         pendingRefresh = nil
+        pendingRefreshIsDeferred = false
         pendingWindowDisappearanceConfirmation?.cancel()
         pendingWindowDisappearanceConfirmation = nil
         pendingWorkAreaVerification?.cancel()
@@ -1203,10 +1233,16 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
 
 @MainActor
 final class SystemEventObserver {
-    private var tokens: [NSObjectProtocol] = []
-    private let handler: @MainActor () -> Void
+    struct Change: Sendable {
+        let applicationPID: pid_t?
+        let invalidatesWindowServer: Bool
+        let refreshChange: WindowSnapshotChange
+    }
 
-    init(handler: @escaping @MainActor () -> Void) {
+    private var tokens: [NSObjectProtocol] = []
+    private let handler: @MainActor (Change) -> Void
+
+    init(handler: @escaping @MainActor (Change) -> Void) {
         self.handler = handler
     }
 
@@ -1218,14 +1254,23 @@ final class SystemEventObserver {
             NSWorkspace.didActivateApplicationNotification,
             NSWorkspace.didHideApplicationNotification,
             NSWorkspace.didUnhideApplicationNotification,
-            NSWorkspace.activeSpaceDidChangeNotification,
         ]
         for name in workspaceNotifications {
             tokens.append(
                 workspaceCenter.addObserver(forName: name, object: nil, queue: .main) {
-                    [weak self] _ in
+                    [weak self] notification in
+                    let pid =
+                        (notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                        as? NSRunningApplication)?.processIdentifier
+                    let isActivation =
+                        notification.name == NSWorkspace.didActivateApplicationNotification
+                    let change = Change(
+                        applicationPID: pid,
+                        invalidatesWindowServer: !isActivation,
+                        refreshChange: isActivation ? .deferred : .ordinary
+                    )
                     Task { @MainActor [weak self] in
-                        self?.handler()
+                        self?.handler(change)
                     }
                 }
             )
@@ -1238,7 +1283,12 @@ final class SystemEventObserver {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.handler()
+                    self?.handler(
+                        Change(
+                            applicationPID: nil,
+                            invalidatesWindowServer: true,
+                            refreshChange: .ordinary
+                        ))
                 }
             }
         )

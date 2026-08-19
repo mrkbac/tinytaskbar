@@ -17,6 +17,22 @@
             #expect(DebugFixture.parse(arguments: ["--fixture=normal"]) == nil)
         }
 
+        @Test("indicator fixture is explicit and decorates deterministic applications")
+        func indicatorFixtureParsing() {
+            #expect(DebugFixture.indicators(arguments: ["TinyTaskbar"]) == .empty)
+
+            let indicators = DebugFixture.indicators(
+                arguments: ["TinyTaskbar", "--ui-test-indicators"])
+            #expect(indicators.attentionPIDs == [10_001])
+            #expect(
+                indicators.badgesByApplicationIdentity
+                    == ["com.tinytaskbar.fixture.app1": "7"])
+            #expect(!DebugFixture.usesCompactIconLayout(arguments: ["TinyTaskbar"]))
+            #expect(
+                DebugFixture.usesCompactIconLayout(
+                    arguments: ["TinyTaskbar", "--ui-test-compact-icons"]))
+        }
+
         @Test("fixture activation moves the mocked frontmost window")
         @MainActor
         func activationChangesActiveWindow() {

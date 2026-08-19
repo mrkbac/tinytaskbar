@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dockVisibilityManager: any DockVisibilityManaging
     private let skipsOnboarding: Bool
     private var eventObserver: SystemEventObserver?
+    private var attentionObserver: SystemApplicationAttentionObserver?
+    private var badgeObserver: SystemDockBadgeObserver?
+    private var applicationIndicators = ApplicationIndicatorSnapshot.empty
     private let preferencesStore: TinyTaskbarPreferencesStore
     private let temporaryPreferencesSuiteName: String?
     private var permissionRequestState = AccessibilityPermissionRequestState()
@@ -47,14 +50,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "com.tinytaskbar.fixture.\(ProcessInfo.processInfo.processIdentifier)"
                 let defaults = UserDefaults(suiteName: suiteName)!
                 defaults.removePersistentDomain(forName: suiteName)
-                return AppDelegate(
+                let preferencesStore = TinyTaskbarPreferencesStore(defaults: defaults)
+                if DebugFixture.usesCompactIconLayout(arguments: CommandLine.arguments) {
+                    preferencesStore.setDensity(.compact)
+                    preferencesStore.setLabelMode(.iconOnly)
+                }
+                let delegate = AppDelegate(
                     accessibilityProvider: DebugFixturePermissionProvider(),
                     provider: DebugFixtureWindowSnapshotProvider(fixture: fixture),
                     dockVisibilityManager: NoopDockVisibilityManager(),
-                    preferencesStore: TinyTaskbarPreferencesStore(defaults: defaults),
+                    preferencesStore: preferencesStore,
                     temporaryPreferencesSuiteName: suiteName,
                     skipsOnboarding: true
                 )
+                delegate.applicationIndicators = DebugFixture.indicators(
+                    arguments: CommandLine.arguments)
+                return delegate
             }
         #endif
         return AppDelegate()
@@ -105,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.eventObserver = eventObserver
 
         let trusted = accessibilityProvider.isTrusted()
+        startApplicationIndicators(accessibilityTrusted: trusted)
         let onboardingComplete =
             skipsOnboarding || preferencesStore.values.onboardingComplete
         logger.info(
@@ -134,6 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_: Notification) {
         eventObserver?.stop()
+        attentionObserver?.stop()
+        badgeObserver?.stop()
         store.stop()
         discardTaskbarPanels()
         settingsWindow?.orderOut(nil)
@@ -144,6 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func render(state: TaskbarState) {
+        let representedApplicationIdentities = Set(
+            state.itemsByDisplay.values.joined().compactMap(\.applicationIdentity)
+                + preferencesStore.values.pinnedApplications.map(\.identity))
+        badgeObserver?.setObservedApplicationIdentities(
+            taskbarsVisible ? representedApplicationIdentities : [])
         guard store.accessibilityAvailable, taskbarsVisible else {
             store.setTaskbarWorkAreaHeights([:])
             discardTaskbarPanels()
@@ -184,7 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.update(
                 frame: frame,
                 entries: presentation.entriesByDisplay[display.identifier] ?? [],
-                preferences: preferencesStore.values
+                preferences: preferencesStore.values,
+                indicators: applicationIndicators
             )
             if !panel.isVisible {
                 panel.orderFrontRegardless()
@@ -253,11 +273,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshPermissionStatus() {
         let trusted = accessibilityProvider.isTrusted()
         store.setAccessibilityAvailable(trusted)
+        if trusted {
+            badgeObserver?.start()
+        } else {
+            badgeObserver?.stop()
+        }
         settingsWindow?.refresh(
             accessibilityTrusted: trusted,
             preferences: preferencesStore.values,
             accessibilityRequestWasMade: permissionRequestState.didRequest
         )
+    }
+
+    private func startApplicationIndicators(accessibilityTrusted: Bool) {
+        // Debug fixtures must remain deterministic and independent of the host's
+        // LaunchServices and Dock state.
+        guard temporaryPreferencesSuiteName == nil else { return }
+
+        let attentionObserver = SystemApplicationAttentionObserver()
+        attentionObserver.onChange = { [weak self] pids in
+            guard let self, pids != self.applicationIndicators.attentionPIDs else { return }
+            self.applicationIndicators.attentionPIDs = pids
+            self.refreshPanelIndicators()
+        }
+        attentionObserver.start()
+        self.attentionObserver = attentionObserver
+
+        let badgeObserver = SystemDockBadgeObserver()
+        badgeObserver.onChange = { [weak self] badges in
+            guard
+                let self,
+                badges != self.applicationIndicators.badgesByApplicationIdentity
+            else { return }
+            self.applicationIndicators.badgesByApplicationIdentity = badges
+            self.refreshPanelIndicators()
+        }
+        self.badgeObserver = badgeObserver
+        if accessibilityTrusted {
+            badgeObserver.start()
+        }
+    }
+
+    private func refreshPanelIndicators() {
+        for panel in panelsByDisplay.values.joined() {
+            panel.updateIndicators(applicationIndicators)
+        }
     }
 
     private func showSettingsWindow() {

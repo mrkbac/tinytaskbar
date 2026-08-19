@@ -345,6 +345,78 @@ struct PermissionTests {
         #expect(changedTitleFrames == initialFrames)
     }
 
+    @Test("application indicators decorate one stable button without reflow")
+    @MainActor
+    func applicationIndicatorsDoNotReflowTaskbar() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+
+        let first = makeTaskbarItem(
+            id: "first", applicationIdentity: "com.example.shared", pid: 77)
+        let second = makeTaskbarItem(
+            id: "second", applicationIdentity: "com.example.shared", pid: 77)
+        update(panel, frame: frame, items: [first, second])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let initialFrames = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+
+        panel.updateIndicators(
+            ApplicationIndicatorSnapshot(
+                attentionPIDs: [77],
+                badgesByApplicationIdentity: ["com.example.shared": "12345"]))
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let buttons = Dictionary(
+            uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0) })
+
+        #expect(buttons["first"]?.presentsApplicationAttention == true)
+        #expect(buttons["first"]?.presentedBadge == "123…")
+        #expect(buttons["first"]?.accessibilityLabel()?.contains("badge 12345") == true)
+        #expect(buttons["second"]?.presentsApplicationAttention == false)
+        #expect(buttons["second"]?.presentedBadge == nil)
+        #expect(
+            Dictionary(uniqueKeysWithValues: buttons.map { ($0.key, $0.value.frame) })
+                == initialFrames)
+
+        panel.updateIndicators(.empty)
+        #expect(buttons["first"]?.presentsApplicationAttention == false)
+        #expect(buttons["first"]?.presentedBadge == nil)
+    }
+
+    @Test("attention treatment is conspicuous without changing geometry")
+    func applicationAttentionAppearance() {
+        #expect(TaskbarAttentionAppearance.borderWidth >= 2)
+        #expect(TaskbarAttentionAppearance.borderAlpha >= 0.9)
+        #expect(TaskbarAttentionAppearance.fillAlpha >= 0.2)
+        #expect(TaskbarAttentionAppearance.pulseMinimumOpacity >= 0.5)
+        #expect(TaskbarAttentionAppearance.pulseDuration <= 0.65)
+    }
+
+    @Test("application indicator fixtures render from the production panel")
+    @MainActor
+    func applicationIndicatorFixturesRender() throws {
+        let directoryURL = ProcessInfo.processInfo.environment[
+            "TINYTASKBAR_RENDER_FIXTURES_DIR"
+        ].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let directoryURL {
+            try FileManager.default.createDirectory(
+                at: directoryURL, withIntermediateDirectories: true)
+        }
+
+        try renderApplicationIndicatorFixture(
+            frame: NSRect(x: 0, y: 0, width: 700, height: 30),
+            preferences: .defaults,
+            to: directoryURL?.appendingPathComponent("indicators-standard.png"))
+
+        var compactPreferences = TinyTaskbarPreferences.defaults
+        compactPreferences.density = .compact
+        compactPreferences.labelMode = .iconOnly
+        try renderApplicationIndicatorFixture(
+            frame: NSRect(x: 0, y: 0, width: 280, height: 26),
+            preferences: compactPreferences,
+            to: directoryURL?.appendingPathComponent("indicators-compact.png"))
+    }
+
     @Test("taskbar reconciliation removes stale items, adds new items, and follows requested order")
     @MainActor
     func taskbarReconciliationPreservesRetainedOrder() {
@@ -435,6 +507,47 @@ struct PermissionTests {
         #expect(titleFrame.maxX == original.maxX)
         #expect(titleFrame.minY == original.minY)
         #expect(titleFrame.height == original.height)
+    }
+
+    @Test("notification badge stays inside the button and overlaps the icon corner")
+    @MainActor
+    func notificationBadgeAnchorsToIconCorner() {
+        let bounds = NSRect(x: 0, y: 0, width: 180, height: 27)
+        let imageFrame = NSRect(x: 5, y: 5, width: 18, height: 18)
+        let badgeFrame = TaskbarBadgeAppearance.frame(
+            textSize: NSSize(width: 6, height: 9),
+            imageFrame: imageFrame,
+            controlBounds: bounds,
+            coordinateSystemIsFlipped: false)
+        let flippedBadgeFrame = TaskbarBadgeAppearance.frame(
+            textSize: NSSize(width: 6, height: 9),
+            imageFrame: imageFrame,
+            controlBounds: bounds,
+            coordinateSystemIsFlipped: true)
+        let longBadgeFrame = TaskbarBadgeAppearance.frame(
+            textSize: NSSize(width: 20, height: 9),
+            imageFrame: imageFrame,
+            controlBounds: bounds,
+            coordinateSystemIsFlipped: true)
+
+        #expect(bounds.contains(badgeFrame))
+        #expect(badgeFrame.midX > imageFrame.midX)
+        #expect(badgeFrame.midY > imageFrame.midY)
+        #expect(badgeFrame.intersects(imageFrame))
+        #expect(bounds.contains(flippedBadgeFrame))
+        #expect(flippedBadgeFrame.midX > imageFrame.midX)
+        #expect(flippedBadgeFrame.midY < imageFrame.midY)
+        #expect(flippedBadgeFrame.intersects(imageFrame))
+        #expect(longBadgeFrame.maxX <= imageFrame.maxX + 4)
+        #expect(longBadgeFrame.intersects(imageFrame))
+    }
+
+    @Test("launcher buttons install an icon badge cell")
+    @MainActor
+    func launcherButtonInstallsBadgeCell() {
+        let button = TaskbarLauncherButton(
+            frame: NSRect(x: 0, y: 0, width: 30, height: 27))
+        #expect(button.cell is TaskbarLauncherButtonCell)
     }
 
     @Test("taskbar bottom edge activates the aligned window button")
@@ -2485,16 +2598,72 @@ struct PermissionTests {
     }
 
     @MainActor
+    private func renderApplicationIndicatorFixture(
+        frame: NSRect,
+        preferences: TinyTaskbarPreferences,
+        to outputURL: URL?
+    ) throws {
+        let applicationIdentity = "com.example.indicator-fixture"
+        let longBadgeApplicationIdentity = "com.example.long-badge-fixture"
+        let pid: Int32 = 77
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+        panel.update(
+            frame: frame,
+            entries: [
+                .window(
+                    makeTaskbarItem(
+                        id: "first", title: "Inbox", applicationIdentity: applicationIdentity,
+                        pid: pid)),
+                .window(
+                    makeTaskbarItem(
+                        id: "second", title: "Second window",
+                        applicationIdentity: applicationIdentity, pid: pid)),
+                .window(
+                    makeTaskbarItem(
+                        id: "third", title: "Long badge",
+                        applicationIdentity: longBadgeApplicationIdentity, pid: 88)),
+            ],
+            preferences: preferences,
+            indicators: ApplicationIndicatorSnapshot(
+                attentionPIDs: [pid],
+                badgesByApplicationIdentity: [
+                    applicationIdentity: "7",
+                    longBadgeApplicationIdentity: "1234",
+                ]))
+        guard let contentView = panel.contentView else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        contentView.layoutSubtreeIfNeeded()
+        contentView.displayIfNeeded()
+        guard
+            let representation = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds)
+        else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        contentView.cacheDisplay(in: contentView.bounds, to: representation)
+        guard let png = representation.representation(using: .png, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        if let outputURL {
+            try png.write(to: outputURL, options: .atomic)
+        }
+    }
+
+    @MainActor
     private func makeTaskbarItem(
         id: String,
         title: String? = nil,
         isMinimized: Bool = false,
-        isActive: Bool = false
+        isActive: Bool = false,
+        applicationIdentity: String? = nil,
+        pid: Int32? = nil
     ) -> TaskbarItem {
         TaskbarItem(
             id: id,
-            pid: Int32(id.hashValue & 0x7fff) + 1,
+            pid: pid ?? Int32(id.hashValue & 0x7fff) + 1,
             applicationName: "App " + id,
+            applicationIdentity: applicationIdentity,
             title: title ?? id,
             displayIdentifier: "main",
             cgWindowNumber: nil,

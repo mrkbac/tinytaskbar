@@ -14,6 +14,17 @@
             }
             return nil
         }
+
+        static func indicators(arguments: [String]) -> ApplicationIndicatorSnapshot {
+            guard arguments.contains("--ui-test-indicators") else { return .empty }
+            return ApplicationIndicatorSnapshot(
+                attentionPIDs: [10_001],
+                badgesByApplicationIdentity: ["com.tinytaskbar.fixture.app1": "7"])
+        }
+
+        static func usesCompactIconLayout(arguments: [String]) -> Bool {
+            arguments.contains("--ui-test-compact-icons")
+        }
     }
 
     @MainActor

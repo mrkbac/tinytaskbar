@@ -1695,12 +1695,26 @@ final class TaskbarPanel: NSPanel {
     func update(
         frame: NSRect,
         entries: [TaskbarPresentationEntry],
-        preferences: TinyTaskbarPreferences
+        preferences: TinyTaskbarPreferences,
+        indicators: ApplicationIndicatorSnapshot = .empty
     ) {
         if self.frame != frame { setFrame(frame, display: false) }
-        barView.update(entries: entries, preferences: preferences)
+        barView.update(entries: entries, preferences: preferences, indicators: indicators)
         barView.layoutSubtreeIfNeeded()
     }
+
+    func updateIndicators(_ indicators: ApplicationIndicatorSnapshot) {
+        barView.updateIndicators(indicators)
+    }
+}
+
+enum TaskbarAttentionAppearance {
+    static let cornerRadius: CGFloat = 6
+    static let borderWidth: CGFloat = 2
+    static let borderAlpha: CGFloat = 0.96
+    static let fillAlpha: CGFloat = 0.22
+    static let pulseMinimumOpacity: Float = 0.55
+    static let pulseDuration: CFTimeInterval = 0.6
 }
 
 @MainActor
@@ -1709,6 +1723,11 @@ class TaskbarHoverButton: NSButton {
     var onPrimaryInteraction: (@MainActor (TaskbarHoverButton) -> Void)?
     private(set) var isPointerInside = false
     private var hoverTrackingArea: NSTrackingArea?
+    private var attentionLayer: CALayer?
+    private(set) var presentsApplicationAttention = false
+    private(set) var presentedBadge: String?
+
+    private static let attentionAnimationKey = "TinyTaskbarAttentionPulse"
 
     override func updateTrackingAreas() {
         if let hoverTrackingArea {
@@ -1745,6 +1764,135 @@ class TaskbarHoverButton: NSButton {
         onPrimaryInteraction?(self)
         super.mouseDown(with: event)
     }
+
+    override func layout() {
+        super.layout()
+        attentionLayer?.frame = bounds.insetBy(dx: 0.75, dy: 0.75)
+    }
+
+    func setApplicationIndicators(requestsAttention: Bool, badge: String?) {
+        setRequestsAttention(requestsAttention)
+        let displayBadge = badge.flatMap(Self.displayBadge)
+        if displayBadge != presentedBadge {
+            presentedBadge = displayBadge
+            needsDisplay = true
+        }
+    }
+
+    private func setRequestsAttention(_ requestsAttention: Bool) {
+        presentsApplicationAttention = requestsAttention
+        if requestsAttention {
+            let indicator: CALayer
+            if let attentionLayer {
+                indicator = attentionLayer
+            } else {
+                wantsLayer = true
+                let created = CALayer()
+                created.cornerRadius = TaskbarAttentionAppearance.cornerRadius
+                created.cornerCurve = .continuous
+                created.borderWidth = TaskbarAttentionAppearance.borderWidth
+                created.borderColor =
+                    NSColor.systemOrange.withAlphaComponent(
+                        TaskbarAttentionAppearance.borderAlpha
+                    ).cgColor
+                created.backgroundColor =
+                    NSColor.systemOrange.withAlphaComponent(
+                        TaskbarAttentionAppearance.fillAlpha
+                    ).cgColor
+                created.actions = [
+                    "bounds": NSNull(), "position": NSNull(), "frame": NSNull(),
+                ]
+                layer?.addSublayer(created)
+                attentionLayer = created
+                indicator = created
+                needsLayout = true
+            }
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                indicator.removeAnimation(forKey: Self.attentionAnimationKey)
+                indicator.opacity = 1
+                return
+            }
+            guard indicator.animation(forKey: Self.attentionAnimationKey) == nil else { return }
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = TaskbarAttentionAppearance.pulseMinimumOpacity
+            pulse.toValue = 1
+            pulse.duration = TaskbarAttentionAppearance.pulseDuration
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            indicator.add(pulse, forKey: Self.attentionAnimationKey)
+        } else if let attentionLayer {
+            attentionLayer.removeAnimation(forKey: Self.attentionAnimationKey)
+            attentionLayer.removeFromSuperlayer()
+            self.attentionLayer = nil
+        }
+    }
+
+    private static func displayBadge(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count > 4 else { return trimmed }
+        return "\(trimmed.prefix(3))…"
+    }
+}
+
+@MainActor
+enum TaskbarBadgeAppearance {
+    static func frame(
+        textSize: NSSize,
+        imageFrame: NSRect,
+        controlBounds: NSRect,
+        coordinateSystemIsFlipped: Bool
+    ) -> NSRect {
+        let height: CGFloat = imageFrame.height >= 18 ? 12 : 11
+        let width = max(height, ceil(textSize.width) + 6)
+        let originX =
+            width > height
+            ? imageFrame.maxX - width
+            : imageFrame.maxX - width * 0.56
+        let proposed = NSRect(
+            x: originX,
+            y: coordinateSystemIsFlipped
+                ? imageFrame.minY - height * 0.48
+                : imageFrame.maxY - height * 0.52,
+            width: width,
+            height: height)
+        let insetBounds = controlBounds.insetBy(dx: 1, dy: 1)
+        return NSRect(
+            x: min(max(proposed.minX, insetBounds.minX), insetBounds.maxX - width),
+            y: min(max(proposed.minY, insetBounds.minY), insetBounds.maxY - height),
+            width: width,
+            height: height)
+    }
+
+    static func drawBadge(for button: TaskbarHoverButton, imageFrame: NSRect) {
+        guard let badgeText = button.presentedBadge else { return }
+        let fontSize: CGFloat = imageFrame.height >= 18 ? 8 : 7.5
+        let attributes: [NSAttributedString.Key: NSObject] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let text = NSAttributedString(string: badgeText, attributes: attributes)
+        let textSize = text.size()
+        let badgeFrame = frame(
+            textSize: textSize,
+            imageFrame: imageFrame,
+            controlBounds: button.bounds,
+            coordinateSystemIsFlipped: button.isFlipped)
+        let path = NSBezierPath(
+            roundedRect: badgeFrame,
+            xRadius: badgeFrame.height / 2,
+            yRadius: badgeFrame.height / 2)
+        NSColor.systemRed.setFill()
+        path.fill()
+        NSColor.windowBackgroundColor.withAlphaComponent(0.9).setStroke()
+        path.lineWidth = 0.75
+        path.stroke()
+        text.draw(
+            at: NSPoint(
+                x: badgeFrame.midX - textSize.width / 2,
+                y: badgeFrame.midY - textSize.height / 2))
+    }
 }
 
 @MainActor
@@ -1752,7 +1900,13 @@ final class TaskbarButtonCell: NSButtonCell {
     static let contentLeadingInset: CGFloat = 3
 
     override func drawImage(_ image: NSImage, withFrame frame: NSRect, in controlView: NSView) {
-        super.drawImage(image, withFrame: insetImageFrame(frame), in: controlView)
+        let imageFrame = positionedImageFrame(
+            frame,
+            imageOnly: (controlView as? NSButton)?.imagePosition == .imageOnly)
+        super.drawImage(image, withFrame: imageFrame, in: controlView)
+        if let button = controlView as? TaskbarHoverButton {
+            TaskbarBadgeAppearance.drawBadge(for: button, imageFrame: imageFrame)
+        }
     }
 
     override func drawTitle(
@@ -1760,11 +1914,22 @@ final class TaskbarButtonCell: NSButtonCell {
         withFrame frame: NSRect,
         in controlView: NSView
     ) -> NSRect {
-        super.drawTitle(title, withFrame: insetTitleFrame(frame), in: controlView)
+        var titleFrame = insetTitleFrame(frame)
+        if let button = controlView as? TaskbarHoverButton,
+            (button.presentedBadge?.count ?? 0) > 1
+        {
+            titleFrame.origin.x += 4
+            titleFrame.size.width = max(0, titleFrame.width - 4)
+        }
+        return super.drawTitle(title, withFrame: titleFrame, in: controlView)
     }
 
     func insetImageFrame(_ frame: NSRect) -> NSRect {
         frame.offsetBy(dx: Self.contentLeadingInset, dy: 0)
+    }
+
+    func positionedImageFrame(_ frame: NSRect, imageOnly: Bool) -> NSRect {
+        imageOnly ? frame : insetImageFrame(frame)
     }
 
     func insetTitleFrame(_ frame: NSRect) -> NSRect {
@@ -1773,6 +1938,16 @@ final class TaskbarButtonCell: NSButtonCell {
             y: frame.minY,
             width: max(0, frame.width - Self.contentLeadingInset),
             height: frame.height)
+    }
+}
+
+@MainActor
+final class TaskbarLauncherButtonCell: NSButtonCell {
+    override func drawImage(_ image: NSImage, withFrame frame: NSRect, in controlView: NSView) {
+        super.drawImage(image, withFrame: frame, in: controlView)
+        if let button = controlView as? TaskbarHoverButton {
+            TaskbarBadgeAppearance.drawBadge(for: button, imageFrame: frame)
+        }
     }
 }
 
@@ -1875,6 +2050,16 @@ final class TaskbarLauncherButton: TaskbarHoverButton {
     var heightConstraint: NSLayoutConstraint?
     var preferredIntrinsicHeight = TaskbarPanelLayout.contentHeight {
         didSet { invalidateIntrinsicContentSize() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        cell = TaskbarLauncherButtonCell(textCell: "")
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        cell = TaskbarLauncherButtonCell(textCell: "")
     }
 
     override var intrinsicContentSize: NSSize {
@@ -2444,6 +2629,7 @@ private final class TaskbarBarView: NSView {
     private let onGlobalCommand: @MainActor (GlobalCommand) -> Void
     private var currentEntries: [TaskbarPresentationEntry] = []
     private var currentPreferences = TinyTaskbarPreferences.defaults
+    private var currentIndicators = ApplicationIndicatorSnapshot.empty
 
     init(
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
@@ -2603,12 +2789,19 @@ private final class TaskbarBarView: NSView {
         }
     }
 
-    func update(entries: [TaskbarPresentationEntry], preferences: TinyTaskbarPreferences) {
+    func update(
+        entries: [TaskbarPresentationEntry],
+        preferences: TinyTaskbarPreferences,
+        indicators: ApplicationIndicatorSnapshot = .empty
+    ) {
         let items = entries.compactMap { entry -> TaskbarItem? in
             guard case .window(let item) = entry else { return nil }
             return item
         }
-        guard entries != currentEntries || preferences != currentPreferences else { return }
+        guard
+            entries != currentEntries || preferences != currentPreferences
+                || indicators != currentIndicators
+        else { return }
         let previousItemsByID = Dictionary(
             uniqueKeysWithValues: currentItems.map { ($0.id, $0) })
         let previousLaunchersByID = Dictionary(
@@ -2630,6 +2823,7 @@ private final class TaskbarBarView: NSView {
         currentItems = items
         currentEntries = entries
         currentPreferences = preferences
+        currentIndicators = indicators
         let currentIconKeys = Set(items.map(ApplicationIconKey.init))
         iconCache = iconCache.filter { currentIconKeys.contains($0.key) }
 
@@ -2709,7 +2903,51 @@ private final class TaskbarBarView: NSView {
             result[ObjectIdentifier(button)] = item
         }
         reorderViewsIfNeeded(to: desiredIDs)
+        applyIndicators(indicators)
         if layoutChanged { needsLayout = true }
+    }
+
+    func updateIndicators(_ indicators: ApplicationIndicatorSnapshot) {
+        guard indicators != currentIndicators else { return }
+        currentIndicators = indicators
+        applyIndicators(indicators)
+    }
+
+    private func applyIndicators(_ indicators: ApplicationIndicatorSnapshot) {
+        var attentionApplications = Set<String>()
+        var badgeApplications = Set<String>()
+        for entry in currentEntries {
+            switch entry {
+            case .window(let item):
+                guard let button = buttonsByID[item.id] else { continue }
+                let identity = item.applicationIdentity ?? "pid:\(item.pid)"
+                let requestsAttention =
+                    indicators.attentionPIDs.contains(item.pid)
+                    && attentionApplications.insert(identity).inserted
+                let badge = item.applicationIdentity.flatMap {
+                    indicators.badgesByApplicationIdentity[$0]
+                }
+                let presentedBadge =
+                    badge != nil && badgeApplications.insert(identity).inserted
+                    ? badge : nil
+                button.setApplicationIndicators(
+                    requestsAttention: requestsAttention,
+                    badge: presentedBadge)
+                let suffix = presentedBadge.map { ", badge \($0)" } ?? ""
+                button.setAccessibilityLabel(item.accessibilityLabel + suffix)
+            case .launcher(let application):
+                guard let button = launchersByID[entry.id] else { continue }
+                let badge = indicators.badgesByApplicationIdentity[application.identity]
+                let presentedBadge =
+                    badge != nil
+                        && badgeApplications.insert(application.identity).inserted ? badge : nil
+                button.setApplicationIndicators(requestsAttention: false, badge: presentedBadge)
+                let suffix = presentedBadge.map { ", badge \($0)" } ?? ""
+                button.setAccessibilityLabel("Open \(application.localizedName)\(suffix)")
+            case .separator:
+                continue
+            }
+        }
     }
 
     private func makeButton(

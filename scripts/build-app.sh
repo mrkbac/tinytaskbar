@@ -9,7 +9,7 @@ APP_ICON="$PROJECT_DIR/Resources/AppIcon.icns"
 DIST_DIR="$PROJECT_DIR/dist"
 
 usage() {
-    echo "Usage: $0 [--local | --adhoc | --identity <Developer ID Application identity>] [--configuration debug|release] [--output <app path>]" >&2
+    echo "Usage: $0 [--local | --adhoc | --identity <Developer ID Application identity>] [--configuration debug|release] [--architecture native|universal] [--output <app path>]" >&2
 }
 
 SIGNING_MODE=""
@@ -17,6 +17,7 @@ SIGNING_IDENTITY=""
 LOCAL_SIGNING_IDENTITY="${TINYTASKBAR_LOCAL_SIGNING_IDENTITY:-TinyTaskbar Local Development}"
 OUTPUT_APP=""
 CONFIGURATION="release"
+BUILD_ARCHITECTURE=""
 
 while (($# > 0)); do
     case "$1" in
@@ -55,6 +56,23 @@ while (($# > 0)); do
             esac
             shift 2
             ;;
+        --architecture)
+            if (($# < 2)); then
+                usage
+                exit 2
+            fi
+            case "$2" in
+                native|universal)
+                    BUILD_ARCHITECTURE="$2"
+                    ;;
+                *)
+                    echo "Unsupported architecture mode: $2 (choose native or universal)." >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
         --output)
             if (($# < 2)); then
                 usage
@@ -79,6 +97,13 @@ if [[ -z "$SIGNING_MODE" ]]; then
     SIGNING_MODE="local"
     SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
 fi
+if [[ -z "$BUILD_ARCHITECTURE" ]]; then
+    if [[ "$CONFIGURATION" == "release" ]]; then
+        BUILD_ARCHITECTURE="universal"
+    else
+        BUILD_ARCHITECTURE="native"
+    fi
+fi
 
 if [[ ! -f "$INFO_PLIST" || ! -f "$ENTITLEMENTS" || ! -f "$APP_ICON" ]]; then
     echo "Missing bundle resources under $PROJECT_DIR/Resources" >&2
@@ -93,14 +118,6 @@ fi
 if [[ "$OUTPUT_APP" != *.app ]]; then
     echo "Output path must end in .app: $OUTPUT_APP" >&2
     exit 2
-fi
-
-swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar
-BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
-EXECUTABLE="$BIN_PATH/TinyTaskbar"
-if [[ ! -x "$EXECUTABLE" ]]; then
-    echo "$CONFIGURATION executable was not produced at $EXECUTABLE" >&2
-    exit 1
 fi
 
 OUTPUT_PARENT="$(dirname "$OUTPUT_APP")"
@@ -147,6 +164,28 @@ cleanup() {
     return "$exit_status"
 }
 trap cleanup EXIT
+
+if [[ "$BUILD_ARCHITECTURE" == "universal" ]]; then
+    ARM_TRIPLE="arm64-apple-macosx26.0"
+    INTEL_TRIPLE="x86_64-apple-macosx26.0"
+    swift build --disable-sandbox -c "$CONFIGURATION" --triple "$ARM_TRIPLE" --product TinyTaskbar
+    ARM_BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --triple "$ARM_TRIPLE" --product TinyTaskbar --show-bin-path)"
+    swift build --disable-sandbox -c "$CONFIGURATION" --triple "$INTEL_TRIPLE" --product TinyTaskbar
+    INTEL_BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --triple "$INTEL_TRIPLE" --product TinyTaskbar --show-bin-path)"
+    EXECUTABLE="$STAGING_DIR/TinyTaskbar-universal"
+    lipo -create \
+        "$ARM_BIN_PATH/TinyTaskbar" \
+        "$INTEL_BIN_PATH/TinyTaskbar" \
+        -output "$EXECUTABLE"
+else
+    swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar
+    BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
+    EXECUTABLE="$BIN_PATH/TinyTaskbar"
+fi
+if [[ ! -x "$EXECUTABLE" ]]; then
+    echo "$CONFIGURATION $BUILD_ARCHITECTURE executable was not produced at $EXECUTABLE" >&2
+    exit 1
+fi
 
 CONTENTS="$STAGED_APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -210,6 +249,7 @@ REPLACEMENT_COMMITTED=true
 echo "Built $OUTPUT_APP"
 echo "Version $VERSION ($BUILD_NUMBER)"
 echo "Signing mode: $SIGNING_MODE"
+echo "Architecture: $BUILD_ARCHITECTURE"
 if [[ -n "$SIGNING_IDENTITY" ]]; then
     echo "Signing identity: $SIGNING_IDENTITY"
 fi

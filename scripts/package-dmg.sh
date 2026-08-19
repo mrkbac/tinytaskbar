@@ -38,6 +38,12 @@ if [[ ! -d "$APP_PATH" ]]; then
     echo "App bundle not found: $APP_PATH (run scripts/build-app.sh first)" >&2
     exit 1
 fi
+if [[ ! -f "$APP_PATH/Contents/Info.plist" ]]; then
+    echo "App bundle is missing Contents/Info.plist: $APP_PATH" >&2
+    exit 1
+fi
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+plutil -lint "$APP_PATH/Contents/Info.plist"
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tinytaskbar-dmg.XXXXXX")"
@@ -47,6 +53,7 @@ cleanup() {
 trap cleanup EXIT
 
 ditto "$APP_PATH" "$STAGING_DIR/TinyTaskbar.app"
+codesign --verify --deep --strict --verbose=2 "$STAGING_DIR/TinyTaskbar.app"
 ln -s /Applications "$STAGING_DIR/Applications"
 hdiutil create \
     -volname TinyTaskbar \
@@ -54,5 +61,6 @@ hdiutil create \
     -ov \
     -format UDZO \
     "$OUTPUT_PATH"
+hdiutil verify "$OUTPUT_PATH"
 
 echo "Created $OUTPUT_PATH"

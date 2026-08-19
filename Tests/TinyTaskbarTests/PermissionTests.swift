@@ -767,7 +767,13 @@ struct PermissionTests {
         #expect(controller.closeWindowButton?.image != nil)
         #expect(controller.closeWindowButton?.acceptsFirstMouse(for: nil) == true)
         #expect(controller.closeWindowButton?.accessibilityLabel() == "Close Editor window")
-        controller.closeWindowButton?.performClick(nil)
+        if let closeWindowButton = controller.closeWindowButton {
+            #expect(closeWindowButton.target === controller)
+            #expect(
+                closeWindowButton.action
+                    == #selector(TaskbarHoverCardViewController.closeWindow))
+        }
+        controller.closeWindow()
         #expect(didCloseWindow)
         #expect(controller.preferredContentSize.height > 44)
     }

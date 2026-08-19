@@ -2437,7 +2437,7 @@ final class TaskbarHoverCardViewController: NSViewController {
         onCloseTab(tabs[sender.tag])
     }
 
-    @objc private func closeWindow() {
+    @objc func closeWindow() {
         onCloseWindow()
     }
 

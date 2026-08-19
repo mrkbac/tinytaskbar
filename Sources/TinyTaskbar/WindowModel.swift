@@ -222,13 +222,7 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
         title.isEmpty ? applicationName : title
     }
 
-    func buttonTitle(labelMode: TaskbarLabelMode) -> String {
-        switch labelMode {
-        case .windowTitle: displayTitle
-        case .applicationName: applicationName
-        case .iconOnly: ""
-        }
-    }
+    var buttonTitle: String { displayTitle }
 
     var accessibilityLabel: String {
         "\(applicationName), \(displayTitle)"
@@ -346,40 +340,13 @@ enum NativeTabGroupMembershipResolver {
 struct TinyTaskbarPreferences: Equatable, Sendable {
     var onboardingComplete = false
     var hideMacDock = false
-    var activeWindowClickBehavior = ActiveWindowClickBehavior.minimize
-    var orderingMode = TaskbarOrderingMode.windowOrder
-    var labelMode = TaskbarLabelMode.windowTitle
-    var density = TaskbarDensity.standard
-    var buttonWidth = TaskbarButtonWidth.balanced
-    var overflowBehavior = TaskbarOverflowBehavior.shrinkThenScroll
-    var displayMode = TaskbarDisplayMode.windowDisplay
-    var pinnedApplications: [ApplicationRecord] = []
-    var excludedApplications: [ApplicationRecord] = []
 
     init(
         onboardingComplete: Bool = false,
-        hideMacDock: Bool = false,
-        activeWindowClickBehavior: ActiveWindowClickBehavior = .minimize,
-        orderingMode: TaskbarOrderingMode = .windowOrder,
-        labelMode: TaskbarLabelMode = .windowTitle,
-        density: TaskbarDensity = .standard,
-        buttonWidth: TaskbarButtonWidth = .balanced,
-        overflowBehavior: TaskbarOverflowBehavior = .shrinkThenScroll,
-        displayMode: TaskbarDisplayMode = .windowDisplay,
-        pinnedApplications: [ApplicationRecord] = [],
-        excludedApplications: [ApplicationRecord] = []
+        hideMacDock: Bool = false
     ) {
         self.onboardingComplete = onboardingComplete
         self.hideMacDock = hideMacDock
-        self.activeWindowClickBehavior = activeWindowClickBehavior
-        self.orderingMode = orderingMode
-        self.labelMode = labelMode
-        self.density = density
-        self.buttonWidth = buttonWidth
-        self.overflowBehavior = overflowBehavior
-        self.displayMode = displayMode
-        self.pinnedApplications = pinnedApplications
-        self.excludedApplications = excludedApplications
     }
 
     static let defaults = TinyTaskbarPreferences()
@@ -534,7 +501,7 @@ enum CGWindowMatcher {
 }
 
 enum TaskbarPanelLayout {
-    static let defaultHeight: CGFloat = 30
+    static let defaultHeight = TaskbarAppearance.panelHeight
     static let defaultHorizontalInset: CGFloat = 0
     static let defaultBottomInset: CGFloat = 0
     static let topSeparatorHeight: CGFloat = 1
@@ -646,52 +613,12 @@ enum FullscreenWindowDetection {
 }
 
 enum TaskbarButtonLayout {
-    static let titleOnMinimumWidth: CGFloat = 110
-    static let titleOffMinimumWidth: CGFloat = 72
-    static let titleOnMaximumWidth: CGFloat = 180
-    static let titleOffMaximumWidth: CGFloat = 150
-
-    static func widthRange(
-        labelMode: TaskbarLabelMode,
-        density: TaskbarDensity,
-        buttonWidth: TaskbarButtonWidth = .balanced
-    ) -> ClosedRange<CGFloat> {
-        let range: ClosedRange<CGFloat>
-        switch labelMode {
-        case .windowTitle:
-            switch buttonWidth {
-            case .narrow: range = 92...148
-            case .balanced: range = titleOnMinimumWidth...titleOnMaximumWidth
-            case .wide: range = 128...220
-            }
-        case .applicationName:
-            switch buttonWidth {
-            case .narrow: range = 60...120
-            case .balanced: range = titleOffMinimumWidth...titleOffMaximumWidth
-            case .wide: range = 88...184
-            }
-        case .iconOnly:
-            range = 32...32
-        }
-        guard density == .compact else { return range }
-        return max(28, range.lowerBound - 8)...max(28, range.upperBound - 12)
-    }
-
-    static func preferredWidth(
-        labelMode: TaskbarLabelMode,
-        density: TaskbarDensity,
-        buttonWidth: TaskbarButtonWidth = .balanced
-    ) -> CGFloat {
-        widthRange(
-            labelMode: labelMode,
-            density: density,
-            buttonWidth: buttonWidth
-        ).upperBound
-    }
+    static let minimumWidth: CGFloat = 102
+    static let preferredWidth: CGFloat = 168
+    static let widthRange = minimumWidth...preferredWidth
 }
 
 struct TaskbarOverflowLayout: Equatable, Sendable {
-    let labelMode: TaskbarLabelMode
     let windowWidth: CGFloat
     let contentWidth: CGFloat
     let requiresScrolling: Bool
@@ -699,48 +626,26 @@ struct TaskbarOverflowLayout: Equatable, Sendable {
     static func resolve(
         viewportWidth: CGFloat,
         windowCount: Int,
-        fixedContentWidth: CGFloat,
-        requestedLabelMode: TaskbarLabelMode,
-        density: TaskbarDensity,
-        buttonWidth: TaskbarButtonWidth,
-        behavior: TaskbarOverflowBehavior
+        fixedContentWidth: CGFloat
     ) -> TaskbarOverflowLayout {
         let viewportWidth = max(0, viewportWidth)
         let fixedContentWidth = max(0, fixedContentWidth)
         guard windowCount > 0 else {
             return TaskbarOverflowLayout(
-                labelMode: requestedLabelMode,
                 windowWidth: 0,
                 contentWidth: fixedContentWidth,
                 requiresScrolling: fixedContentWidth > viewportWidth
             )
         }
 
-        let requestedRange = TaskbarButtonLayout.widthRange(
-            labelMode: requestedLabelMode,
-            density: density,
-            buttonWidth: buttonWidth
-        )
         let availableWindowWidth = max(0, viewportWidth - fixedContentWidth)
-        let requestedMinimumWidth = requestedRange.lowerBound * CGFloat(windowCount)
-        let shouldUseIcons =
-            behavior == .automaticIcons
-            && requestedLabelMode != .iconOnly
-            && requestedMinimumWidth > availableWindowWidth
-        let effectiveLabelMode: TaskbarLabelMode = shouldUseIcons ? .iconOnly : requestedLabelMode
-        let effectiveRange = TaskbarButtonLayout.widthRange(
-            labelMode: effectiveLabelMode,
-            density: density,
-            buttonWidth: buttonWidth
-        )
         let availablePerWindow = availableWindowWidth / CGFloat(windowCount)
         let resolvedWindowWidth = min(
-            effectiveRange.upperBound,
-            max(effectiveRange.lowerBound, availablePerWindow)
+            TaskbarButtonLayout.widthRange.upperBound,
+            max(TaskbarButtonLayout.widthRange.lowerBound, availablePerWindow)
         )
         let contentWidth = fixedContentWidth + resolvedWindowWidth * CGFloat(windowCount)
         return TaskbarOverflowLayout(
-            labelMode: effectiveLabelMode,
             windowWidth: resolvedWindowWidth,
             contentWidth: contentWidth,
             requiresScrolling: contentWidth > viewportWidth + 0.5

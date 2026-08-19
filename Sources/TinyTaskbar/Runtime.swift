@@ -536,10 +536,7 @@ final class TaskbarStore {
         requestRefresh()
     }
 
-    func performPrimaryClick(
-        _ requestedItem: TaskbarItem,
-        activeWindowBehavior: ActiveWindowClickBehavior
-    ) {
+    func performPrimaryClick(_ requestedItem: TaskbarItem) {
         guard accessibilityAvailable else { return }
         refreshNow()
         guard
@@ -547,15 +544,13 @@ final class TaskbarStore {
         else { return }
 
         if item.isActive {
-            if activeWindowBehavior == .minimize {
-                if let returnItem = primaryClickReturnItem(for: item) {
-                    // Move focus away first. Minimizing a frontmost window can make macOS
-                    // promote a sibling from the same app before another app is activated.
-                    provider.activate(returnItem)
-                }
-                primaryClickFocusReturn = nil
-                provider.minimize(item)
+            if let returnItem = primaryClickReturnItem(for: item) {
+                // Move focus away first. Minimizing a frontmost window can make macOS
+                // promote a sibling from the same app before another app is activated.
+                provider.activate(returnItem)
             }
+            primaryClickFocusReturn = nil
+            provider.minimize(item)
         } else {
             rememberPrimaryClickReturn(for: item)
             provider.activate(item)
@@ -563,31 +558,16 @@ final class TaskbarStore {
         requestRefresh()
     }
 
-    func execute(
-        _ command: WindowCommand,
-        excludingApplicationIdentities excludedIdentities: Set<String> = []
-    ) {
+    func execute(_ command: WindowCommand) {
         guard accessibilityAvailable else { return }
         refreshNow()
-        if command == .minimizeAll {
-            for item in WindowOrdering.sorted(Array(state.itemsByDisplay.values.joined()))
-            where !item.isMinimized && !item.isHidden
-                && !(item.applicationIdentity.map { excludedIdentities.contains($0) } ?? false)
-            {
-                provider.minimize(item)
-            }
-            requestRefresh()
-            return
-        }
         let requestedItem: TaskbarItem
         switch command {
         case .activate(let item), .minimize(let item), .restore(let item),
-            .close(let item), .closeTabGroup(let item), .minimizeOthers(let item):
+            .close(let item), .closeTabGroup(let item):
             requestedItem = item
         case .selectTab(let item, _), .closeTab(let item, _):
             requestedItem = item
-        case .minimizeAll:
-            return
         }
         guard
             let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
@@ -608,17 +588,6 @@ final class TaskbarStore {
         case .close:
             provider.close(item)
             requestWindowDisappearanceConfirmation()
-        case .minimizeOthers:
-            let currentItems = state.itemsByDisplay[item.displayIdentifier] ?? []
-            for other in currentItems
-            where other.id != item.id && !other.isMinimized && !other.isHidden
-                && !(other.applicationIdentity.map { excludedIdentities.contains($0) } ?? false)
-            {
-                provider.minimize(other)
-            }
-            provider.activate(item)
-        case .minimizeAll:
-            return
         }
         requestRefresh()
     }
@@ -864,52 +833,17 @@ struct SettingsActivationPolicyState: Equatable, Sendable {
 final class TinyTaskbarPreferencesStore {
     private static let onboardingCompleteKey = "onboardingComplete"
     private static let hideMacDockKey = "hideMacDock"
-    private static let activeWindowClickBehaviorKey = "activeWindowClickBehavior"
-    private static let orderingModeKey = "orderingMode"
-    private static let labelModeKey = "labelMode"
-    private static let densityKey = "density"
-    private static let buttonWidthKey = "buttonWidth"
-    private static let overflowBehaviorKey = "overflowBehavior"
-    private static let displayModeKey = "displayMode"
-    private static let pinnedApplicationsKey = "pinnedApplications"
-    private static let excludedApplicationsKey = "excludedApplications"
 
     private let defaults: UserDefaults
     private(set) var values: TinyTaskbarPreferences
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        let labelMode =
-            TaskbarLabelMode(rawValue: defaults.string(forKey: Self.labelModeKey) ?? "")
-            ?? .windowTitle
         values = TinyTaskbarPreferences(
             onboardingComplete: defaults.object(forKey: Self.onboardingCompleteKey) as? Bool
                 ?? TinyTaskbarPreferences.defaults.onboardingComplete,
             hideMacDock: defaults.object(forKey: Self.hideMacDockKey) as? Bool
-                ?? TinyTaskbarPreferences.defaults.hideMacDock,
-            activeWindowClickBehavior: ActiveWindowClickBehavior(
-                rawValue: defaults.string(forKey: Self.activeWindowClickBehaviorKey) ?? "")
-                ?? .minimize,
-            orderingMode: TaskbarOrderingMode(
-                rawValue: defaults.string(forKey: Self.orderingModeKey) ?? "")
-                ?? .windowOrder,
-            labelMode: labelMode,
-            density: TaskbarDensity(
-                rawValue: defaults.string(forKey: Self.densityKey) ?? "")
-                ?? .standard,
-            buttonWidth: TaskbarButtonWidth(
-                rawValue: defaults.string(forKey: Self.buttonWidthKey) ?? "")
-                ?? .balanced,
-            overflowBehavior: TaskbarOverflowBehavior(
-                rawValue: defaults.string(forKey: Self.overflowBehaviorKey) ?? "")
-                ?? .shrinkThenScroll,
-            displayMode: TaskbarDisplayMode(
-                rawValue: defaults.string(forKey: Self.displayModeKey) ?? "")
-                ?? .windowDisplay,
-            pinnedApplications: Self.decodeRecords(
-                defaults.data(forKey: Self.pinnedApplicationsKey)),
-            excludedApplications: Self.decodeRecords(
-                defaults.data(forKey: Self.excludedApplicationsKey))
+                ?? TinyTaskbarPreferences.defaults.hideMacDock
         )
     }
 
@@ -923,223 +857,20 @@ final class TinyTaskbarPreferencesStore {
         defaults.set(hidden, forKey: Self.hideMacDockKey)
     }
 
-    func setActiveWindowClickBehavior(_ behavior: ActiveWindowClickBehavior) {
-        values.activeWindowClickBehavior = behavior
-        defaults.set(behavior.rawValue, forKey: Self.activeWindowClickBehaviorKey)
-    }
-
-    func setOrderingMode(_ mode: TaskbarOrderingMode) {
-        values.orderingMode = mode
-        defaults.set(mode.rawValue, forKey: Self.orderingModeKey)
-    }
-
-    func setLabelMode(_ mode: TaskbarLabelMode) {
-        values.labelMode = mode
-        defaults.set(mode.rawValue, forKey: Self.labelModeKey)
-    }
-
-    func setDensity(_ density: TaskbarDensity) {
-        values.density = density
-        defaults.set(density.rawValue, forKey: Self.densityKey)
-    }
-
-    func setButtonWidth(_ buttonWidth: TaskbarButtonWidth) {
-        values.buttonWidth = buttonWidth
-        defaults.set(buttonWidth.rawValue, forKey: Self.buttonWidthKey)
-    }
-
-    func setOverflowBehavior(_ behavior: TaskbarOverflowBehavior) {
-        values.overflowBehavior = behavior
-        defaults.set(behavior.rawValue, forKey: Self.overflowBehaviorKey)
-    }
-
-    func setDisplayMode(_ mode: TaskbarDisplayMode) {
-        values.displayMode = mode
-        defaults.set(mode.rawValue, forKey: Self.displayModeKey)
-    }
-
-    func pin(_ record: ApplicationRecord) {
-        guard record.isValid else { return }
-        values.excludedApplications.removeAll { $0.identity == record.identity }
-        var updated = record
-        if let existing = values.pinnedApplications.first(where: {
-            $0.identity == record.identity
-        }) {
-            updated.sequence = existing.sequence
-        } else {
-            updated.sequence = (values.pinnedApplications.map(\.sequence).max() ?? -1) + 1
-        }
-        values.pinnedApplications.removeAll { $0.identity == record.identity }
-        values.pinnedApplications.append(updated)
-        persistApplicationRecords()
-    }
-
-    func unpin(identity: String) {
-        values.pinnedApplications.removeAll { $0.identity == identity }
-        persistApplicationRecords()
-    }
-
-    func exclude(_ record: ApplicationRecord) {
-        guard record.isValid else { return }
-        values.pinnedApplications.removeAll { $0.identity == record.identity }
-        var updated = record
-        updated.sequence = 0
-        values.excludedApplications.removeAll { $0.identity == record.identity }
-        values.excludedApplications.append(updated)
-        persistApplicationRecords()
-    }
-
-    func restoreFromExclusions(identity: String) {
-        values.excludedApplications.removeAll { $0.identity == identity }
-        persistApplicationRecords()
-    }
-
-    func resetPins() {
-        values.pinnedApplications = []
-        persistApplicationRecords()
-    }
-
-    func resetExclusions() {
-        values.excludedApplications = []
-        persistApplicationRecords()
-    }
-
-    private func persistApplicationRecords() {
-        let encoder = JSONEncoder()
-        defaults.set(
-            try? encoder.encode(values.pinnedApplications),
-            forKey: Self.pinnedApplicationsKey)
-        defaults.set(
-            try? encoder.encode(values.excludedApplications),
-            forKey: Self.excludedApplicationsKey)
-    }
-
-    private static func decodeRecords(_ data: Data?) -> [ApplicationRecord] {
-        guard let data,
-            let records = try? JSONDecoder().decode(
-                LossyApplicationRecords.self, from: data
-            ).records
-        else { return [] }
-        return records.filter(\.isValid)
-    }
-}
-
-private struct LossyApplicationRecords: Decodable {
-    let records: [ApplicationRecord]
-
-    init(from decoder: Decoder) throws {
-        var container = try decoder.unkeyedContainer()
-        var decoded: [ApplicationRecord] = []
-        while !container.isAtEnd {
-            if let record = try? container.decode(ApplicationRecord.self) {
-                decoded.append(record)
-            } else {
-                _ = try container.decode(DiscardedJSONValue.self)
-            }
-        }
-        records = decoded
-    }
-}
-
-private indirect enum DiscardedJSONValue: Decodable {
-    case value
-
-    init(from decoder: Decoder) throws {
-        if var array = try? decoder.unkeyedContainer() {
-            while !array.isAtEnd { _ = try array.decode(DiscardedJSONValue.self) }
-            self = .value
-            return
-        }
-        if let keyed = try? decoder.container(keyedBy: DynamicCodingKey.self) {
-            for key in keyed.allKeys {
-                _ = try keyed.decode(DiscardedJSONValue.self, forKey: key)
-            }
-            self = .value
-            return
-        }
-        let value = try decoder.singleValueContainer()
-        if value.decodeNil() || (try? value.decode(Bool.self)) != nil
-            || (try? value.decode(Double.self)) != nil
-            || (try? value.decode(String.self)) != nil
-        {
-            self = .value
-            return
-        }
-        throw DecodingError.dataCorruptedError(
-            in: value, debugDescription: "Unsupported JSON value")
-    }
-}
-
-private struct DynamicCodingKey: CodingKey {
-    let stringValue: String
-    let intValue: Int?
-
-    init?(stringValue: String) {
-        self.stringValue = stringValue
-        intValue = nil
-    }
-
-    init?(intValue: Int) {
-        stringValue = String(intValue)
-        self.intValue = intValue
-    }
-}
-
-enum TinyTaskbarSettingsSection: Int, CaseIterable, Hashable, Sendable {
-    case general
-    case behavior
-    case appearance
-    case applications
-
-    var title: String {
-        switch self {
-        case .general: "General"
-        case .behavior: "Behavior"
-        case .appearance: "Appearance"
-        case .applications: "Applications"
-        }
-    }
-
-    var systemImageName: String {
-        switch self {
-        case .general: "gearshape"
-        case .behavior: "cursorarrow.click"
-        case .appearance: "paintbrush"
-        case .applications: "square.grid.2x2"
-        }
-    }
 }
 
 @MainActor
 final class TinyTaskbarSettingsModel: ObservableObject {
-    @Published private(set) var selectedSection = TinyTaskbarSettingsSection.general
     @Published private(set) var accessibilityTrusted = false
     @Published private(set) var accessibilityRequestWasMade = false
     @Published private(set) var preferences = TinyTaskbarPreferences.defaults
     @Published private(set) var launchAtLoginError: String?
     @Published private(set) var dockVisibilityError: String?
 
-    var onSelectedSectionChanged: (@MainActor (TinyTaskbarSettingsSection) -> Void)?
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onHideMacDockChanged: (@MainActor (Bool) -> String?)?
-    var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)?
-    var onOrderingChanged: (@MainActor (TaskbarOrderingMode) -> Void)?
-    var onLabelModeChanged: (@MainActor (TaskbarLabelMode) -> Void)?
-    var onDensityChanged: (@MainActor (TaskbarDensity) -> Void)?
-    var onButtonWidthChanged: (@MainActor (TaskbarButtonWidth) -> Void)?
-    var onOverflowBehaviorChanged: (@MainActor (TaskbarOverflowBehavior) -> Void)?
-    var onDisplayModeChanged: (@MainActor (TaskbarDisplayMode) -> Void)?
-    var onApplications: (@MainActor () -> Void)?
 
     private let launchAtLoginService = SMAppService.mainApp
-
-    var applicationsSummary: String {
-        let pinnedCount = preferences.pinnedApplications.count
-        let excludedCount = preferences.excludedApplications.count
-        return pinnedCount == 0 && excludedCount == 0
-            ? "No custom rules"
-            : "\(pinnedCount) pinned, \(excludedCount) excluded"
-    }
 
     var launchAtLoginEnabled: Bool {
         launchAtLoginService.status == .enabled || launchAtLoginService.status == .requiresApproval
@@ -1171,12 +902,6 @@ final class TinyTaskbarSettingsModel: ObservableObject {
         dockVisibilityError = nil
     }
 
-    func select(_ section: TinyTaskbarSettingsSection) {
-        guard selectedSection != section else { return }
-        selectedSection = section
-        onSelectedSectionChanged?(section)
-    }
-
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             if enabled {
@@ -1199,261 +924,95 @@ final class TinyTaskbarSettingsModel: ObservableObject {
         preferences.hideMacDock = hidden
         dockVisibilityError = nil
     }
-
-    func setActiveWindowClick(_ value: ActiveWindowClickBehavior) {
-        preferences.activeWindowClickBehavior = value
-        onActiveWindowClickChanged?(value)
-    }
-
-    func setOrdering(_ value: TaskbarOrderingMode) {
-        preferences.orderingMode = value
-        onOrderingChanged?(value)
-    }
-
-    func setLabelMode(_ value: TaskbarLabelMode) {
-        preferences.labelMode = value
-        onLabelModeChanged?(value)
-    }
-
-    func setDensity(_ value: TaskbarDensity) {
-        preferences.density = value
-        onDensityChanged?(value)
-    }
-
-    func setButtonWidth(_ value: TaskbarButtonWidth) {
-        preferences.buttonWidth = value
-        onButtonWidthChanged?(value)
-    }
-
-    func setOverflowBehavior(_ value: TaskbarOverflowBehavior) {
-        preferences.overflowBehavior = value
-        onOverflowBehaviorChanged?(value)
-    }
-
-    func setDisplayMode(_ value: TaskbarDisplayMode) {
-        preferences.displayMode = value
-        onDisplayModeChanged?(value)
-    }
 }
 
-private struct TinyTaskbarSettingsSidebar: View {
+private struct TinyTaskbarSettingsView: View {
     @ObservedObject var model: TinyTaskbarSettingsModel
 
     var body: some View {
-        List(selection: selection) {
-            Section("TinyTaskbar") {
-                ForEach(TinyTaskbarSettingsSection.allCases, id: \.self) { section in
-                    Label(section.title, systemImage: section.systemImageName)
-                        .tag(section)
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("TinyTaskbar")
+                        .font(.title2.weight(.semibold))
+                    Text("One stable button per window, on every display.")
+                        .foregroundStyle(.secondary)
                 }
+                Spacer()
             }
-        }
-        .listStyle(.sidebar)
-    }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 16)
 
-    private var selection: Binding<TinyTaskbarSettingsSection?> {
-        Binding(
-            get: { model.selectedSection },
-            set: { if let section = $0 { model.select(section) } })
-    }
-}
-
-private struct TinyTaskbarSettingsDetail: View {
-    @ObservedObject var model: TinyTaskbarSettingsModel
-
-    var body: some View {
-        Group {
-            switch model.selectedSection {
-            case .general: general
-            case .behavior: behavior
-            case .appearance: appearance
-            case .applications: applications
+            Form {
+                permissions
+                startupAndDesktop
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
     }
 
-    private var general: some View {
-        Form {
-            Section("Permissions") {
-                LabeledContent {
-                    HStack {
-                        Text(model.accessibilityTrusted ? "Granted" : "Required")
-                            .foregroundStyle(model.accessibilityTrusted ? .green : .secondary)
-                        Button(model.accessibilityButtonTitle) {
-                            model.onAccessibilityRequest?()
-                        }
+    private var permissions: some View {
+        Section("Permissions") {
+            LabeledContent {
+                HStack {
+                    Text(model.accessibilityTrusted ? "Granted" : "Required")
+                        .foregroundStyle(model.accessibilityTrusted ? .green : .secondary)
+                    Button(model.accessibilityButtonTitle) {
+                        model.onAccessibilityRequest?()
                     }
-                } label: {
-                    Text("Accessibility")
-                    Text("Required to discover, focus, and manage windows.")
                 }
+            } label: {
+                Text("Accessibility")
+                Text("Required to discover, focus, and manage windows.")
             }
-            Section {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.launchAtLoginEnabled },
-                        set: { model.setLaunchAtLogin($0) }
-                    )
-                ) {
-                    Text("Launch at Login")
-                    Text("Start TinyTaskbar automatically when you sign in.")
-                }
-                .disabled(!model.launchAtLoginAvailable)
-            } header: {
-                Text("Startup")
-            } footer: {
+        }
+    }
+
+    private var startupAndDesktop: some View {
+        Section {
+            Toggle(
+                isOn: Binding(
+                    get: { model.launchAtLoginEnabled },
+                    set: { model.setLaunchAtLogin($0) }
+                )
+            ) {
+                Text("Launch at Login")
+                Text("Start TinyTaskbar automatically when you sign in.")
+            }
+            .disabled(!model.launchAtLoginAvailable)
+            Toggle(
+                isOn: Binding(
+                    get: { model.preferences.hideMacDock },
+                    set: { model.setHideMacDock($0) }
+                )
+            ) {
+                Text("Fully hide the Mac Dock")
+                Text("Prevent edge reveal while TinyTaskbar is running.")
+            }
+        } header: {
+            Text("Startup & Desktop")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
                 if let status = model.launchAtLoginStatus {
                     Text(status)
                 }
-            }
-            Section {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.preferences.hideMacDock },
-                        set: { model.setHideMacDock($0) }
-                    )
-                ) {
-                    Text("Fully hide the Mac Dock")
-                    Text("Prevent edge reveal while TinyTaskbar is running.")
-                }
-            } header: {
-                Text("Desktop")
-            } footer: {
                 if let error = model.dockVisibilityError {
                     Text(error)
                 } else {
                     Text(
-                        "Your previous Dock settings are restored when TinyTaskbar quits. Applying or restoring this restarts the Dock, which can briefly affect the desktop and minimized windows."
+                        "Dock settings are restored when TinyTaskbar quits. Changing this setting restarts the Dock."
                     )
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private var behavior: some View {
-        Form {
-            Section("Windows") {
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.activeWindowClickBehavior },
-                        set: { model.setActiveWindowClick($0) }
-                    )
-                ) {
-                    Text("Minimize").tag(ActiveWindowClickBehavior.minimize)
-                    Text("Do Nothing").tag(ActiveWindowClickBehavior.doNothing)
-                } label: {
-                    Text("Active Window Click")
-                    Text("Choose what happens when you click the focused window.")
-                }
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.orderingMode },
-                        set: { model.setOrdering($0) }
-                    )
-                ) {
-                    Text("Window Order").tag(TaskbarOrderingMode.windowOrder)
-                    Text("Group by Application").tag(TaskbarOrderingMode.groupByApplication)
-                } label: {
-                    Text("Ordering")
-                    Text("Keep a stable window order or group windows by application.")
-                }
-            }
-            Section("Displays") {
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.displayMode },
-                        set: { model.setDisplayMode($0) }
-                    )
-                ) {
-                    Text("Window's Display").tag(TaskbarDisplayMode.windowDisplay)
-                    Text("Every Display").tag(TaskbarDisplayMode.everyDisplay)
-                    Text("Main Display Only").tag(TaskbarDisplayMode.mainDisplayOnly)
-                } label: {
-                    Text("Multiple Displays")
-                    Text("Choose where taskbars appear and which windows they contain.")
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var appearance: some View {
-        Form {
-            Section("Taskbar") {
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.labelMode },
-                        set: { model.setLabelMode($0) }
-                    )
-                ) {
-                    Text("Window Title").tag(TaskbarLabelMode.windowTitle)
-                    Text("Application Name").tag(TaskbarLabelMode.applicationName)
-                    Text("Icon Only").tag(TaskbarLabelMode.iconOnly)
-                } label: {
-                    Text("Labels")
-                    Text("Choose the text shown beside each application icon.")
-                }
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.buttonWidth },
-                        set: { model.setButtonWidth($0) }
-                    )
-                ) {
-                    Text("Narrow").tag(TaskbarButtonWidth.narrow)
-                    Text("Balanced").tag(TaskbarButtonWidth.balanced)
-                    Text("Wide").tag(TaskbarButtonWidth.wide)
-                } label: {
-                    Text("Button Width")
-                    Text("Set the preferred width used before the taskbar compresses.")
-                }
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.overflowBehavior },
-                        set: { model.setOverflowBehavior($0) }
-                    )
-                ) {
-                    Text("Shrink, Then Scroll").tag(TaskbarOverflowBehavior.shrinkThenScroll)
-                    Text("Switch to Icons").tag(TaskbarOverflowBehavior.automaticIcons)
-                } label: {
-                    Text("When Space Runs Out")
-                    Text("Shrink labels and scroll, or temporarily switch to icons.")
-                }
-                Picker(
-                    selection: Binding(
-                        get: { model.preferences.density },
-                        set: { model.setDensity($0) }
-                    )
-                ) {
-                    Text("Standard").tag(TaskbarDensity.standard)
-                    Text("Compact").tag(TaskbarDensity.compact)
-                } label: {
-                    Text("Bar Size")
-                    Text("Use the standard 30-point bar or a compact 26-point bar.")
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var applications: some View {
-        Form {
-            Section {
-                LabeledContent {
-                    Button("Manage…") { model.onApplications?() }
-                } label: {
-                    Text("Pinned & Excluded")
-                    Text("Manage pinned launchers and applications that never appear.")
-                }
-            } header: {
-                Text("Applications")
-            } footer: {
-                Text(model.applicationsSummary)
-            }
-        }
-        .formStyle(.grouped)
-    }
 }
 
 extension TinyTaskbarSettingsModel {
@@ -1465,9 +1024,8 @@ extension TinyTaskbarSettingsModel {
 }
 
 @MainActor
-final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
-    private static let fixedContentSize = NSSize(width: 800, height: 600)
-    private static let sidebarWidth: CGFloat = 215
+final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
+    private static let fixedContentSize = NSSize(width: 570, height: 500)
 
     var onAccessibilityRequest: (@MainActor () -> Void)? {
         didSet { model.onAccessibilityRequest = onAccessibilityRequest }
@@ -1475,35 +1033,9 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDele
     var onHideMacDockChanged: (@MainActor (Bool) -> String?)? {
         didSet { model.onHideMacDockChanged = onHideMacDockChanged }
     }
-    var onActiveWindowClickChanged: (@MainActor (ActiveWindowClickBehavior) -> Void)? {
-        didSet { model.onActiveWindowClickChanged = onActiveWindowClickChanged }
-    }
-    var onOrderingChanged: (@MainActor (TaskbarOrderingMode) -> Void)? {
-        didSet { model.onOrderingChanged = onOrderingChanged }
-    }
-    var onLabelModeChanged: (@MainActor (TaskbarLabelMode) -> Void)? {
-        didSet { model.onLabelModeChanged = onLabelModeChanged }
-    }
-    var onDensityChanged: (@MainActor (TaskbarDensity) -> Void)? {
-        didSet { model.onDensityChanged = onDensityChanged }
-    }
-    var onButtonWidthChanged: (@MainActor (TaskbarButtonWidth) -> Void)? {
-        didSet { model.onButtonWidthChanged = onButtonWidthChanged }
-    }
-    var onOverflowBehaviorChanged: (@MainActor (TaskbarOverflowBehavior) -> Void)? {
-        didSet { model.onOverflowBehaviorChanged = onOverflowBehaviorChanged }
-    }
-    var onDisplayModeChanged: (@MainActor (TaskbarDisplayMode) -> Void)? {
-        didSet { model.onDisplayModeChanged = onDisplayModeChanged }
-    }
-    var onApplications: (@MainActor () -> Void)? {
-        didSet { model.onApplications = onApplications }
-    }
     var onClosed: (@MainActor () -> Void)?
 
     private let model = TinyTaskbarSettingsModel()
-    var selectedSection: TinyTaskbarSettingsSection { model.selectedSection }
-    var applicationsSummary: String { model.applicationsSummary }
 
     init() {
         super.init(
@@ -1512,41 +1044,17 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDele
             backing: .buffered,
             defer: false)
 
-        title = model.selectedSection.title
+        title = "TinyTaskbar Settings"
         isReleasedWhenClosed = false
         isMovableByWindowBackground = false
         level = .normal
         collectionBehavior = [.moveToActiveSpace]
         hidesOnDeactivate = false
-        toolbarStyle = .unified
-        titlebarSeparatorStyle = .none
+        titlebarSeparatorStyle = .automatic
         delegate = self
 
-        let splitController = NSSplitViewController()
-        let sidebarItem = NSSplitViewItem(
-            sidebarWithViewController: NSHostingController(
-                rootView: TinyTaskbarSettingsSidebar(model: model)))
-        sidebarItem.minimumThickness = Self.sidebarWidth
-        sidebarItem.maximumThickness = Self.sidebarWidth
-        sidebarItem.canCollapse = false
-        let detailItem = NSSplitViewItem(
-            viewController: NSHostingController(
-                rootView: TinyTaskbarSettingsDetail(model: model)))
-        detailItem.minimumThickness = 480
-        splitController.addSplitViewItem(sidebarItem)
-        splitController.addSplitViewItem(detailItem)
-        contentViewController = splitController
-
-        let toolbar = NSToolbar(identifier: "TinyTaskbarSettingsToolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        toolbar.allowsDisplayModeCustomization = false
-        self.toolbar = toolbar
-
-        model.onSelectedSectionChanged = { [weak self] section in
-            self?.title = section.title
-        }
+        contentViewController = NSHostingController(
+            rootView: TinyTaskbarSettingsView(model: model))
         contentMinSize = Self.fixedContentSize
         contentMaxSize = Self.fixedContentSize
         restoreFixedContentSize()
@@ -1567,10 +1075,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDele
             accessibilityRequestWasMade: accessibilityRequestWasMade)
     }
 
-    func selectSection(_ section: TinyTaskbarSettingsSection) {
-        model.select(section)
-    }
-
     func restoreFixedContentSize() {
         let contentRect = NSRect(origin: .zero, size: Self.fixedContentSize)
         let targetFrameSize = frameRect(forContentRect: contentRect).size
@@ -1583,14 +1087,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate, NSToolbarDele
     func windowWillClose(_: Notification) {
         onClosed?()
         NSApp.deactivate()
-    }
-
-    func toolbarDefaultItemIdentifiers(_: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator]
-    }
-
-    func toolbarAllowedItemIdentifiers(_: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator]
     }
 }
 
@@ -1654,16 +1150,12 @@ final class TaskbarPanel: NSPanel {
         frame: NSRect,
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
-        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in },
-        onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void = { _ in },
-        onGlobalCommand: @escaping @MainActor (GlobalCommand) -> Void = { _ in }
+        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in }
     ) {
         barView = TaskbarBarView(
             onActivate: onActivate,
             onClose: onClose,
-            onWindowCommand: onWindowCommand,
-            onApplicationCommand: onApplicationCommand,
-            onGlobalCommand: onGlobalCommand)
+            onWindowCommand: onWindowCommand)
         super.init(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -1694,12 +1186,11 @@ final class TaskbarPanel: NSPanel {
 
     func update(
         frame: NSRect,
-        entries: [TaskbarPresentationEntry],
-        preferences: TinyTaskbarPreferences,
+        items: [TaskbarItem],
         indicators: ApplicationIndicatorSnapshot = .empty
     ) {
         if self.frame != frame { setFrame(frame, display: false) }
-        barView.update(entries: entries, preferences: preferences, indicators: indicators)
+        barView.update(items: items, indicators: indicators)
         barView.layoutSubtreeIfNeeded()
     }
 
@@ -1942,16 +1433,6 @@ final class TaskbarButtonCell: NSButtonCell {
 }
 
 @MainActor
-final class TaskbarLauncherButtonCell: NSButtonCell {
-    override func drawImage(_ image: NSImage, withFrame frame: NSRect, in controlView: NSView) {
-        super.drawImage(image, withFrame: frame, in: controlView)
-        if let button = controlView as? TaskbarHoverButton {
-            TaskbarBadgeAppearance.drawBadge(for: button, imageFrame: frame)
-        }
-    }
-}
-
-@MainActor
 private enum TaskbarSelectionAppearance {
     static let cornerRadius: CGFloat = 6
 
@@ -1980,7 +1461,6 @@ final class TaskbarButton: TaskbarHoverButton {
     var itemID = ""
     var widthConstraint: NSLayoutConstraint?
     var heightConstraint: NSLayoutConstraint?
-    var onMiddleClick: (@MainActor () -> Void)?
     var onMenuRequested: (@MainActor () -> NSMenu)?
     var preferredIntrinsicHeight = TaskbarPanelLayout.contentHeight {
         didSet { invalidateIntrinsicContentSize() }
@@ -2018,14 +1498,6 @@ final class TaskbarButton: TaskbarHoverButton {
         return refreshed
     }
 
-    override func otherMouseDown(with event: NSEvent) {
-        guard event.buttonNumber == 2 else {
-            super.otherMouseDown(with: event)
-            return
-        }
-        onMiddleClick?()
-    }
-
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateFocusAppearance()
@@ -2040,44 +1512,6 @@ final class TaskbarButton: TaskbarHoverButton {
     private func updateFocusAppearance() {
         TaskbarSelectionAppearance.apply(to: layer, isSelected: presentsActiveFocus)
     }
-}
-
-@MainActor
-final class TaskbarLauncherButton: TaskbarHoverButton {
-    var applicationIdentity = ""
-    var contextualMenu: NSMenu?
-    var widthConstraint: NSLayoutConstraint?
-    var heightConstraint: NSLayoutConstraint?
-    var preferredIntrinsicHeight = TaskbarPanelLayout.contentHeight {
-        didSet { invalidateIntrinsicContentSize() }
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        cell = TaskbarLauncherButtonCell(textCell: "")
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        cell = TaskbarLauncherButtonCell(textCell: "")
-    }
-
-    override var intrinsicContentSize: NSSize {
-        var size = super.intrinsicContentSize
-        size.height = preferredIntrinsicHeight
-        return size
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(
-            NSSize(width: newSize.width, height: min(newSize.height, preferredIntrinsicHeight)))
-    }
-
-    override func setFrameOrigin(_ newOrigin: NSPoint) {
-        super.setFrameOrigin(NSPoint(x: newOrigin.x, y: max(0, newOrigin.y)))
-    }
-
-    override func menu(for _: NSEvent) -> NSMenu? { contextualMenu }
 }
 
 @MainActor
@@ -2618,32 +2052,21 @@ private final class TaskbarBarView: NSView {
     private var currentItems: [TaskbarItem] = []
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var buttonsByID: [String: TaskbarButton] = [:]
-    private var launchersByID: [String: TaskbarLauncherButton] = [:]
-    private var dividersByID: [String: NSBox] = [:]
     private var iconCache: [ApplicationIconKey: NSImage] = [:]
     private let hoverPresenter = TaskbarHoverPresenter()
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
     private let onWindowCommand: @MainActor (WindowCommand) -> Void
-    private let onApplicationCommand: @MainActor (ApplicationCommand) -> Void
-    private let onGlobalCommand: @MainActor (GlobalCommand) -> Void
-    private var currentEntries: [TaskbarPresentationEntry] = []
-    private var currentPreferences = TinyTaskbarPreferences.defaults
     private var currentIndicators = ApplicationIndicatorSnapshot.empty
-    private var presentedLabelMode: TaskbarLabelMode?
 
     init(
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
-        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void,
-        onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void,
-        onGlobalCommand: @escaping @MainActor (GlobalCommand) -> Void
+        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void
     ) {
         self.onActivate = onActivate
         self.onClose = onClose
         self.onWindowCommand = onWindowCommand
-        self.onApplicationCommand = onApplicationCommand
-        self.onGlobalCommand = onGlobalCommand
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -2661,7 +2084,7 @@ private final class TaskbarBarView: NSView {
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
         // Keep the horizontal document scrollable without allowing a traditional
-        // scroller to reserve 17pt of the 30pt taskbar viewport.
+        // scroller to reserve most of the compact taskbar viewport.
         scrollView.hasHorizontalScroller = false
         scrollView.horizontalScrollElasticity = .allowed
         visualEffectView.addSubview(scrollView)
@@ -2687,11 +2110,6 @@ private final class TaskbarBarView: NSView {
         separatorView.layer?.backgroundColor =
             NSColor.separatorColor.withAlphaComponent(0.65).cgColor
         addSubview(separatorView)
-        let backgroundMenu = NSMenu()
-        backgroundMenu.addItem(tinyTaskbarMenuItem())
-        backgroundMenu.addItem(.separator())
-        backgroundMenu.addItem(menuItem("Minimize All", action: #selector(minimizeAll)))
-        menu = backgroundMenu
     }
 
     required init?(coder: NSCoder) {
@@ -2766,11 +2184,6 @@ private final class TaskbarBarView: NSView {
             button.frame.size.height = buttonHeight
             button.frame.origin.y = max(0, (contentFrame.height - buttonHeight) / 2)
         }
-        for button in launchersByID.values {
-            let height = min(currentPreferences.density.buttonHeight, contentFrame.height)
-            button.frame.size.height = height
-            button.frame.origin.y = max(0, (contentFrame.height - height) / 2)
-        }
         let maximumX = max(0, stackView.frame.width - scrollView.contentView.bounds.width)
         if scrollView.contentView.bounds.origin.x > maximumX {
             scrollView.contentView.scroll(to: NSPoint(x: maximumX, y: 0))
@@ -2791,46 +2204,20 @@ private final class TaskbarBarView: NSView {
     }
 
     func update(
-        entries: [TaskbarPresentationEntry],
-        preferences: TinyTaskbarPreferences,
+        items: [TaskbarItem],
         indicators: ApplicationIndicatorSnapshot = .empty
     ) {
-        let items = entries.compactMap { entry -> TaskbarItem? in
-            guard case .window(let item) = entry else { return nil }
-            return item
-        }
-        guard
-            entries != currentEntries || preferences != currentPreferences
-                || indicators != currentIndicators
-        else { return }
+        guard items != currentItems || indicators != currentIndicators else { return }
         let previousItemsByID = Dictionary(
             uniqueKeysWithValues: currentItems.map { ($0.id, $0) })
-        let previousLaunchersByID = Dictionary(
-            uniqueKeysWithValues: currentEntries.compactMap {
-                entry -> (String, ApplicationRecord)? in
-                guard case .launcher(let application) = entry else { return nil }
-                return (entry.id, application)
-            })
-        let previousEntryIDs = currentEntries.map(\.id)
-        let densityChanged = preferences.density != currentPreferences.density
-        let buttonPresentationChanged =
-            preferences.labelMode != currentPreferences.labelMode
-            || densityChanged
-            || preferences.buttonWidth != currentPreferences.buttonWidth
-        let layoutChanged =
-            entries.map(\.id) != previousEntryIDs
-            || buttonPresentationChanged
-            || preferences.overflowBehavior != currentPreferences.overflowBehavior
-        let retainedLabelMode =
-            layoutChanged ? preferences.labelMode : presentedLabelMode ?? preferences.labelMode
+        let previousIDs = currentItems.map(\.id)
+        let layoutChanged = items.map(\.id) != previousIDs
         currentItems = items
-        currentEntries = entries
-        currentPreferences = preferences
         currentIndicators = indicators
         let currentIconKeys = Set(items.map(ApplicationIconKey.init))
         iconCache = iconCache.filter { currentIconKeys.contains($0.key) }
 
-        let desiredIDs = entries.map(\.id)
+        let desiredIDs = items.map(\.id)
         let desiredIDSet = Set(desiredIDs)
         let staleIDs = buttonsByID.keys.filter { !desiredIDSet.contains($0) }
         for itemID in staleIDs {
@@ -2839,68 +2226,17 @@ private final class TaskbarBarView: NSView {
             stackView.removeArrangedSubview(button)
             button.removeFromSuperview()
         }
-        for id in launchersByID.keys.filter({ !desiredIDSet.contains($0) }) {
-            guard let view = launchersByID.removeValue(forKey: id) else { continue }
-            hoverPresenter.hide(from: view)
-            stackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        for id in dividersByID.keys.filter({ !desiredIDSet.contains($0) }) {
-            guard let view = dividersByID.removeValue(forKey: id) else { continue }
-            stackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
         for item in items {
             if let button = buttonsByID[item.id] {
-                if previousItemsByID[item.id] != item || buttonPresentationChanged {
-                    updateButton(
-                        button, for: item, labelMode: retainedLabelMode,
-                        density: preferences.density)
+                if previousItemsByID[item.id] != item {
+                    updateButton(button, for: item)
                 }
             } else {
-                let button = makeButton(
-                    for: item, labelMode: preferences.labelMode,
-                    density: preferences.density)
+                let button = makeButton(for: item)
                 buttonsByID[item.id] = button
                 stackView.addArrangedSubview(button)
             }
         }
-        for entry in entries {
-            switch entry {
-            case .window:
-                break
-            case .launcher(let application):
-                if let button = launchersByID[entry.id] {
-                    if previousLaunchersByID[entry.id] != application
-                        || densityChanged
-                    {
-                        updateLauncher(
-                            button, application: application, density: preferences.density)
-                    }
-                } else {
-                    let button = makeLauncher(application)
-                    button.identifier = NSUserInterfaceItemIdentifier(entry.id)
-                    updateLauncher(button, application: application, density: preferences.density)
-                    launchersByID[entry.id] = button
-                    stackView.addArrangedSubview(button)
-                }
-            case .separator:
-                if dividersByID[entry.id] == nil {
-                    let divider = NSBox()
-                    divider.boxType = .separator
-                    divider.identifier = NSUserInterfaceItemIdentifier(entry.id)
-                    divider.translatesAutoresizingMaskIntoConstraints = false
-                    divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
-                    divider.heightAnchor.constraint(
-                        equalToConstant: preferences.density.buttonHeight - 6
-                    ).isActive = true
-                    dividersByID[entry.id] = divider
-                    stackView.addArrangedSubview(divider)
-                }
-            }
-        }
-
         buttons = items.reduce(into: [ObjectIdentifier: TaskbarItem]()) { result, item in
             guard let button = buttonsByID[item.id] else { return }
             result[ObjectIdentifier(button)] = item
@@ -2919,47 +2255,29 @@ private final class TaskbarBarView: NSView {
     private func applyIndicators(_ indicators: ApplicationIndicatorSnapshot) {
         var attentionApplications = Set<String>()
         var badgeApplications = Set<String>()
-        for entry in currentEntries {
-            switch entry {
-            case .window(let item):
-                guard let button = buttonsByID[item.id] else { continue }
-                let identity = item.applicationIdentity ?? "pid:\(item.pid)"
-                let requestsAttention =
-                    indicators.attentionPIDs.contains(item.pid)
-                    && attentionApplications.insert(identity).inserted
-                let badge = item.applicationIdentity.flatMap {
-                    indicators.badgesByApplicationIdentity[$0]
-                }
-                let presentedBadge =
-                    badge != nil && badgeApplications.insert(identity).inserted
-                    ? badge : nil
-                button.setApplicationIndicators(
-                    requestsAttention: requestsAttention,
-                    badge: presentedBadge)
-                let suffix = presentedBadge.map { ", badge \($0)" } ?? ""
-                button.setAccessibilityLabel(item.accessibilityLabel + suffix)
-            case .launcher(let application):
-                guard let button = launchersByID[entry.id] else { continue }
-                let badge = indicators.badgesByApplicationIdentity[application.identity]
-                let presentedBadge =
-                    badge != nil
-                        && badgeApplications.insert(application.identity).inserted ? badge : nil
-                button.setApplicationIndicators(requestsAttention: false, badge: presentedBadge)
-                let suffix = presentedBadge.map { ", badge \($0)" } ?? ""
-                button.setAccessibilityLabel("Open \(application.localizedName)\(suffix)")
-            case .separator:
-                continue
+        for item in currentItems {
+            guard let button = buttonsByID[item.id] else { continue }
+            let identity = item.applicationIdentity ?? "pid:\(item.pid)"
+            let requestsAttention =
+                indicators.attentionPIDs.contains(item.pid)
+                && attentionApplications.insert(identity).inserted
+            let badge = item.applicationIdentity.flatMap {
+                indicators.badgesByApplicationIdentity[$0]
             }
+            let presentedBadge =
+                badge != nil && badgeApplications.insert(identity).inserted
+                ? badge : nil
+            button.setApplicationIndicators(
+                requestsAttention: requestsAttention,
+                badge: presentedBadge)
+            let suffix = presentedBadge.map { ", badge \($0)" } ?? ""
+            button.setAccessibilityLabel(item.accessibilityLabel + suffix)
         }
     }
 
-    private func makeButton(
-        for item: TaskbarItem,
-        labelMode: TaskbarLabelMode,
-        density: TaskbarDensity
-    ) -> TaskbarButton {
+    private func makeButton(for item: TaskbarItem) -> TaskbarButton {
         let button = TaskbarButton(
-            title: item.buttonTitle(labelMode: labelMode),
+            title: item.buttonTitle,
             target: self,
             action: #selector(activateButton(_:))
         )
@@ -2975,13 +2293,10 @@ private final class TaskbarBarView: NSView {
         button.setAccessibilityRole(.button)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthConstraint = button.widthAnchor.constraint(
-            equalToConstant: TaskbarButtonLayout.preferredWidth(
-                labelMode: labelMode,
-                density: density,
-                buttonWidth: currentPreferences.buttonWidth))
+            equalToConstant: TaskbarButtonLayout.preferredWidth)
         button.widthConstraint?.isActive = true
         button.heightConstraint = button.heightAnchor.constraint(
-            equalToConstant: density.buttonHeight)
+            equalToConstant: TaskbarAppearance.buttonHeight)
         button.heightConstraint?.isActive = true
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
         button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -2990,20 +2305,14 @@ private final class TaskbarBarView: NSView {
         button.wantsLayer = true
         button.layer?.cornerRadius = 6
         button.layer?.cornerCurve = .continuous
-        updateButton(button, for: item, labelMode: labelMode, density: density)
+        updateButton(button, for: item)
         return button
     }
 
-    private func updateButton(
-        _ button: TaskbarButton,
-        for item: TaskbarItem,
-        labelMode: TaskbarLabelMode,
-        density: TaskbarDensity
-    ) {
+    private func updateButton(_ button: TaskbarButton, for item: TaskbarItem) {
         button.itemID = item.id
-        button.controlSize = density == .compact ? .small : .regular
-        button.preferredIntrinsicHeight = density.buttonHeight
-        button.onMiddleClick = { [weak self] in self?.onWindowCommand(.close(item)) }
+        button.controlSize = .small
+        button.preferredIntrinsicHeight = TaskbarAppearance.buttonHeight
         button.onPrimaryInteraction = { [weak self] anchor in
             self?.hoverPresenter.hide(from: anchor)
         }
@@ -3049,14 +2358,14 @@ private final class TaskbarBarView: NSView {
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
         button.image = icon(for: item)
-        applyButtonPresentation(button, item: item, labelMode: labelMode)
+        button.title = item.buttonTitle
+        button.imagePosition = .imageLeading
+        button.alignment = .left
 
-        button.widthConstraint?.constant = TaskbarButtonLayout.preferredWidth(
-            labelMode: labelMode,
-            density: density,
-            buttonWidth: currentPreferences.buttonWidth)
-        button.heightConstraint?.constant = density.buttonHeight
-        button.image?.size = NSSize(width: density.iconSize, height: density.iconSize)
+        button.widthConstraint?.constant = TaskbarButtonLayout.preferredWidth
+        button.heightConstraint?.constant = TaskbarAppearance.buttonHeight
+        button.image?.size = NSSize(
+            width: TaskbarAppearance.iconSize, height: TaskbarAppearance.iconSize)
         if button.contextualMenu == nil {
             button.contextualMenu = makeContextualMenu(for: item)
         }
@@ -3064,44 +2373,21 @@ private final class TaskbarBarView: NSView {
     }
 
     private func resolveOverflowLayout(viewportWidth: CGFloat) -> TaskbarOverflowLayout {
-        let launcherWidth = max(28, currentPreferences.density.buttonHeight)
         let nonWindowWidth =
-            CGFloat(launchersByID.count) * launcherWidth
-            + CGFloat(dividersByID.count)
-            + CGFloat(max(0, currentEntries.count - 1)) * stackView.spacing
+            CGFloat(max(0, currentItems.count - 1)) * stackView.spacing
             + stackView.edgeInsets.left
             + stackView.edgeInsets.right
         return TaskbarOverflowLayout.resolve(
             viewportWidth: viewportWidth,
             windowCount: currentItems.count,
-            fixedContentWidth: nonWindowWidth,
-            requestedLabelMode: currentPreferences.labelMode,
-            density: currentPreferences.density,
-            buttonWidth: currentPreferences.buttonWidth,
-            behavior: currentPreferences.overflowBehavior
+            fixedContentWidth: nonWindowWidth
         )
     }
 
     private func apply(_ overflowLayout: TaskbarOverflowLayout) {
-        presentedLabelMode = overflowLayout.labelMode
-        for item in currentItems {
-            guard let button = buttonsByID[item.id] else { continue }
+        for button in buttonsByID.values {
             button.widthConstraint?.constant = overflowLayout.windowWidth
-            applyButtonPresentation(button, item: item, labelMode: overflowLayout.labelMode)
         }
-    }
-
-    private func applyButtonPresentation(
-        _ button: TaskbarButton,
-        item: TaskbarItem,
-        labelMode: TaskbarLabelMode
-    ) {
-        // AppKit resets imagePosition to imageLeading whenever title is assigned,
-        // including an empty title. Set the complete presentation atomically so a
-        // later retained-window refresh cannot shift icon-only artwork to the right.
-        button.title = item.buttonTitle(labelMode: labelMode)
-        button.imagePosition = labelMode == .iconOnly ? .imageOnly : .imageLeading
-        button.alignment = labelMode == .iconOnly ? .center : .left
     }
 
     private func makeContextualMenu(for item: TaskbarItem) -> NSMenu {
@@ -3113,52 +2399,10 @@ private final class TaskbarBarView: NSView {
             windowMenuItem(
                 visibilityActionTitle, action: #selector(toggleMinimize(_:)),
                 item: item))
-        menu.addItem(menuItem("Minimize All", action: #selector(minimizeAll)))
-        menu.addItem(
-            windowMenuItem("Minimize Others", action: #selector(minimizeOthers(_:)), item: item))
-        menu.addItem(.separator())
-        menu.addItem(tinyTaskbarMenuItem(for: item))
         menu.addItem(.separator())
         let closeTitle = item.nativeTabs.count > 1 ? "Close All Tabs" : "Close"
         menu.addItem(windowMenuItem(closeTitle, action: #selector(closeWindow(_:)), item: item))
         return menu
-    }
-
-    private func tinyTaskbarMenuItem(for item: TaskbarItem? = nil) -> NSMenuItem {
-        let parent = NSMenuItem(title: "TinyTaskbar", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "TinyTaskbar")
-        submenu.autoenablesItems = false
-
-        if let item {
-            if let identity = item.applicationIdentity, record(for: item) != nil {
-                let pinned = currentPreferences.pinnedApplications.contains {
-                    $0.identity == identity
-                }
-                submenu.addItem(
-                    windowMenuItem(
-                        pinned ? "Unpin Application" : "Pin Application",
-                        action: #selector(togglePin(_:)), item: item))
-                submenu.addItem(
-                    windowMenuItem(
-                        "Never Show This App", action: #selector(excludeApplication(_:)),
-                        item: item))
-            } else {
-                let pin = windowMenuItem(
-                    "Pin Application", action: #selector(togglePin(_:)), item: item)
-                pin.isEnabled = false
-                submenu.addItem(pin)
-                let exclude = windowMenuItem(
-                    "Never Show This App", action: #selector(excludeApplication(_:)), item: item)
-                exclude.isEnabled = false
-                submenu.addItem(exclude)
-            }
-            submenu.addItem(.separator())
-        }
-
-        submenu.addItem(menuItem("Settings…", action: #selector(showSettings)))
-        submenu.addItem(menuItem("Quit TinyTaskbar", action: #selector(quitApplication)))
-        parent.submenu = submenu
-        return parent
     }
 
     private func reorderViewsIfNeeded(to desiredIDs: [String]) {
@@ -3180,91 +2424,6 @@ private final class TaskbarBarView: NSView {
         }
     }
 
-    private func makeLauncher(_ application: ApplicationRecord) -> TaskbarLauncherButton {
-        let button = TaskbarLauncherButton(
-            title: "", target: self, action: #selector(launchApplication(_:)))
-        button.isBordered = false
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleProportionallyDown
-        button.setAccessibilityRole(.button)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        return button
-    }
-
-    private func updateLauncher(
-        _ button: TaskbarLauncherButton,
-        application: ApplicationRecord,
-        density: TaskbarDensity
-    ) {
-        button.applicationIdentity = application.identity
-        button.controlSize = density == .compact ? .small : .regular
-        button.preferredIntrinsicHeight = density.buttonHeight
-        button.toolTip = nil
-        button.setAccessibilityLabel("Open \(application.localizedName)")
-        let source =
-            application.bundlePath.map { NSWorkspace.shared.icon(forFile: $0) }
-            ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)
-        button.image = source?.copy() as? NSImage
-        button.onHoverChanged = { [weak self] anchor, hovering in
-            guard let self, let launcher = anchor as? TaskbarLauncherButton else { return }
-            if hovering,
-                let current = self.currentPreferences.pinnedApplications.first(where: {
-                    $0.identity == launcher.applicationIdentity
-                })
-            {
-                self.hoverPresenter.schedule(
-                    applicationName: current.localizedName,
-                    title: current.localizedName,
-                    icon: anchor.image,
-                    from: anchor
-                )
-            } else {
-                self.hoverPresenter.hide(from: anchor)
-            }
-        }
-        button.onPrimaryInteraction = { [weak self] anchor in
-            self?.hoverPresenter.hide(from: anchor)
-        }
-        button.image?.size = NSSize(width: density.iconSize, height: density.iconSize)
-        if button.widthConstraint == nil {
-            button.widthConstraint = button.widthAnchor.constraint(
-                equalToConstant: max(28, density.buttonHeight))
-            button.widthConstraint?.isActive = true
-        }
-        if button.heightConstraint == nil {
-            button.heightConstraint = button.heightAnchor.constraint(
-                equalToConstant: density.buttonHeight)
-            button.heightConstraint?.isActive = true
-        }
-        button.widthConstraint?.constant = max(28, density.buttonHeight)
-        button.heightConstraint?.constant = density.buttonHeight
-        let menu = NSMenu()
-        menu.addItem(
-            applicationMenuItem(
-                "Open", action: #selector(openPinnedApplication(_:)), application: application))
-        menu.addItem(.separator())
-        menu.addItem(tinyTaskbarMenuItem(for: application))
-        button.contextualMenu = menu
-    }
-
-    private func tinyTaskbarMenuItem(for application: ApplicationRecord) -> NSMenuItem {
-        let parent = NSMenuItem(title: "TinyTaskbar", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "TinyTaskbar")
-        submenu.addItem(
-            applicationMenuItem(
-                "Unpin Application", action: #selector(unpinApplication(_:)),
-                application: application))
-        submenu.addItem(
-            applicationMenuItem(
-                "Never Show This App", action: #selector(excludePinnedApplication(_:)),
-                application: application))
-        submenu.addItem(.separator())
-        submenu.addItem(menuItem("Settings…", action: #selector(showSettings)))
-        submenu.addItem(menuItem("Quit TinyTaskbar", action: #selector(quitApplication)))
-        parent.submenu = submenu
-        return parent
-    }
-
     private func menuItem(_ title: String, action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
@@ -3277,14 +2436,6 @@ private final class TaskbarBarView: NSView {
         let menuItem = self.menuItem(title, action: action)
         menuItem.representedObject = item.id
         return menuItem
-    }
-
-    private func applicationMenuItem(
-        _ title: String, action: Selector, application: ApplicationRecord
-    ) -> NSMenuItem {
-        let item = menuItem(title, action: action)
-        item.representedObject = application.identity
-        return item
     }
 
     private func icon(for item: TaskbarItem) -> NSImage? {
@@ -3307,11 +2458,7 @@ private final class TaskbarBarView: NSView {
     @objc private func activateButton(_ sender: NSButton) {
         hoverPresenter.hide()
         guard let item = buttons[ObjectIdentifier(sender)] else { return }
-        if NSApp.currentEvent?.modifierFlags.contains(.option) == true {
-            onWindowCommand(.minimizeOthers(item))
-        } else {
-            onActivate(item)
-        }
+        onActivate(item)
     }
 
     @objc private func closeWindow(_ sender: NSMenuItem) {
@@ -3332,60 +2479,9 @@ private final class TaskbarBarView: NSView {
         return currentItems.first { $0.id == id }
     }
 
-    private func currentApplication(_ sender: NSMenuItem) -> ApplicationRecord? {
-        guard let id = sender.representedObject as? String else { return nil }
-        return currentPreferences.pinnedApplications.first { $0.identity == id }
-    }
-
-    private func record(for item: TaskbarItem) -> ApplicationRecord? {
-        guard let identity = item.applicationIdentity,
-            item.applicationBundlePath != nil || identity.contains(".")
-        else { return nil }
-        return ApplicationRecord(
-            identity: identity,
-            bundleIdentifier: identity.contains("/") ? nil : identity,
-            bundlePath: item.applicationBundlePath,
-            localizedName: item.applicationName,
-            sequence: 0)
-    }
-
     @objc private func toggleMinimize(_ sender: NSMenuItem) {
         guard let item = currentItem(sender) else { return }
         onWindowCommand(
             item.isHidden || item.isMinimized ? .restore(item) : .minimize(item))
     }
-    @objc private func minimizeOthers(_ sender: NSMenuItem) {
-        if let item = currentItem(sender) { onWindowCommand(.minimizeOthers(item)) }
-    }
-    @objc private func minimizeAll() { onWindowCommand(.minimizeAll) }
-    @objc private func togglePin(_ sender: NSMenuItem) {
-        guard let item = currentItem(sender), let record = record(for: item) else { return }
-        let pinned = currentPreferences.pinnedApplications.contains {
-            $0.identity == record.identity
-        }
-        onApplicationCommand(pinned ? .unpin(record.identity) : .pin(record))
-    }
-    @objc private func excludeApplication(_ sender: NSMenuItem) {
-        guard let item = currentItem(sender), let record = record(for: item) else { return }
-        onApplicationCommand(.exclude(record))
-    }
-    @objc private func launchApplication(_ sender: TaskbarLauncherButton) {
-        hoverPresenter.hide()
-        let id = sender.applicationIdentity
-        guard
-            let app = currentPreferences.pinnedApplications.first(where: { $0.identity == id })
-        else { return }
-        onApplicationCommand(.launch(app))
-    }
-    @objc private func openPinnedApplication(_ sender: NSMenuItem) {
-        if let app = currentApplication(sender) { onApplicationCommand(.launch(app)) }
-    }
-    @objc private func unpinApplication(_ sender: NSMenuItem) {
-        if let id = sender.representedObject as? String { onApplicationCommand(.unpin(id)) }
-    }
-    @objc private func excludePinnedApplication(_ sender: NSMenuItem) {
-        if let app = currentApplication(sender) { onApplicationCommand(.exclude(app)) }
-    }
-    @objc private func showSettings() { onGlobalCommand(.showSettings) }
-    @objc private func quitApplication() { onGlobalCommand(.quit) }
 }

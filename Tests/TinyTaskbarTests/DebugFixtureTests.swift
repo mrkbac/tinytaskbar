@@ -27,10 +27,6 @@
             #expect(
                 indicators.badgesByApplicationIdentity
                     == ["com.tinytaskbar.fixture.app1": "7"])
-            #expect(!DebugFixture.usesCompactIconLayout(arguments: ["TinyTaskbar"]))
-            #expect(
-                DebugFixture.usesCompactIconLayout(
-                    arguments: ["TinyTaskbar", "--ui-test-compact-icons"]))
         }
 
         @Test("fixture activation moves the mocked frontmost window")

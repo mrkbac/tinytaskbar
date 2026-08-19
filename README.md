@@ -14,11 +14,10 @@ thumbnails, visual clutter, or a browser runtime.
 - **Window-first** — each window gets its own stable taskbar button.
 - **Direct control** — focus, restore, minimize, or close without hunting through
   menus.
-- **Your workspace** — pin launchers, exclude apps, and choose labels or compact
-  icons.
 - **Live signals** — see application attention and Dock badges without layout churn.
-- **Every display** — keep windows on their display, mirror them, or use one combined
-  taskbar.
+- **Every display** — each window stays on the taskbar of its physical display.
+- **Fixed geometry** — standard window-title buttons shrink before horizontal
+  scrolling, with no layout modes to maintain.
 - **Dock replacement** — optionally keep the Mac Dock hidden while TinyTaskbar runs.
 
 ## Install

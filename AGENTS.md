@@ -50,9 +50,9 @@ Accessibility, Core Graphics, Service Management, and no third-party dependencie
   both sides.
 - Keep window discovery and refresh event-driven and coalesced. New event sources must
   have explicit start/stop ownership and be torn down during termination.
-- Keep the normal taskbar edge-to-edge and tiny. Geometry changes must cover standard
-  and compact density, overflow, multiple displays, the bottom-edge hit target, and
-  first layout.
+- Keep the normal taskbar edge-to-edge and tiny. Geometry changes must cover the fixed
+  standard layout, overflow, multiple displays, the bottom-edge hit target, and first
+  layout.
 - Hide taskbars on displays occupied by fullscreen windows and keep published work
   areas synchronized with the panels that are actually visible.
 - Dock hiding must remain reversible. Preserve the original preference snapshot,
@@ -83,8 +83,8 @@ windows, where public Accessibility has no AX-to-CG bridge.
 - A bug fix needs a regression test that fails for the reported event order or evidence
   shape. Exercise failure and inconclusive paths as well as the happy path.
 - Use the DEBUG fixtures for visual or interaction work:
-  `--ui-test-fixture=normal|overflow|empty`, plus `--ui-test-indicators` or
-  `--ui-test-compact-icons` when relevant. These flags must remain absent from Release.
+  `--ui-test-fixture=normal|overflow|empty`, plus `--ui-test-indicators` when relevant.
+  These flags must remain absent from Release.
 - Comments should explain a non-obvious reason or invariant. Prefer a well-named type,
   function, or test over narration of what the code does.
 - If behavior, permissions, installation, or release expectations change, update the

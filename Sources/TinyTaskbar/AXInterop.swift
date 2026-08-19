@@ -58,48 +58,6 @@ protocol WindowSnapshotProvider: AnyObject {
 }
 
 @MainActor
-protocol ApplicationLaunching: AnyObject {
-    @discardableResult
-    func launch(_ application: ApplicationRecord) -> Bool
-}
-
-@MainActor
-final class WorkspaceApplicationLauncher: ApplicationLaunching {
-    @discardableResult
-    func launch(_ application: ApplicationRecord) -> Bool {
-        let running: NSRunningApplication?
-        if let bundleIdentifier = application.bundleIdentifier {
-            running =
-                NSRunningApplication.runningApplications(
-                    withBundleIdentifier: bundleIdentifier
-                ).first
-        } else if let bundlePath = application.bundlePath {
-            running = NSWorkspace.shared.runningApplications.first { candidate in
-                candidate.bundleURL?.standardizedFileURL.path == bundlePath
-            }
-        } else {
-            running = nil
-        }
-        if let running {
-            return running.activate(options: [])
-        }
-        let resolvedByIdentifier = application.bundleIdentifier.flatMap {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
-        }
-        let resolvedByPath = application.bundlePath.map {
-            URL(fileURLWithPath: $0).standardizedFileURL
-        }
-        guard let url = resolvedByIdentifier ?? resolvedByPath else { return false }
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        NSWorkspace.shared.openApplication(
-            at: url,
-            configuration: NSWorkspace.OpenConfiguration()
-        ) { _, _ in }
-        return true
-    }
-}
-
-@MainActor
 protocol AccessibilityPermissionProvider: AnyObject {
     func isTrusted() -> Bool
     func requestAccess() -> Bool

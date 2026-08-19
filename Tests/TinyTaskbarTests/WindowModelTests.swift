@@ -583,7 +583,7 @@ struct WindowModelTests {
         let rightFrame = TaskbarPanelLayout.frame(for: rightDock)
 
         #expect(bottomFrame.minY == 70)
-        #expect(bottomFrame.height == 30)
+        #expect(bottomFrame.height == TaskbarAppearance.panelHeight)
         #expect(sideFrame.minY == 0)
         #expect(sideFrame.minX == 1_520)
         #expect(sideFrame.width == 1_360)
@@ -1126,12 +1126,10 @@ struct WindowModelTests {
         #expect(state.itemsByDisplay["main"]?.first?.isActive == true)
     }
 
-    @Test("button sizing keeps title-off items materially narrower")
-    func buttonSizingRanges() {
-        #expect(TaskbarButtonLayout.titleOnMinimumWidth == 110)
-        #expect(TaskbarButtonLayout.titleOnMaximumWidth == 180)
-        #expect(TaskbarButtonLayout.titleOffMinimumWidth < 110)
-        #expect(TaskbarButtonLayout.titleOffMaximumWidth < TaskbarButtonLayout.titleOnMaximumWidth)
+    @Test("button sizing is fixed to the balanced range")
+    func buttonSizingRange() {
+        #expect(TaskbarButtonLayout.minimumWidth == 102)
+        #expect(TaskbarButtonLayout.preferredWidth == 168)
     }
 
     @Test("lifecycle reducer preserves permission-denied graceful running state")

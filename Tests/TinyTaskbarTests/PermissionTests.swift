@@ -499,10 +499,14 @@ struct PermissionTests {
         }
         let original = NSRect(x: 2, y: 3, width: 174, height: 20)
         let imageFrame = cell.insetImageFrame(original)
+        let iconOnlyImageFrame = cell.positionedImageFrame(original, imageOnly: true)
+        let labeledImageFrame = cell.positionedImageFrame(original, imageOnly: false)
         let titleFrame = cell.insetTitleFrame(original)
 
         #expect(imageFrame.minX == original.minX + TaskbarButtonCell.contentLeadingInset)
         #expect(imageFrame.size == original.size)
+        #expect(iconOnlyImageFrame == original)
+        #expect(labeledImageFrame == imageFrame)
         #expect(titleFrame.minX == original.minX + TaskbarButtonCell.contentLeadingInset)
         #expect(titleFrame.maxX == original.maxX)
         #expect(titleFrame.minY == original.minY)
@@ -1253,6 +1257,8 @@ struct PermissionTests {
         #expect(button.accessibilityLabel() == item.accessibilityLabel)
         #expect(buttonFrame.minY >= contentView.bounds.minY)
         #expect(buttonFrame.maxY <= contentView.bounds.maxY)
+        #expect(
+            abs(buttonFrame.minX - TaskbarPanelLayout.contentLeadingInset) < 0.5)
         #expect(scrollView.hasHorizontalScroller == false)
         #expect(scrollView.horizontalScroller == nil)
     }

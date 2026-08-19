@@ -882,6 +882,17 @@ struct PermissionTests {
             ])
     }
 
+    @Test("actionable references survive only exact live physical identity gaps")
+    func actionableReferenceContinuity() {
+        let resolved = ActionableReferenceContinuity.resolve(
+            current: ["current": 20, "replacement": 30],
+            previous: ["retained": 10, "replacement": 11, "closed": 12, "ambiguous": 13],
+            liveKeys: ["current", "retained", "replacement", "ambiguous"],
+            ambiguousKeys: ["ambiguous"])
+
+        #expect(resolved == ["current": 20, "retained": 10, "replacement": 30])
+    }
+
     @Test("native tab selection falls back to the current element at the requested index")
     func nativeTabSelectionResolvesStaleIdentity() {
         #expect(

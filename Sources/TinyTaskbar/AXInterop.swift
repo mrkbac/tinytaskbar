@@ -19,6 +19,25 @@ private struct AXPhysicalWindowIdentity: Hashable {
     let cgWindowNumber: UInt32
 }
 
+enum ActionableReferenceContinuity {
+    static func resolve<Key: Hashable, Reference>(
+        current: [Key: Reference],
+        previous: [Key: Reference],
+        liveKeys: Set<Key>,
+        ambiguousKeys: Set<Key>
+    ) -> [Key: Reference] {
+        var resolved = current
+        for (key, reference) in previous
+        where liveKeys.contains(key)
+            && !ambiguousKeys.contains(key)
+            && resolved[key] == nil
+        {
+            resolved[key] = reference
+        }
+        return resolved
+    }
+}
+
 enum WindowSnapshotChange: Equatable, Sendable {
     case ordinary
     case windowDestroyed
@@ -418,6 +437,26 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                 }
             }
         }
+
+        let livePhysicalIdentities = Set(
+            cgWindows.compactMap { window -> AXPhysicalWindowIdentity? in
+                guard window.layer == 0,
+                    knownApplicationPIDs.contains(window.ownerPID),
+                    let windowNumber = window.windowNumber
+                else { return nil }
+                return AXPhysicalWindowIdentity(
+                    pid: window.ownerPID,
+                    cgWindowNumber: windowNumber)
+            })
+        // A transient AX timeout can yield no record for a still-live window. State
+        // continuity intentionally keeps its button; keep the matching actionable
+        // reference too, but only while the exact public physical identity remains
+        // unique and live. A successful later enumeration replaces this reference.
+        nextPhysicalElements = ActionableReferenceContinuity.resolve(
+            current: nextPhysicalElements,
+            previous: axElementsByPhysicalIdentity,
+            liveKeys: livePhysicalIdentities,
+            ambiguousKeys: ambiguousPhysicalIdentities)
 
         let observerRecords = applicationInputs.map { input in
             var elements: [String: AXUIElement] = [:]

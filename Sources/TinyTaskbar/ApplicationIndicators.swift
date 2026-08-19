@@ -493,7 +493,7 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
     // LaunchServices shared-memory seed detects application metadata changes;
     // only a changed seed causes cached Dock status labels to be read. If that
     // implementation surface disappears, fall back to a low-frequency scan.
-    nonisolated private static let seedCheckInterval = Duration.seconds(1)
+    nonisolated private static let seedCheckInterval = Duration.seconds(10)
     nonisolated private static let fallbackBadgeRefreshInterval = Duration.seconds(10)
     nonisolated private static let minimumScanInterval = Duration.seconds(1)
     nonisolated static let applicationMembershipRefreshDelay = Duration.seconds(1)

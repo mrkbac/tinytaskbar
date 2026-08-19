@@ -59,11 +59,11 @@ struct ApplicationIndicatorTests {
             ).isEmpty)
     }
 
-    @Test("Dock badge fallback remains bounded while the metadata seed is checked quickly")
+    @Test("Dock badge fallback and metadata checks remain low frequency")
     func dockMembershipRefreshDelay() {
         #expect(SystemDockBadgeObserver.applicationMembershipRefreshDelay == .seconds(1))
         #expect(
-            SystemDockBadgeObserver.applicationInformationSeedCheckInterval == .seconds(1))
+            SystemDockBadgeObserver.applicationInformationSeedCheckInterval == .seconds(10))
         #expect(
             SystemDockBadgeObserver.nextBadgeScanDelay(
                 hasObservedApplications: false, badgesChanged: false) == nil)

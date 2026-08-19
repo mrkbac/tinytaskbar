@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-26
+          - name: Intel
+            runner: macos-26-intel
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Validate release version
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          [[ "$bundle_version" == "$VERSION" ]]
+          grep -Fqx "## $VERSION" CHANGELOG.md
+
+      - name: Run Debug tests
+        run: swift test --disable-sandbox
+
+      - name: Run Release tests
+        run: swift test --disable-sandbox -c release
+
+  publish:
+    name: Build and publish
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Validate release target
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          [[ "$bundle_version" == "$VERSION" ]]
+          grep -Fqx "## $VERSION" CHANGELOG.md
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists" >&2
+            exit 1
+          fi
+
+      - name: Build universal app
+        run: |
+          bash scripts/build-app.sh \
+            --adhoc \
+            --configuration release \
+            --architecture universal \
+            --output dist/TinyTaskbar.app
+
+      - name: Verify app bundle
+        run: |
+          executable="dist/TinyTaskbar.app/Contents/MacOS/TinyTaskbar"
+          lipo -verify_arch arm64 x86_64 "$executable"
+          codesign --verify --deep --strict --verbose=2 dist/TinyTaskbar.app
+          plutil -lint dist/TinyTaskbar.app/Contents/Info.plist
+
+      - name: Package and checksum DMG
+        run: |
+          dmg="dist/TinyTaskbar-$VERSION.dmg"
+          bash scripts/package-dmg.sh --app dist/TinyTaskbar.app --output "$dmg"
+          hdiutil verify "$dmg"
+          (
+            cd dist
+            shasum -a 256 "TinyTaskbar-$VERSION.dmg" > SHA256SUMS.txt
+            shasum -a 256 -c SHA256SUMS.txt
+          )
+
+      - name: Generate build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/TinyTaskbar-${{ inputs.version }}.dmg
+
+      - name: Publish GitHub release
+        run: |
+          awk -v heading="## $VERSION" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          [[ -s release-notes.md ]]
+          gh release create "v$VERSION" \
+            "dist/TinyTaskbar-$VERSION.dmg" \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "TinyTaskbar $VERSION" \
+            --notes-file release-notes.md \
+            --latest

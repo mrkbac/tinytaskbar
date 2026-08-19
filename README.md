@@ -28,7 +28,6 @@ TinyTaskbar requires macOS 26. Releases are universal for Apple silicon and Inte
 ### Homebrew
 
 ```sh
-brew trust --tap mrkbac/tap
 brew install --cask mrkbac/tap/tinytaskbar
 ```
 

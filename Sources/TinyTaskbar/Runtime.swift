@@ -2630,6 +2630,7 @@ private final class TaskbarBarView: NSView {
     private var currentEntries: [TaskbarPresentationEntry] = []
     private var currentPreferences = TinyTaskbarPreferences.defaults
     private var currentIndicators = ApplicationIndicatorSnapshot.empty
+    private var presentedLabelMode: TaskbarLabelMode?
 
     init(
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
@@ -2820,6 +2821,8 @@ private final class TaskbarBarView: NSView {
             entries.map(\.id) != previousEntryIDs
             || buttonPresentationChanged
             || preferences.overflowBehavior != currentPreferences.overflowBehavior
+        let retainedLabelMode =
+            layoutChanged ? preferences.labelMode : presentedLabelMode ?? preferences.labelMode
         currentItems = items
         currentEntries = entries
         currentPreferences = preferences
@@ -2852,7 +2855,7 @@ private final class TaskbarBarView: NSView {
             if let button = buttonsByID[item.id] {
                 if previousItemsByID[item.id] != item || buttonPresentationChanged {
                     updateButton(
-                        button, for: item, labelMode: preferences.labelMode,
+                        button, for: item, labelMode: retainedLabelMode,
                         density: preferences.density)
                 }
             } else {
@@ -2998,7 +3001,6 @@ private final class TaskbarBarView: NSView {
         density: TaskbarDensity
     ) {
         button.itemID = item.id
-        button.title = item.buttonTitle(labelMode: labelMode)
         button.controlSize = density == .compact ? .small : .regular
         button.preferredIntrinsicHeight = density.buttonHeight
         button.onMiddleClick = { [weak self] in self?.onWindowCommand(.close(item)) }
@@ -3047,6 +3049,7 @@ private final class TaskbarBarView: NSView {
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
         button.image = icon(for: item)
+        applyButtonPresentation(button, item: item, labelMode: labelMode)
 
         button.widthConstraint?.constant = TaskbarButtonLayout.preferredWidth(
             labelMode: labelMode,
@@ -3080,14 +3083,25 @@ private final class TaskbarBarView: NSView {
     }
 
     private func apply(_ overflowLayout: TaskbarOverflowLayout) {
+        presentedLabelMode = overflowLayout.labelMode
         for item in currentItems {
             guard let button = buttonsByID[item.id] else { continue }
-            button.title = item.buttonTitle(labelMode: overflowLayout.labelMode)
             button.widthConstraint?.constant = overflowLayout.windowWidth
-            button.imagePosition =
-                overflowLayout.labelMode == .iconOnly ? .imageOnly : .imageLeading
-            button.alignment = overflowLayout.labelMode == .iconOnly ? .center : .left
+            applyButtonPresentation(button, item: item, labelMode: overflowLayout.labelMode)
         }
+    }
+
+    private func applyButtonPresentation(
+        _ button: TaskbarButton,
+        item: TaskbarItem,
+        labelMode: TaskbarLabelMode
+    ) {
+        // AppKit resets imagePosition to imageLeading whenever title is assigned,
+        // including an empty title. Set the complete presentation atomically so a
+        // later retained-window refresh cannot shift icon-only artwork to the right.
+        button.title = item.buttonTitle(labelMode: labelMode)
+        button.imagePosition = labelMode == .iconOnly ? .imageOnly : .imageLeading
+        button.alignment = labelMode == .iconOnly ? .center : .left
     }
 
     private func makeContextualMenu(for item: TaskbarItem) -> NSMenu {

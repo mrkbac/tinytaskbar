@@ -1269,6 +1269,71 @@ struct PermissionTests {
         #expect(scrollView.horizontalScroller == nil)
     }
 
+    @Test("icon-only presentation survives a retained-window refresh")
+    @MainActor
+    func iconOnlyPresentationSurvivesRefresh() {
+        let frame = NSRect(x: 0, y: 0, width: 500, height: 26)
+        let initial = makeTaskbarItem(id: "icon-refresh", title: "Initial")
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+        var preferences = TinyTaskbarPreferences.defaults
+        preferences.labelMode = .iconOnly
+        preferences.density = .compact
+
+        panel.update(frame: frame, entries: [.window(initial)], preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        guard let button = taskbarButtons(in: panel).first else {
+            Issue.record("icon-only button was not rendered")
+            return
+        }
+        #expect(button.title.isEmpty)
+        #expect(button.imagePosition == .imageOnly)
+        #expect(button.alignment == .center)
+
+        let refreshed = makeTaskbarItem(
+            id: "icon-refresh", title: "Updated", isActive: true)
+        panel.update(frame: frame, entries: [.window(refreshed)], preferences: preferences)
+
+        #expect(button.title.isEmpty)
+        #expect(button.imagePosition == .imageOnly)
+        #expect(button.alignment == .center)
+    }
+
+    @Test("automatic overflow icons survive a retained-window refresh")
+    @MainActor
+    func automaticOverflowIconsSurviveRefresh() {
+        let frame = NSRect(x: 0, y: 0, width: 150, height: 30)
+        let items = (0..<4).map { makeTaskbarItem(id: "automatic-\($0)") }
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer { panel.close() }
+        var preferences = TinyTaskbarPreferences.defaults
+        preferences.labelMode = .windowTitle
+        preferences.overflowBehavior = .automaticIcons
+
+        panel.update(
+            frame: frame,
+            entries: items.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let buttons = taskbarButtons(in: panel)
+        #expect(buttons.count == items.count)
+        #expect(buttons.allSatisfy { $0.title.isEmpty })
+        #expect(buttons.allSatisfy { $0.imagePosition == .imageOnly })
+        #expect(buttons.allSatisfy { $0.alignment == .center })
+
+        var refreshedItems = items
+        refreshedItems[0] = makeTaskbarItem(
+            id: "automatic-0", title: "Updated", isActive: true)
+        panel.update(
+            frame: frame,
+            entries: refreshedItems.map(TaskbarPresentationEntry.window),
+            preferences: preferences)
+
+        #expect(buttons.allSatisfy { $0.title.isEmpty })
+        #expect(buttons.allSatisfy { $0.imagePosition == .imageOnly })
+        #expect(buttons.allSatisfy { $0.alignment == .center })
+    }
+
     @Test("taskbar shrinks labels before scrolling and can switch to icons")
     @MainActor
     func taskbarOverflowPresentation() {

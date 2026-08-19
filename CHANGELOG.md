@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
+- Kept taskbar panels out of Mission Control while preserving their display and Space
+  attachment.
+- Reduced idle and focus-change work with more selective, event-driven Accessibility
+  refreshes.
 - Simplified TinyTaskbar to one fixed standard layout: window titles, balanced
   buttons, shrink-then-scroll overflow, and physical-display ownership.
 - Active-window clicks now always minimize, and the menu-bar Hide Taskbars command

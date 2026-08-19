@@ -1,24 +1,41 @@
 # TinyTaskbar
 
-**A real taskbar for macOS. One button per window, on every display.**
+**A native macOS taskbar with one stable button per window, on the display where it
+lives.**
 
-TinyTaskbar keeps every window one click away in a compact native bar—without
+TinyTaskbar keeps every window one click away in a fixed 30-point bar—without
 thumbnails, visual clutter, or a browser runtime.
 
 <p align="center">
-  <img src="docs/demo.gif" alt="TinyTaskbar debug-fixture feature tour" width="960">
+  <img src="docs/demo.gif" alt="TinyTaskbar focusing and minimizing synthetic windows without moving their buttons" width="960">
+</p>
+<p align="center">
+  <sub>Focus and minimize without reordering or resizing the taskbar.</sub>
 </p>
 
-## Features
+## What it does
 
-- **Window-first** — each window gets its own stable taskbar button.
-- **Direct control** — focus, restore, minimize, or close without hunting through
-  menus.
-- **Live signals** — see application attention and Dock badges without layout churn.
-- **Every display** — each window stays on the taskbar of its physical display.
-- **Fixed geometry** — standard window-title buttons shrink before horizontal
-  scrolling, with no layout modes to maintain.
-- **Dock replacement** — optionally keep the Mac Dock hidden while TinyTaskbar runs.
+- **One button per window** — titles, native app icons, minimized state, attention,
+  and Dock badges.
+- **Stable geometry** — balanced buttons keep their identity and order; crowded bars
+  shrink, then scroll horizontally.
+- **Direct control** — click to focus or restore; click the focused window to
+  minimize; hover or right-click for close actions.
+- **Display-aware** — windows appear only on their physical display, and only the
+  display occupied by a fullscreen window hides its taskbar.
+- **Quiet system integration** — stays out of Mission Control, remains attached to
+  its Space, and can launch at login.
+- **Optional Dock replacement** — keep the Mac Dock fully hidden while TinyTaskbar
+  runs, with its previous settings restored on quit.
+
+| Action | Result |
+| --- | --- |
+| Click a window | Focus or restore it |
+| Click the focused window | Minimize it |
+| Hover | Show its full title and available tab or close actions |
+| Right-click | Minimize, restore, or close it |
+
+Settings and Quit live only in the menu-bar icon.
 
 ## Install
 
@@ -41,9 +58,9 @@ the first launch, follow the safe [Open Anyway instructions](docs/INSTALL_UNSIGN
 ## Permissions and privacy
 
 TinyTaskbar runs entirely on your Mac with no network requests, analytics, telemetry,
-or Screen Recording permission. Accessibility is used only to list and control
-windows; no thumbnails or window content are captured. One isolated private
-Accessibility function preserves exact minimized-window identity.
+Screen Recording permission, thumbnails, or capture of window contents. Accessibility
+is used only to list and control windows. One isolated private Accessibility function
+preserves exact minimized-window identity.
 
 ## Build
 

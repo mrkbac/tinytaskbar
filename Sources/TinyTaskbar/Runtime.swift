@@ -1049,7 +1049,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         let appName = NSTextField(labelWithString: "TinyTaskbar")
         appName.font = .systemFont(ofSize: 22, weight: .semibold)
         let tagline = NSTextField(
-            labelWithString: "One stable button per window, on every display.")
+            labelWithString: "One stable button per window, on its physical display.")
         tagline.textColor = .secondaryLabelColor
         let headerText = NSStackView(views: [appName, tagline])
         headerText.orientation = .vertical

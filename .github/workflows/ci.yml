@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-26
+            hygiene: true
+          - name: Intel
+            runner: macos-26-intel
+            hygiene: false
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Run Debug tests
+        run: swift test --disable-sandbox
+
+      - name: Run Release tests
+        run: swift test --disable-sandbox -c release
+
+      - name: Build Release app
+        run: swift build --disable-sandbox -c release
+
+      - name: Install pre-commit
+        if: matrix.hygiene
+        run: brew install pre-commit
+
+      - name: Run repository checks
+        if: matrix.hygiene
+        run: |
+          pre-commit run --all-files
+          git diff --exit-code
+
+      - name: Verify rollback-safe bundle replacement
+        if: matrix.hygiene
+        run: bash scripts/test-build-app-rollback.sh

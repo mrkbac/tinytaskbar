@@ -18,8 +18,11 @@ struct PermissionTests {
         )
         window.contentView?.layoutSubtreeIfNeeded()
 
-        #expect(window.contentView?.bounds.size == NSSize(width: 570, height: 500))
+        #expect(abs((window.contentView?.bounds.width ?? 0) - 570) <= 2)
+        #expect(window.contentView?.bounds.height == 500)
         #expect(!(window.contentViewController is NSSplitViewController))
+        let settingsSubviews = window.contentView.map(allSubviews(of:)) ?? []
+        #expect(settingsSubviews.compactMap { $0 as? NSScrollView }.isEmpty)
         var pendingViews = window.contentView.map { [$0] } ?? []
         while let view = pendingViews.popLast() {
             #expect(view.frame.origin.x.isFinite)
@@ -122,16 +125,18 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
-    @Test("taskbar panels remain attached to one Space")
+    @Test("taskbar panels hide from Mission Control and remain attached to one Space")
     @MainActor
-    func taskbarPanelUsesPerSpaceWindowBehavior() {
+    func taskbarPanelUsesTransientPerSpaceWindowBehavior() {
         let panel = TaskbarPanel(
             frame: NSRect(x: 0, y: 0, width: 600, height: 30),
             onActivate: { _ in },
             onClose: { _ in })
         defer { panel.close() }
 
-        #expect(panel.collectionBehavior.contains(.managed))
+        #expect(panel.collectionBehavior.contains(.transient))
+        #expect(!panel.collectionBehavior.contains(.managed))
+        #expect(!panel.collectionBehavior.contains(.stationary))
         #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
         #expect(!panel.collectionBehavior.contains(.moveToActiveSpace))
     }

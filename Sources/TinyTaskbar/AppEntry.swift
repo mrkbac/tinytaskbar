@@ -341,8 +341,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setDockHidden(hidden)
         }
         settingsWindow.onClosed = { [weak self] in
-            self?.preferencesStore.setOnboardingComplete(true)
-            self?.restoreAccessoryActivationPolicy()
+            guard let self else { return }
+            self.preferencesStore.setOnboardingComplete(true)
+            self.settingsWindow = nil
+            self.restoreAccessoryActivationPolicy()
         }
         self.settingsWindow = settingsWindow
         return settingsWindow

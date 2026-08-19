@@ -3,7 +3,6 @@ import ApplicationServices
 import Foundation
 import OSLog
 import ServiceManagement
-import SwiftUI
 
 struct RefreshMetrics: Equatable, Sendable {
     fileprivate(set) var refreshCount = 0
@@ -860,15 +859,16 @@ final class TinyTaskbarPreferencesStore {
 }
 
 @MainActor
-final class TinyTaskbarSettingsModel: ObservableObject {
-    @Published private(set) var accessibilityTrusted = false
-    @Published private(set) var accessibilityRequestWasMade = false
-    @Published private(set) var preferences = TinyTaskbarPreferences.defaults
-    @Published private(set) var launchAtLoginError: String?
-    @Published private(set) var dockVisibilityError: String?
+final class TinyTaskbarSettingsModel {
+    private(set) var accessibilityTrusted = false
+    private(set) var accessibilityRequestWasMade = false
+    private(set) var preferences = TinyTaskbarPreferences.defaults
+    private(set) var launchAtLoginError: String?
+    private(set) var dockVisibilityError: String?
 
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onHideMacDockChanged: (@MainActor (Bool) -> String?)?
+    var onChange: (@MainActor () -> Void)?
 
     private let launchAtLoginService = SMAppService.mainApp
 
@@ -900,6 +900,7 @@ final class TinyTaskbarSettingsModel: ObservableObject {
         self.accessibilityRequestWasMade = accessibilityRequestWasMade
         launchAtLoginError = nil
         dockVisibilityError = nil
+        onChange?()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -910,113 +911,24 @@ final class TinyTaskbarSettingsModel: ObservableObject {
                 try launchAtLoginService.unregister()
             }
             launchAtLoginError = nil
-            objectWillChange.send()
         } catch {
             launchAtLoginError = "Could not update: \(error.localizedDescription)"
         }
+        onChange?()
     }
 
     func setHideMacDock(_ hidden: Bool) {
         if let error = onHideMacDockChanged?(hidden) {
             dockVisibilityError = error
+            onChange?()
             return
         }
         preferences.hideMacDock = hidden
         dockVisibilityError = nil
-    }
-}
-
-private struct TinyTaskbarSettingsView: View {
-    @ObservedObject var model: TinyTaskbarSettingsModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 52, height: 52)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("TinyTaskbar")
-                        .font(.title2.weight(.semibold))
-                    Text("One stable button per window, on every display.")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 22)
-            .padding(.bottom, 16)
-
-            Form {
-                permissions
-                startupAndDesktop
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        }
-        .background(.background)
+        onChange?()
     }
 
-    private var permissions: some View {
-        Section("Permissions") {
-            LabeledContent {
-                HStack {
-                    Text(model.accessibilityTrusted ? "Granted" : "Required")
-                        .foregroundStyle(model.accessibilityTrusted ? .green : .secondary)
-                    Button(model.accessibilityButtonTitle) {
-                        model.onAccessibilityRequest?()
-                    }
-                }
-            } label: {
-                Text("Accessibility")
-                Text("Required to discover, focus, and manage windows.")
-            }
-        }
-    }
-
-    private var startupAndDesktop: some View {
-        Section {
-            Toggle(
-                isOn: Binding(
-                    get: { model.launchAtLoginEnabled },
-                    set: { model.setLaunchAtLogin($0) }
-                )
-            ) {
-                Text("Launch at Login")
-                Text("Start TinyTaskbar automatically when you sign in.")
-            }
-            .disabled(!model.launchAtLoginAvailable)
-            Toggle(
-                isOn: Binding(
-                    get: { model.preferences.hideMacDock },
-                    set: { model.setHideMacDock($0) }
-                )
-            ) {
-                Text("Fully hide the Mac Dock")
-                Text("Prevent edge reveal while TinyTaskbar is running.")
-            }
-        } header: {
-            Text("Startup & Desktop")
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                if let status = model.launchAtLoginStatus {
-                    Text(status)
-                }
-                if let error = model.dockVisibilityError {
-                    Text(error)
-                } else {
-                    Text(
-                        "Dock settings are restored when TinyTaskbar quits. Changing this setting restarts the Dock."
-                    )
-                }
-            }
-        }
-    }
-
-}
-
-extension TinyTaskbarSettingsModel {
-    fileprivate var accessibilityButtonTitle: String {
+    var accessibilityButtonTitle: String {
         accessibilityTrusted || accessibilityRequestWasMade
             ? "Open System Settings…"
             : "Enable Accessibility…"
@@ -1036,6 +948,11 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     var onClosed: (@MainActor () -> Void)?
 
     private let model = TinyTaskbarSettingsModel()
+    private let permissionStatusLabel = NSTextField(labelWithString: "Required")
+    private let permissionButton = NSButton()
+    private let launchAtLoginSwitch = NSButton()
+    private let hideDockSwitch = NSButton()
+    private let footerLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
         super.init(
@@ -1053,10 +970,14 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         titlebarSeparatorStyle = .automatic
         delegate = self
 
-        contentViewController = NSHostingController(
-            rootView: TinyTaskbarSettingsView(model: model))
+        contentViewController = NSViewController()
+        contentViewController?.view = makeContentView()
+        model.onChange = { [weak self] in
+            self?.refreshControls()
+        }
         contentMinSize = Self.fixedContentSize
         contentMaxSize = Self.fixedContentSize
+        refreshControls()
         restoreFixedContentSize()
     }
 
@@ -1087,6 +1008,196 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     func windowWillClose(_: Notification) {
         onClosed?()
         NSApp.deactivate()
+    }
+
+    private func makeContentView() -> NSView {
+        let root = NSView(frame: NSRect(origin: .zero, size: Self.fixedContentSize))
+
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let appName = NSTextField(labelWithString: "TinyTaskbar")
+        appName.font = .systemFont(ofSize: 22, weight: .semibold)
+        let tagline = NSTextField(
+            labelWithString: "One stable button per window, on every display.")
+        tagline.textColor = .secondaryLabelColor
+        let headerText = NSStackView(views: [appName, tagline])
+        headerText.orientation = .vertical
+        headerText.alignment = .leading
+        headerText.spacing = 3
+        let header = NSStackView(views: [icon, headerText])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 14
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let permissionHeading = sectionHeading("Permissions")
+        permissionButton.target = self
+        permissionButton.action = #selector(requestAccessibility)
+        permissionButton.bezelStyle = .rounded
+        permissionButton.controlSize = .small
+        permissionButton.font = .systemFont(ofSize: 11)
+        permissionStatusLabel.alignment = .right
+        let permissionActions = NSStackView(views: [permissionStatusLabel, permissionButton])
+        permissionActions.orientation = .horizontal
+        permissionActions.alignment = .centerY
+        permissionActions.spacing = 10
+        let permissionRow = settingsRow(
+            title: "Accessibility",
+            detail: "Required to discover, focus, and manage windows.",
+            trailing: permissionActions)
+        let permissionBox = settingsBox(rows: [permissionRow])
+
+        let startupHeading = sectionHeading("Startup & Desktop")
+        configureSwitch(launchAtLoginSwitch, action: #selector(toggleLaunchAtLogin))
+        configureSwitch(hideDockSwitch, action: #selector(toggleDock))
+        let launchRow = settingsRow(
+            title: "Launch at Login",
+            detail: "Start TinyTaskbar automatically when you sign in.",
+            trailing: launchAtLoginSwitch)
+        let dockRow = settingsRow(
+            title: "Fully hide the Mac Dock",
+            detail: "Prevent edge reveal while TinyTaskbar is running.",
+            trailing: hideDockSwitch)
+        let startupBox = settingsBox(rows: [launchRow, separator(), dockRow])
+
+        footerLabel.textColor = .secondaryLabelColor
+        footerLabel.font = .systemFont(ofSize: 11)
+        footerLabel.maximumNumberOfLines = 3
+
+        let content = NSStackView(views: [
+            header,
+            permissionHeading,
+            permissionBox,
+            startupHeading,
+            startupBox,
+            footerLabel,
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 10
+        content.setCustomSpacing(18, after: header)
+        content.setCustomSpacing(6, after: permissionHeading)
+        content.setCustomSpacing(18, after: permissionBox)
+        content.setCustomSpacing(6, after: startupHeading)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(content)
+
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 52),
+            icon.heightAnchor.constraint(equalToConstant: 52),
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            content.topAnchor.constraint(equalTo: root.topAnchor, constant: 22),
+            permissionBox.widthAnchor.constraint(equalTo: content.widthAnchor),
+            startupBox.widthAnchor.constraint(equalTo: content.widthAnchor),
+            footerLabel.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -12),
+        ])
+        return root
+    }
+
+    private func sectionHeading(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    private func settingsBox(rows: [NSView]) -> NSBox {
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.cornerRadius = 10
+        box.borderWidth = 1
+        box.borderColor = .separatorColor
+        box.fillColor = .controlBackgroundColor
+        box.contentView = stack
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: box.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+        ])
+        for row in rows {
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
+        }
+        return box
+    }
+
+    private func settingsRow(title: String, detail: String, trailing: NSView) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.font = .systemFont(ofSize: 11)
+        let labels = NSStackView(views: [titleLabel, detailLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        let row = NSStackView(views: [labels, trailing])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: 66).isActive = true
+        labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing.setContentHuggingPriority(.required, for: .horizontal)
+        return row
+    }
+
+    private func separator() -> NSBox {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return separator
+    }
+
+    private func configureSwitch(_ button: NSButton, action: Selector) {
+        button.setButtonType(.switch)
+        button.title = ""
+        button.target = self
+        button.action = action
+    }
+
+    private func refreshControls() {
+        permissionStatusLabel.stringValue = model.accessibilityTrusted ? "Granted" : "Required"
+        permissionStatusLabel.textColor =
+            model.accessibilityTrusted ? .systemGreen : .secondaryLabelColor
+        permissionButton.title = model.accessibilityButtonTitle
+        launchAtLoginSwitch.state = model.launchAtLoginEnabled ? .on : .off
+        launchAtLoginSwitch.isEnabled = model.launchAtLoginAvailable
+        hideDockSwitch.state = model.preferences.hideMacDock ? .on : .off
+
+        let dockStatus =
+            model.dockVisibilityError
+            ?? "Dock settings are restored when TinyTaskbar quits. Changing this setting restarts the Dock."
+        footerLabel.stringValue = [model.launchAtLoginStatus, dockStatus]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+        footerLabel.textColor =
+            model.dockVisibilityError == nil ? .secondaryLabelColor : .systemRed
+    }
+
+    @objc private func requestAccessibility() {
+        model.onAccessibilityRequest?()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        model.setLaunchAtLogin(launchAtLoginSwitch.state == .on)
+    }
+
+    @objc private func toggleDock() {
+        model.setHideMacDock(hideDockSwitch.state == .on)
     }
 }
 
@@ -1163,12 +1274,14 @@ final class TaskbarPanel: NSPanel {
             defer: false
         )
 
-        isOpaque = false
-        backgroundColor = .clear
+        isOpaque = true
+        backgroundColor = .windowBackgroundColor
         hasShadow = false
         level = .statusBar
         collectionBehavior = [
-            .managed,
+            // Keep this system-style overlay out of Mission Control. Omitting the
+            // all-Spaces behaviors still attaches each cached panel to its creation Space.
+            .transient,
             .canJoinAllApplications,
             .fullScreenAuxiliary,
             .ignoresCycle,
@@ -2045,7 +2158,6 @@ private final class TaskbarBarView: NSView {
         }
     }
 
-    private let visualEffectView = NSVisualEffectView()
     private let scrollView = TaskbarScrollView()
     private let stackView = NSStackView()
     private let separatorView = NSView()
@@ -2072,14 +2184,6 @@ private final class TaskbarBarView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 0
 
-        visualEffectView.material = .headerView
-        visualEffectView.blendingMode = .behindWindow
-        visualEffectView.state = .active
-        visualEffectView.isEmphasized = false
-        visualEffectView.wantsLayer = true
-        visualEffectView.layer?.cornerRadius = 0
-        addSubview(visualEffectView)
-
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
@@ -2087,7 +2191,7 @@ private final class TaskbarBarView: NSView {
         // scroller to reserve most of the compact taskbar viewport.
         scrollView.hasHorizontalScroller = false
         scrollView.horizontalScrollElasticity = .allowed
-        visualEffectView.addSubview(scrollView)
+        addSubview(scrollView)
 
         stackView.orientation = .horizontal
         stackView.alignment = .centerY
@@ -2137,7 +2241,6 @@ private final class TaskbarBarView: NSView {
 
     override func layout() {
         super.layout()
-        visualEffectView.frame = bounds
         let availableHeight = max(0, bounds.height)
         let separatorHeight = min(TaskbarPanelLayout.topSeparatorHeight, availableHeight)
         let verticalInset = min(

@@ -13,19 +13,9 @@ concurrency:
 
 jobs:
   verify:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Apple Silicon
-            runner: macos-26
-            hygiene: true
-          - name: Intel
-            runner: macos-26-intel
-            hygiene: false
+    name: Verify
+    runs-on: macos-26
+    timeout-minutes: 15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
@@ -48,15 +38,12 @@ jobs:
         run: swift build --disable-sandbox -c release
 
       - name: Install pre-commit
-        if: matrix.hygiene
         run: brew install pre-commit
 
       - name: Run repository checks
-        if: matrix.hygiene
         run: |
           pre-commit run --all-files
           git diff --exit-code
 
       - name: Verify rollback-safe bundle replacement
-        if: matrix.hygiene
         run: bash scripts/test-build-app-rollback.sh

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0
+
+- Added a capability-gated New Window command to window context menus. TinyTaskbar
+  shows it only when the selected application exposes one enabled, unambiguous
+  Accessibility action.
+- Kept the command application-scoped and refreshed window discovery after execution,
+  so every newly created physical window receives its own stable taskbar button.
+
 ## 1.2.0
 
 - Kept taskbar panels out of Mission Control while preserving their display and Space

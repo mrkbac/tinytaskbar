@@ -324,19 +324,36 @@ enum AXActionSupport {
 
 struct ApplicationMenuItemDescriptor: Equatable, Sendable {
     let title: String
+    let commandCharacter: String?
+    let commandModifiers: UInt32?
     let isEnabled: Bool
     let actions: [String]
 }
 
 enum NewWindowMenuCommandMatcher {
-    static func matches(_ item: ApplicationMenuItemDescriptor) -> Bool {
-        item.title == "New Window"
-            && item.isEnabled
-            && AXActionSupport.contains(kAXPressAction, in: item.actions)
+    static func matches(
+        _ item: ApplicationMenuItemDescriptor,
+        applicationName: String?
+    ) -> Bool {
+        guard item.isEnabled,
+            AXActionSupport.contains(kAXPressAction, in: item.actions),
+            item.commandCharacter?.caseInsensitiveCompare("n") == .orderedSame,
+            let rawModifiers = item.commandModifiers,
+            !AXMenuItemModifiers(rawValue: rawModifiers).contains(.noCommand)
+        else { return false }
+
+        if item.title == "New Window" { return true }
+        guard let applicationName else { return false }
+        return item.title == "New \(applicationName) Window"
     }
 
-    static func uniqueMatchIndex(in items: [ApplicationMenuItemDescriptor]) -> Int? {
-        let matchingIndices = items.indices.filter { matches(items[$0]) }
+    static func uniqueMatchIndex(
+        in items: [ApplicationMenuItemDescriptor],
+        applicationName: String?
+    ) -> Int? {
+        let matchingIndices = items.indices.filter {
+            matches(items[$0], applicationName: applicationName)
+        }
         return matchingIndices.count == 1 ? matchingIndices[0] : nil
     }
 }
@@ -359,13 +376,16 @@ private enum NewWindowMenuCommandResolver {
         guard let menuBar = elementAttribute(kAXMenuBarAttribute, from: application) else {
             return nil
         }
+        let applicationName = NSRunningApplication(processIdentifier: pid)?.localizedName
 
         var pending = [menuBar]
         var matches: [AXUIElement] = []
         var visitedCount = 0
         while let element = pending.popLast(), visitedCount < traversalLimit {
             visitedCount += 1
-            if descriptor(for: element).map(NewWindowMenuCommandMatcher.matches) == true {
+            if descriptor(for: element).map({
+                NewWindowMenuCommandMatcher.matches($0, applicationName: applicationName)
+            }) == true {
                 matches.append(element)
                 if matches.count > 1 { return nil }
             }
@@ -387,6 +407,9 @@ private enum NewWindowMenuCommandResolver {
         else { return nil }
         return ApplicationMenuItemDescriptor(
             title: title,
+            commandCharacter: stringAttribute(kAXMenuItemCmdCharAttribute, from: element),
+            commandModifiers: uint32Attribute(
+                kAXMenuItemCmdModifiersAttribute, from: element),
             isEnabled: isEnabled,
             actions: actions
         )
@@ -438,6 +461,17 @@ private enum NewWindowMenuCommandResolver {
             let number = rawValue as? NSNumber
         else { return nil }
         return number.boolValue
+    }
+
+    private static func uint32Attribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> UInt32? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let number = rawValue as? NSNumber
+        else { return nil }
+        return number.uint32Value
     }
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Strengthened New Window capability detection with standard Command-N menu metadata
+  and app-qualified titles such as Finder's New Finder Window, while continuing to
+  reject disabled, non-actionable, and ambiguous commands.
+
 ## 1.3.0
 
 - Added a capability-gated New Window command to window context menus. TinyTaskbar

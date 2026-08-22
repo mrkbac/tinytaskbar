@@ -820,24 +820,50 @@ struct PermissionTests {
             ])
     }
 
-    @Test("New Window menu matching is enabled, actionable, exact, and unambiguous")
+    @Test("New Window menu matching requires a window title and Command-N shortcut")
     func newWindowMenuCommandMatching() {
         let supported = ApplicationMenuItemDescriptor(
-            title: "New Window", isEnabled: true, actions: [kAXPressAction])
+            title: "New Window", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let appQualified = ApplicationMenuItemDescriptor(
+            title: "New Finder Window", commandCharacter: "N", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let shifted = ApplicationMenuItemDescriptor(
+            title: "New Window", commandCharacter: "N",
+            commandModifiers: AXMenuItemModifiers.shift.rawValue,
+            isEnabled: true, actions: [kAXPressAction])
         let disabled = ApplicationMenuItemDescriptor(
-            title: "New Window", isEnabled: false, actions: [kAXPressAction])
+            title: "New Window", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: false, actions: [kAXPressAction])
         let wrongAction = ApplicationMenuItemDescriptor(
-            title: "New Window", isEnabled: true, actions: [])
+            title: "New Window", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: true, actions: [])
         let wrongTitle = ApplicationMenuItemDescriptor(
-            title: "New File", isEnabled: true, actions: [kAXPressAction])
+            title: "New File", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let wrongShortcut = ApplicationMenuItemDescriptor(
+            title: "New Window", commandCharacter: "t", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let noCommand = ApplicationMenuItemDescriptor(
+            title: "New Window", commandCharacter: "n",
+            commandModifiers: AXMenuItemModifiers.noCommand.rawValue,
+            isEnabled: true, actions: [kAXPressAction])
 
-        #expect(NewWindowMenuCommandMatcher.matches(supported))
-        #expect(!NewWindowMenuCommandMatcher.matches(disabled))
-        #expect(!NewWindowMenuCommandMatcher.matches(wrongAction))
-        #expect(!NewWindowMenuCommandMatcher.matches(wrongTitle))
-        #expect(NewWindowMenuCommandMatcher.uniqueMatchIndex(in: [wrongTitle, supported]) == 1)
+        #expect(NewWindowMenuCommandMatcher.matches(supported, applicationName: "Finder"))
+        #expect(NewWindowMenuCommandMatcher.matches(appQualified, applicationName: "Finder"))
+        #expect(NewWindowMenuCommandMatcher.matches(shifted, applicationName: nil))
+        #expect(!NewWindowMenuCommandMatcher.matches(appQualified, applicationName: "Safari"))
+        #expect(!NewWindowMenuCommandMatcher.matches(disabled, applicationName: nil))
+        #expect(!NewWindowMenuCommandMatcher.matches(wrongAction, applicationName: nil))
+        #expect(!NewWindowMenuCommandMatcher.matches(wrongTitle, applicationName: nil))
+        #expect(!NewWindowMenuCommandMatcher.matches(wrongShortcut, applicationName: nil))
+        #expect(!NewWindowMenuCommandMatcher.matches(noCommand, applicationName: nil))
         #expect(
-            NewWindowMenuCommandMatcher.uniqueMatchIndex(in: [supported, supported]) == nil)
+            NewWindowMenuCommandMatcher.uniqueMatchIndex(
+                in: [wrongTitle, supported], applicationName: nil) == 1)
+        #expect(
+            NewWindowMenuCommandMatcher.uniqueMatchIndex(
+                in: [supported, supported], applicationName: nil) == nil)
     }
 
     @Test("actionable references survive only exact live physical identity gaps")

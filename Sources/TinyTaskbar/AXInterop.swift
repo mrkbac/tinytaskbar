@@ -109,7 +109,7 @@ struct AXApplicationRefreshPlan: Equatable, Sendable {
 
 @MainActor
 protocol WindowSnapshotProvider: AnyObject {
-    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)? { get set }
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange, pid_t) -> Void)? { get set }
     func snapshot() -> RawWindowSnapshot
     func invalidateApplication(_ pid: pid_t)
     func invalidateAllApplications()
@@ -452,7 +452,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         if WindowSnapshotChange.invalidatesWindowServer(forAXNotification: notification) {
             self?.invalidateWindowServer()
         }
-        self?.onChange?(.fromAXNotification(notification))
+        self?.onChange?(.fromAXNotification(notification), pid)
     }
     private var identityRegistry = WindowElementIdentityRegistry<AXUIElement> {
         CFEqual($0, $1)
@@ -478,7 +478,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var cachedCGWindows: [CGWindowMetadata]?
     private var refreshWindowServer = true
 
-    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange, pid_t) -> Void)?
 
     init() {
         let error = AXUIElementSetMessagingTimeout(
@@ -1196,7 +1196,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private func publishChange(_ change: WindowSnapshotChange, for pid: pid_t) {
         invalidateApplication(pid)
         invalidateWindowServer()
-        onChange?(change)
+        onChange?(change, pid)
     }
 
     private func actionableElement(for item: TaskbarItem) -> AXUIElement? {

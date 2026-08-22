@@ -90,10 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let provider = self.provider
         let store = self.store
-        provider.onChange = { [weak store] change in
+        provider.onChange = { [weak store] change, applicationPID in
             store?.requestRefresh(change: change)
             if change == .windowDestroyed {
-                store?.requestWindowMutationConfirmation()
+                store?.requestWindowMutationConfirmation(applicationPID: applicationPID)
             }
         }
         store.onStateChange = { [weak self] state in

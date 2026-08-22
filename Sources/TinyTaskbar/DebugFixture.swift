@@ -34,7 +34,7 @@
     @MainActor
     final class DebugFixtureWindowSnapshotProvider: WindowSnapshotProvider {
         let fixture: DebugFixture
-        var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
+        var onChange: (@MainActor @Sendable (WindowSnapshotChange, pid_t) -> Void)?
         private var activeItemID: String?
         private var closedItemIDs: Set<String> = []
         private var minimizedItemIDs: Set<String> = []
@@ -78,7 +78,7 @@
         func activate(_ item: TaskbarItem) {
             minimizedItemIDs.remove(item.id)
             activeItemID = item.id
-            onChange?(.ordinary)
+            onChange?(.ordinary, item.pid)
         }
 
         func selectTab(_: TaskbarTab, in item: TaskbarItem) {
@@ -98,7 +98,7 @@
             if activeItemID == item.id {
                 activeItemID = nil
             }
-            onChange?(.ordinary)
+            onChange?(.ordinary, item.pid)
         }
 
         func close(_ item: TaskbarItem) {
@@ -106,7 +106,7 @@
             if activeItemID == item.id {
                 activeItemID = nil
             }
-            onChange?(.windowDestroyed)
+            onChange?(.windowDestroyed, item.pid)
         }
 
         @discardableResult
@@ -120,7 +120,7 @@
             overriddenFramesByItemID[item.id] = CGRect(
                 origin: currentFrame.origin,
                 size: CGSize(width: currentFrame.width, height: height))
-            onChange?(.ordinary)
+            onChange?(.ordinary, item.pid)
             return true
         }
 

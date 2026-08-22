@@ -453,13 +453,15 @@ final class TaskbarStore {
         }
     }
 
-    func requestWindowMutationConfirmation() {
+    func requestWindowMutationConfirmation(applicationPID: pid_t) {
         guard accessibilityAvailable else { return }
         pendingWindowMutationConfirmation?.cancel()
         pendingWindowMutationConfirmation = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.windowMutationConfirmationDelay)
             guard !Task.isCancelled, let self, self.accessibilityAvailable else { return }
             self.pendingWindowMutationConfirmation = nil
+            self.provider.invalidateApplication(applicationPID)
+            self.provider.invalidateWindowServer()
             self.refreshNow()
         }
     }
@@ -609,13 +611,13 @@ final class TaskbarStore {
             provider.selectTab(tab, in: item)
         case .closeTab(_, let tab):
             provider.closeTab(tab, in: item)
-            requestWindowMutationConfirmation()
+            requestWindowMutationConfirmation(applicationPID: item.pid)
         case .closeTabGroup:
             provider.closeTabGroup(item)
-            requestWindowMutationConfirmation()
+            requestWindowMutationConfirmation(applicationPID: item.pid)
         case .close:
             provider.close(item)
-            requestWindowMutationConfirmation()
+            requestWindowMutationConfirmation(applicationPID: item.pid)
         }
         requestRefresh()
     }
@@ -648,14 +650,14 @@ final class TaskbarStore {
             provider.openNewWindow(for: item)
         }
         requestRefresh()
-        requestWindowMutationConfirmation()
+        requestWindowMutationConfirmation(applicationPID: item.pid)
     }
 
     func close(_ item: TaskbarItem) {
         guard accessibilityAvailable else { return }
         provider.close(item)
         requestRefresh()
-        requestWindowMutationConfirmation()
+        requestWindowMutationConfirmation(applicationPID: item.pid)
     }
 
     func stop() {

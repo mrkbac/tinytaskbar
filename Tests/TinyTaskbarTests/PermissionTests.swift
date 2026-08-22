@@ -1482,6 +1482,62 @@ struct PermissionTests {
         #expect(provider.snapshotCount == initialSnapshotCount + 1)
     }
 
+    @Test("destroyed-window confirmation rereads only the affected application")
+    @MainActor
+    func destroyedWindowConfirmationRereadsAffectedApplication() async {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+
+        store.start(accessibilityTrusted: true)
+        await waitForSnapshot(from: provider)
+        let initialSnapshotCount = provider.snapshotCount
+        let closedSnapshot = RawWindowSnapshot(
+            candidates: [],
+            cgWindows: [],
+            displays: [fixtureDisplay],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [fixturePID],
+                axWindowListReadPIDs: [fixturePID]
+            )
+        )
+        provider.onInvalidateApplication = { pid in
+            guard pid == self.fixturePID, provider.invalidatedPIDs.count == 2 else { return }
+            provider.snapshotValue = closedSnapshot
+        }
+
+        // The destruction callback invalidates once, but its immediate read can
+        // still return the just-destroyed AX element. The delayed confirmation
+        // must invalidate that PID again before trusting a second read.
+        provider.invalidateApplication(fixturePID)
+        provider.invalidateWindowServer()
+        store.requestRefresh(change: .windowDestroyed)
+        store.requestWindowMutationConfirmation(applicationPID: fixturePID)
+
+        let clock = ContinuousClock()
+        let immediateDeadline = clock.now.advanced(by: .milliseconds(250))
+        while provider.snapshotCount < initialSnapshotCount + 1,
+            clock.now < immediateDeadline
+        {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.state.itemsByDisplay["main"]?.count == 1)
+
+        let confirmationDeadline = clock.now.advanced(by: .seconds(1))
+        while provider.snapshotCount < initialSnapshotCount + 2,
+            clock.now < confirmationDeadline
+        {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(provider.invalidatedPIDs == [fixturePID, fixturePID])
+        #expect(provider.invalidateAllCount == 0)
+        #expect(provider.invalidateWindowServerCount == 2)
+        #expect(store.state.itemsByDisplay.isEmpty)
+    }
+
     @Test("AX notification classes protect full refreshes from noisy streams")
     func axNotificationRefreshClassification() {
         #expect(WindowSnapshotChange.fromAXNotification("AXWindowMoved") == .deferred)
@@ -2598,7 +2654,8 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var invalidatedPIDs: [pid_t] = []
     var invalidateAllCount = 0
     var invalidateWindowServerCount = 0
-    var onChange: (@MainActor @Sendable (WindowSnapshotChange) -> Void)?
+    var onChange: (@MainActor @Sendable (WindowSnapshotChange, pid_t) -> Void)?
+    var onInvalidateApplication: ((pid_t) -> Void)?
 
     init(snapshot: RawWindowSnapshot? = nil) {
         if let snapshot {
@@ -2613,6 +2670,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
 
     func invalidateApplication(_ pid: pid_t) {
         invalidatedPIDs.append(pid)
+        onInvalidateApplication?(pid)
     }
 
     func invalidateAllApplications() {

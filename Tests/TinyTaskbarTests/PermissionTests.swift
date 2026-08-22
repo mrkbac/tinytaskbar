@@ -61,7 +61,7 @@ struct PermissionTests {
         #expect(receivedDockVisibility == true)
     }
 
-    @Test("Taskbar window menu exposes only per-window commands")
+    @Test("Taskbar window menu keeps compact baseline commands")
     @MainActor
     func taskbarContextMenuClosesSelectedItem() {
         let item = TaskbarItem(
@@ -123,6 +123,53 @@ struct PermissionTests {
         #expect(activatedItem?.id == item.id)
         #expect(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
         #expect(closedItem?.id == item.id)
+    }
+
+    @Test("Taskbar window menu exposes a supported New Window application command")
+    @MainActor
+    func taskbarContextMenuOpensNewApplicationWindow() {
+        let item = TaskbarItem(
+            id: "context-window",
+            pid: 42,
+            applicationName: "Editor",
+            title: "Document",
+            displayIdentifier: "main",
+            cgWindowNumber: 7,
+            isActive: false
+        )
+        var availabilityCommand: ApplicationCommand?
+        var applicationCommand: ApplicationCommand?
+        let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { _ in },
+            canExecuteApplicationCommand: {
+                availabilityCommand = $0
+                return true
+            },
+            onApplicationCommand: { applicationCommand = $0 }
+        )
+        defer { panel.close() }
+        update(panel, frame: frame, items: [item])
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(availabilityCommand == nil)
+        guard let button = taskbarButtons(in: panel).first,
+            let menu = button.onMenuRequested?(),
+            let newWindowItem = menu.items.first,
+            let action = newWindowItem.action
+        else {
+            Issue.record("supported New Window command was not rendered")
+            return
+        }
+
+        #expect(availabilityCommand == .newWindow(item))
+        #expect(menu.items.map(\.title) == ["New Window", "", "Minimize", "", "Close"])
+        #expect(
+            NSApplication.shared.sendAction(
+                action, to: newWindowItem.target, from: newWindowItem))
+        #expect(applicationCommand == .newWindow(item))
     }
 
     @Test("taskbar panels hide from Mission Control and remain attached to one Space")
@@ -773,6 +820,26 @@ struct PermissionTests {
             ])
     }
 
+    @Test("New Window menu matching is enabled, actionable, exact, and unambiguous")
+    func newWindowMenuCommandMatching() {
+        let supported = ApplicationMenuItemDescriptor(
+            title: "New Window", isEnabled: true, actions: [kAXPressAction])
+        let disabled = ApplicationMenuItemDescriptor(
+            title: "New Window", isEnabled: false, actions: [kAXPressAction])
+        let wrongAction = ApplicationMenuItemDescriptor(
+            title: "New Window", isEnabled: true, actions: [])
+        let wrongTitle = ApplicationMenuItemDescriptor(
+            title: "New File", isEnabled: true, actions: [kAXPressAction])
+
+        #expect(NewWindowMenuCommandMatcher.matches(supported))
+        #expect(!NewWindowMenuCommandMatcher.matches(disabled))
+        #expect(!NewWindowMenuCommandMatcher.matches(wrongAction))
+        #expect(!NewWindowMenuCommandMatcher.matches(wrongTitle))
+        #expect(NewWindowMenuCommandMatcher.uniqueMatchIndex(in: [wrongTitle, supported]) == 1)
+        #expect(
+            NewWindowMenuCommandMatcher.uniqueMatchIndex(in: [supported, supported]) == nil)
+    }
+
     @Test("actionable references survive only exact live physical identity gaps")
     func actionableReferenceContinuity() {
         let resolved = ActionableReferenceContinuity.resolve(
@@ -944,6 +1011,27 @@ struct PermissionTests {
 
         #expect(provider.closedTabIDs == ["tab-beta"])
         #expect(provider.closedGroupIDs == [item.id])
+    }
+
+    @Test("New Window capability and execution stay scoped to the selected application")
+    @MainActor
+    func newWindowCommandUsesCurrentItem() {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        provider.newWindowAvailable = true
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture item was not projected")
+            return
+        }
+
+        #expect(store.canExecute(.newWindow(item)))
+        store.execute(.newWindow(item))
+
+        #expect(provider.newWindowAvailabilityItemIDs == [item.id])
+        #expect(provider.openedNewWindowItemIDs == [item.id])
     }
 
     @Test("standard titled presentation remains vertically contained")
@@ -2504,6 +2592,9 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var minimizedItemIDs: [String] = []
     var events: [Event] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
+    var newWindowAvailable = false
+    var newWindowAvailabilityItemIDs: [String] = []
+    var openedNewWindowItemIDs: [String] = []
     var invalidatedPIDs: [pid_t] = []
     var invalidateAllCount = 0
     var invalidateWindowServerCount = 0
@@ -2559,6 +2650,15 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
 
     func close(_: TaskbarItem) {
         closeCount += 1
+    }
+
+    func canOpenNewWindow(for item: TaskbarItem) -> Bool {
+        newWindowAvailabilityItemIDs.append(item.id)
+        return newWindowAvailable
+    }
+
+    func openNewWindow(for item: TaskbarItem) {
+        openedNewWindowItemIDs.append(item.id)
     }
 
     @discardableResult

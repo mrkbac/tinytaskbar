@@ -120,6 +120,8 @@ protocol WindowSnapshotProvider: AnyObject {
     func closeTabGroup(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
+    func canOpenNewWindow(for item: TaskbarItem) -> Bool
+    func openNewWindow(for item: TaskbarItem)
     @discardableResult
     func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool
 }
@@ -128,6 +130,8 @@ extension WindowSnapshotProvider {
     func invalidateApplication(_: pid_t) {}
     func invalidateAllApplications() {}
     func invalidateWindowServer() {}
+    func canOpenNewWindow(for _: TaskbarItem) -> Bool { false }
+    func openNewWindow(for _: TaskbarItem) {}
 }
 
 @MainActor
@@ -318,6 +322,125 @@ enum AXActionSupport {
     }
 }
 
+struct ApplicationMenuItemDescriptor: Equatable, Sendable {
+    let title: String
+    let isEnabled: Bool
+    let actions: [String]
+}
+
+enum NewWindowMenuCommandMatcher {
+    static func matches(_ item: ApplicationMenuItemDescriptor) -> Bool {
+        item.title == "New Window"
+            && item.isEnabled
+            && AXActionSupport.contains(kAXPressAction, in: item.actions)
+    }
+
+    static func uniqueMatchIndex(in items: [ApplicationMenuItemDescriptor]) -> Int? {
+        let matchingIndices = items.indices.filter { matches(items[$0]) }
+        return matchingIndices.count == 1 ? matchingIndices[0] : nil
+    }
+}
+
+@MainActor
+private enum NewWindowMenuCommandResolver {
+    private static let traversalLimit = 512
+
+    static func isAvailable(for pid: pid_t) -> Bool {
+        resolve(for: pid) != nil
+    }
+
+    static func perform(for pid: pid_t) -> AXError {
+        guard let command = resolve(for: pid) else { return .actionUnsupported }
+        return AXUIElementPerformAction(command, kAXPressAction as CFString)
+    }
+
+    private static func resolve(for pid: pid_t) -> AXUIElement? {
+        let application = AXUIElementCreateApplication(pid)
+        guard let menuBar = elementAttribute(kAXMenuBarAttribute, from: application) else {
+            return nil
+        }
+
+        var pending = [menuBar]
+        var matches: [AXUIElement] = []
+        var visitedCount = 0
+        while let element = pending.popLast(), visitedCount < traversalLimit {
+            visitedCount += 1
+            if descriptor(for: element).map(NewWindowMenuCommandMatcher.matches) == true {
+                matches.append(element)
+                if matches.count > 1 { return nil }
+            }
+            pending.append(contentsOf: elementArrayAttribute(kAXChildrenAttribute, from: element))
+        }
+        guard pending.isEmpty else { return nil }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private static func descriptor(for element: AXUIElement) -> ApplicationMenuItemDescriptor? {
+        guard stringAttribute(kAXRoleAttribute, from: element) == kAXMenuItemRole,
+            let title = stringAttribute(kAXTitleAttribute, from: element),
+            let isEnabled = boolAttribute(kAXEnabledAttribute, from: element)
+        else { return nil }
+
+        var rawActions: CFArray?
+        guard AXUIElementCopyActionNames(element, &rawActions) == .success,
+            let actions = rawActions as? [String]
+        else { return nil }
+        return ApplicationMenuItemDescriptor(
+            title: title,
+            isEnabled: isEnabled,
+            actions: actions
+        )
+    }
+
+    private static func elementAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> AXUIElement? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let rawValue,
+            CFGetTypeID(rawValue) == AXUIElementGetTypeID()
+        else { return nil }
+        return (rawValue as! AXUIElement)
+    }
+
+    private static func elementArrayAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> [AXUIElement] {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let values = rawValue as? NSArray
+        else { return [] }
+        return values.compactMap { value in
+            let rawElement = value as CFTypeRef
+            guard CFGetTypeID(rawElement) == AXUIElementGetTypeID() else { return nil }
+            return (rawElement as! AXUIElement)
+        }
+    }
+
+    private static func stringAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> String? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success
+        else { return nil }
+        return rawValue as? String
+    }
+
+    private static func boolAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> Bool? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
+            let number = rawValue as? NSNumber
+        else { return nil }
+        return number.boolValue
+    }
+}
+
 @MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
@@ -381,6 +504,30 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
     func invalidateWindowServer() {
         refreshWindowServer = true
+    }
+
+    func canOpenNewWindow(for item: TaskbarItem) -> Bool {
+        NewWindowMenuCommandResolver.isAvailable(for: item.pid)
+    }
+
+    func openNewWindow(for item: TaskbarItem) {
+        guard let application = NSRunningApplication(processIdentifier: item.pid),
+            !application.isTerminated
+        else { return }
+        if application.isHidden, !application.unhide() {
+            logger.debug("New Window could not unhide pid=\(item.pid, privacy: .public)")
+        }
+        if !application.activate(options: []) {
+            logger.debug("New Window could not activate pid=\(item.pid, privacy: .public)")
+        }
+        let error = NewWindowMenuCommandResolver.perform(for: item.pid)
+        guard error == .success else {
+            logger.debug(
+                "New Window unavailable at execution pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
+            )
+            return
+        }
+        publishChange(.ordinary, for: item.pid)
     }
 
     func snapshot() -> RawWindowSnapshot {

@@ -344,14 +344,14 @@ final class TaskbarStore {
     }
 
     private static let maximumWorkAreaAdjustmentAttempts = 5
-    private static let windowDisappearanceConfirmationDelay = Duration.milliseconds(350)
+    private static let windowMutationConfirmationDelay = Duration.milliseconds(350)
     nonisolated static let ordinaryRefreshDelay = Duration.milliseconds(50)
     nonisolated static let deferredRefreshDelay = Duration.milliseconds(250)
     private let provider: any WindowSnapshotProvider
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "refresh")
     private var pendingRefresh: Task<Void, Never>?
     private var pendingRefreshIsDeferred = false
-    private var pendingWindowDisappearanceConfirmation: Task<Void, Never>?
+    private var pendingWindowMutationConfirmation: Task<Void, Never>?
     private var pendingWorkAreaVerification: Task<Void, Never>?
     private var continuity = TaskbarStateContinuity()
     private var pendingRefreshCause: TaskbarRefreshCause = .ordinary
@@ -399,8 +399,8 @@ final class TaskbarStore {
             pendingRefresh?.cancel()
             pendingRefresh = nil
             pendingRefreshIsDeferred = false
-            pendingWindowDisappearanceConfirmation?.cancel()
-            pendingWindowDisappearanceConfirmation = nil
+            pendingWindowMutationConfirmation?.cancel()
+            pendingWindowMutationConfirmation = nil
             pendingRefreshCause = .ordinary
             primaryClickFocusReturn = nil
             removeActiveSpaceObserver()
@@ -453,13 +453,13 @@ final class TaskbarStore {
         }
     }
 
-    func requestWindowDisappearanceConfirmation() {
+    func requestWindowMutationConfirmation() {
         guard accessibilityAvailable else { return }
-        pendingWindowDisappearanceConfirmation?.cancel()
-        pendingWindowDisappearanceConfirmation = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.windowDisappearanceConfirmationDelay)
+        pendingWindowMutationConfirmation?.cancel()
+        pendingWindowMutationConfirmation = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.windowMutationConfirmationDelay)
             guard !Task.isCancelled, let self, self.accessibilityAvailable else { return }
-            self.pendingWindowDisappearanceConfirmation = nil
+            self.pendingWindowMutationConfirmation = nil
             self.refreshNow()
         }
     }
@@ -609,22 +609,53 @@ final class TaskbarStore {
             provider.selectTab(tab, in: item)
         case .closeTab(_, let tab):
             provider.closeTab(tab, in: item)
-            requestWindowDisappearanceConfirmation()
+            requestWindowMutationConfirmation()
         case .closeTabGroup:
             provider.closeTabGroup(item)
-            requestWindowDisappearanceConfirmation()
+            requestWindowMutationConfirmation()
         case .close:
             provider.close(item)
-            requestWindowDisappearanceConfirmation()
+            requestWindowMutationConfirmation()
         }
         requestRefresh()
+    }
+
+    func canExecute(_ command: ApplicationCommand) -> Bool {
+        guard accessibilityAvailable else { return false }
+        let requestedItem: TaskbarItem
+        switch command {
+        case .newWindow(let item):
+            requestedItem = item
+        }
+        guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
+        else { return false }
+        return provider.canOpenNewWindow(for: item)
+    }
+
+    func execute(_ command: ApplicationCommand) {
+        guard accessibilityAvailable else { return }
+        let requestedItem: TaskbarItem
+        switch command {
+        case .newWindow(let item):
+            requestedItem = item
+        }
+        provider.invalidateApplication(requestedItem.pid)
+        refreshNow()
+        guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
+        else { return }
+        switch command {
+        case .newWindow:
+            provider.openNewWindow(for: item)
+        }
+        requestRefresh()
+        requestWindowMutationConfirmation()
     }
 
     func close(_ item: TaskbarItem) {
         guard accessibilityAvailable else { return }
         provider.close(item)
         requestRefresh()
-        requestWindowDisappearanceConfirmation()
+        requestWindowMutationConfirmation()
     }
 
     func stop() {
@@ -632,8 +663,8 @@ final class TaskbarStore {
         pendingRefresh?.cancel()
         pendingRefresh = nil
         pendingRefreshIsDeferred = false
-        pendingWindowDisappearanceConfirmation?.cancel()
-        pendingWindowDisappearanceConfirmation = nil
+        pendingWindowMutationConfirmation?.cancel()
+        pendingWindowMutationConfirmation = nil
         pendingWorkAreaVerification?.cancel()
         pendingWorkAreaVerification = nil
         pendingRefreshCause = .ordinary
@@ -1311,12 +1342,18 @@ final class TaskbarPanel: NSPanel {
         frame: NSRect,
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
-        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in }
+        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in },
+        canExecuteApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Bool = { _ in
+            false
+        },
+        onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void = { _ in }
     ) {
         barView = TaskbarBarView(
             onActivate: onActivate,
             onClose: onClose,
-            onWindowCommand: onWindowCommand)
+            onWindowCommand: onWindowCommand,
+            canExecuteApplicationCommand: canExecuteApplicationCommand,
+            onApplicationCommand: onApplicationCommand)
         super.init(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -2219,16 +2256,22 @@ private final class TaskbarBarView: NSView {
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
     private let onWindowCommand: @MainActor (WindowCommand) -> Void
+    private let canExecuteApplicationCommand: @MainActor (ApplicationCommand) -> Bool
+    private let onApplicationCommand: @MainActor (ApplicationCommand) -> Void
     private var currentIndicators = ApplicationIndicatorSnapshot.empty
 
     init(
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
-        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void
+        onWindowCommand: @escaping @MainActor (WindowCommand) -> Void,
+        canExecuteApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Bool,
+        onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void
     ) {
         self.onActivate = onActivate
         self.onClose = onClose
         self.onWindowCommand = onWindowCommand
+        self.canExecuteApplicationCommand = canExecuteApplicationCommand
+        self.onApplicationCommand = onApplicationCommand
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -2498,7 +2541,7 @@ private final class TaskbarBarView: NSView {
             guard let self,
                 let current = self.currentItems.first(where: { $0.id == item.id })
             else { return NSMenu() }
-            return self.makeContextualMenu(for: current)
+            return self.makeContextualMenu(for: current, includeApplicationCommands: true)
         }
         // Focus styling must never participate in intrinsic sizing: changing font weight
         // here makes every downstream taskbar item visibly reflow as focus moves.
@@ -2543,9 +2586,20 @@ private final class TaskbarBarView: NSView {
         }
     }
 
-    private func makeContextualMenu(for item: TaskbarItem) -> NSMenu {
+    private func makeContextualMenu(
+        for item: TaskbarItem,
+        includeApplicationCommands: Bool = false
+    ) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        let newWindowCommand = ApplicationCommand.newWindow(item)
+        if includeApplicationCommands,
+            canExecuteApplicationCommand(newWindowCommand)
+        {
+            menu.addItem(
+                windowMenuItem("New Window", action: #selector(openNewWindow(_:)), item: item))
+            menu.addItem(.separator())
+        }
         let visibilityActionTitle =
             item.isHidden ? "Show" : (item.isMinimized ? "Restore" : "Minimize")
         menu.addItem(
@@ -2625,6 +2679,11 @@ private final class TaskbarBarView: NSView {
         } else {
             onClose(item)
         }
+    }
+
+    @objc private func openNewWindow(_ sender: NSMenuItem) {
+        guard let item = currentItem(sender) else { return }
+        onApplicationCommand(.newWindow(item))
     }
 
     private func currentItem(_ sender: NSMenuItem) -> TaskbarItem? {

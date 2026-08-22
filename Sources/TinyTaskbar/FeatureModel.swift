@@ -34,3 +34,7 @@ enum WindowCommand: Equatable, Sendable {
     case closeTabGroup(TaskbarItem)
     case close(TaskbarItem)
 }
+
+enum ApplicationCommand: Equatable, Sendable {
+    case newWindow(TaskbarItem)
+}

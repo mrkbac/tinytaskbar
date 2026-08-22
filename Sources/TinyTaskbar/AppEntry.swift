@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         provider.onChange = { [weak store] change in
             store?.requestRefresh(change: change)
             if change == .windowDestroyed {
-                store?.requestWindowDisappearanceConfirmation()
+                store?.requestWindowMutationConfirmation()
             }
         }
         store.onStateChange = { [weak self] state in
@@ -245,6 +245,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.store.execute(.close(item))
             },
             onWindowCommand: { [weak self] command in
+                self?.store.execute(command)
+            },
+            canExecuteApplicationCommand: { [weak self] command in
+                self?.store.canExecute(command) ?? false
+            },
+            onApplicationCommand: { [weak self] command in
                 self?.store.execute(command)
             })
     }

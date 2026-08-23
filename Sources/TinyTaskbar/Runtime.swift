@@ -2250,6 +2250,7 @@ private final class TaskbarBarView: NSView {
     private let scrollView = TaskbarScrollView()
     private let stackView = NSStackView()
     private let separatorView = NSView()
+    private var cursorTrackingArea: NSTrackingArea?
     private var currentItems: [TaskbarItem] = []
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var buttonsByID: [String: TaskbarButton] = [:]
@@ -2313,6 +2314,25 @@ private final class TaskbarBarView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func updateTrackingAreas() {
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.cursorUpdate, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        cursorTrackingArea = trackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func cursorUpdate(with _: NSEvent) {
+        NSCursor.arrow.set()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {

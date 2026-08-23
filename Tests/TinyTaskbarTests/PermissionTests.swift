@@ -548,6 +548,36 @@ struct PermissionTests {
         #expect(activatedItem?.id == item.id)
     }
 
+    @Test("taskbar restores the arrow cursor after crossing a window resize border")
+    @MainActor
+    func taskbarRestoresArrowCursor() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+        defer {
+            NSCursor.arrow.set()
+            panel.close()
+        }
+
+        guard let contentView = panel.contentView,
+            let cgEvent = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: .zero,
+                mouseButton: .left),
+            let event = NSEvent(cgEvent: cgEvent)
+        else {
+            Issue.record("taskbar cursor update fixture could not be created")
+            return
+        }
+
+        contentView.updateTrackingAreas()
+        #expect(contentView.trackingAreas.contains { $0.options.contains(.cursorUpdate) })
+
+        NSCursor.resizeUpDown.set()
+        contentView.cursorUpdate(with: event)
+        #expect(NSCursor.current === NSCursor.arrow)
+    }
+
     @Test("ordered taskbar document, stack, and button stay vertically centered")
     @MainActor
     func taskbarDocumentAndButtonMidpoints() {

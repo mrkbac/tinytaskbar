@@ -1363,8 +1363,8 @@ final class TaskbarPanel: NSPanel {
             defer: false
         )
 
-        isOpaque = false
-        backgroundColor = .clear
+        isOpaque = true
+        backgroundColor = .windowBackgroundColor
         hasShadow = false
         level = .statusBar
         collectionBehavior = [
@@ -2325,17 +2325,6 @@ private final class TaskbarBarView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        NSColor.windowBackgroundColor.setFill()
-        dirtyRect.intersection(TaskbarPanelLayout.visualBounds(in: bounds)).fill()
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {

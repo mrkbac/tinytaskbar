@@ -550,7 +550,7 @@ struct PermissionTests {
         #expect(activatedItem?.id == item.id)
     }
 
-    @Test("taskbar owns the window resize seam without growing its visible content")
+    @Test("taskbar owns the window resize seam without moving its content")
     @MainActor
     func taskbarRestoresArrowCursor() {
         let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
@@ -592,7 +592,8 @@ struct PermissionTests {
             x: contentView.bounds.midX,
             y: contentView.bounds.maxY - TaskbarPanelLayout.cursorSeamOverlap / 2)
         #expect(panel.frame == interactionFrame)
-        #expect(!panel.isOpaque)
+        #expect(panel.isOpaque)
+        #expect(panel.backgroundColor == .windowBackgroundColor)
         #expect(separator.frame.maxY == TaskbarPanelLayout.defaultHeight)
         #expect(shieldPoint.y > separator.frame.maxY)
         #expect(contentView.hitTest(shieldPoint) === contentView)

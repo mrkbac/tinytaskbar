@@ -558,23 +558,25 @@ struct PermissionTests {
             panel.close()
         }
 
-        guard let contentView = panel.contentView,
-            let cgEvent = CGEvent(
-                mouseEventSource: nil,
-                mouseType: .mouseMoved,
-                mouseCursorPosition: .zero,
-                mouseButton: .left),
-            let event = NSEvent(cgEvent: cgEvent)
+        guard
+            let event = NSEvent.mouseEvent(
+                with: .mouseMoved,
+                location: NSPoint(x: frame.maxX - 1, y: frame.maxY - 1),
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: panel.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 0,
+                pressure: 0)
         else {
             Issue.record("taskbar cursor update fixture could not be created")
             return
         }
 
-        contentView.updateTrackingAreas()
-        #expect(contentView.trackingAreas.contains { $0.options.contains(.cursorUpdate) })
-
+        #expect(panel.acceptsMouseMovedEvents)
         NSCursor.resizeUpDown.set()
-        contentView.cursorUpdate(with: event)
+        panel.sendEvent(event)
         #expect(NSCursor.current === NSCursor.arrow)
     }
 

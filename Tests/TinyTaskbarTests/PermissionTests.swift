@@ -50,15 +50,22 @@ struct PermissionTests {
     func settingsFormChangesRouteCallbacks() {
         let model = TinyTaskbarSettingsModel()
         var receivedDockVisibility: Bool?
+        var receivedInstantWindowSwitching: Bool?
         model.onHideMacDockChanged = {
             receivedDockVisibility = $0
             return nil
         }
+        model.onInstantWindowSwitchingChanged = {
+            receivedInstantWindowSwitching = $0
+        }
 
         model.setHideMacDock(true)
+        model.setInstantWindowSwitching(true)
 
         #expect(model.preferences.hideMacDock)
+        #expect(model.preferences.instantWindowSwitching)
         #expect(receivedDockVisibility == true)
+        #expect(receivedInstantWindowSwitching == true)
     }
 
     @Test("Taskbar window menu keeps compact baseline commands")
@@ -705,11 +712,13 @@ struct PermissionTests {
 
         store.setOnboardingComplete(true)
         store.setHideMacDock(true)
+        store.setInstantWindowSwitching(true)
 
         let reloaded = TinyTaskbarPreferencesStore(defaults: defaults)
         var expected = TinyTaskbarPreferences.defaults
         expected.onboardingComplete = true
         expected.hideMacDock = true
+        expected.instantWindowSwitching = true
         #expect(reloaded.values == expected)
     }
 
@@ -862,13 +871,20 @@ struct PermissionTests {
         #expect(events == ["activate", "refresh-group", "press", "refresh"])
     }
 
-    @Test("window activation prepares only the selected window before activating its app")
+    @Test("prepared window activation performs one application ordering transition")
     func windowActivationOrder() {
         #expect(
-            WindowActivationSequence.steps == [
+            WindowActivationSequence.preparationSteps == [
                 .unminimize,
                 .makeMain,
                 .makeFocusedWindow,
+            ])
+        #expect(
+            WindowActivationSequence.completionSteps(targetWasPrepared: true) == [
+                .activateApplication
+            ])
+        #expect(
+            WindowActivationSequence.completionSteps(targetWasPrepared: false) == [
                 .activateApplication,
                 .focus,
                 .raise,
@@ -2448,6 +2464,44 @@ struct PermissionTests {
         store.performPrimaryClick(chromeOne)
 
         #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+        #expect(!provider.activatedItemIDs.contains(chromeTwo.id))
+    }
+
+    @Test("instant switching reverses the focused pair without minimizing either window")
+    @MainActor
+    func instantPrimaryClickSwitchesWithoutMinimizing() {
+        let provider = MockWindowSnapshotProvider(
+            snapshot: focusToggleSnapshot(activeWindow: "chatgpt"))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+
+        let initialItems = Array(store.state.itemsByDisplay.values.joined())
+        guard let chatGPT = initialItems.first(where: { $0.title == "ChatGPT" }),
+            let chromeOne = initialItems.first(where: { $0.title == "Chrome One" }),
+            let chromeTwo = initialItems.first(where: { $0.title == "Chrome Two" })
+        else {
+            Issue.record("focus-toggle fixture windows were not projected")
+            return
+        }
+
+        store.performPrimaryClick(
+            chromeOne, focusedWindowBehavior: .switchWithoutMinimizing)
+        #expect(provider.events == [.activate(chromeOne.id)])
+
+        provider.events = []
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
+        store.performPrimaryClick(
+            chromeOne, focusedWindowBehavior: .switchWithoutMinimizing)
+        #expect(provider.events == [.activate(chatGPT.id)])
+
+        provider.events = []
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
+        store.performPrimaryClick(
+            chatGPT, focusedWindowBehavior: .switchWithoutMinimizing)
+        #expect(provider.events == [.activate(chromeOne.id)])
+        #expect(provider.minimizedItemIDs.isEmpty)
         #expect(!provider.activatedItemIDs.contains(chromeTwo.id))
     }
 

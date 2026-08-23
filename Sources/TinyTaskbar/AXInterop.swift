@@ -294,14 +294,17 @@ enum WindowActivationStep: Equatable {
 }
 
 enum WindowActivationSequence {
-    static let steps: [WindowActivationStep] = [
+    static let preparationSteps: [WindowActivationStep] = [
         .unminimize,
         .makeMain,
         .makeFocusedWindow,
-        .activateApplication,
-        .focus,
-        .raise,
     ]
+
+    static func completionSteps(targetWasPrepared: Bool) -> [WindowActivationStep] {
+        targetWasPrepared
+            ? [.activateApplication]
+            : [.activateApplication, .focus, .raise]
+    }
 }
 
 enum NativeTabSelectionTarget {
@@ -838,25 +841,31 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
         // Prepare the selected window before activating its application. AppKit activation
         // then brings forward only that main/key window; an app-wide AXFrontmost write here
-        // can promote sibling windows too (notably separate Chrome windows).
+        // can promote sibling windows too (notably separate Chrome windows). Do not focus or
+        // raise the window again after successful preparation: activation is asynchronous,
+        // and a second ordering request can visibly bounce through the previous application.
         //
         // The snapshot can race a minimize or focus change. Each operation is best effort;
         // AX documents invalid references and unsupported attributes as ordinary failures.
         var failures: [String] = []
+        var targetWasPrepared = false
         let applicationElement = AXUIElementCreateApplication(item.pid)
-        for step in WindowActivationSequence.steps {
+        let recordFailure: (String) -> Void = { failures.append($0) }
+        let performStep: (WindowActivationStep) -> Void = { step in
             switch step {
             case .unminimize:
                 let error = AXUIElementSetAttributeValue(
                     element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
                 if error != .success {
-                    failures.append("unminimize=\(error.rawValue)")
+                    recordFailure("unminimize=\(error.rawValue)")
                 }
             case .makeMain:
                 let error = AXUIElementSetAttributeValue(
                     element, kAXMainAttribute as CFString, kCFBooleanTrue)
-                if error != .success {
-                    failures.append("main=\(error.rawValue)")
+                if error == .success {
+                    targetWasPrepared = true
+                } else {
+                    recordFailure("main=\(error.rawValue)")
                 }
             case .makeFocusedWindow:
                 var isSettable = DarwinBoolean(false)
@@ -871,34 +880,44 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
                         kAXFocusedWindowAttribute as CFString,
                         element
                     )
-                    if error != .success {
-                        failures.append("focused_window=\(error.rawValue)")
+                    if error == .success {
+                        targetWasPrepared = true
+                    } else {
+                        recordFailure("focused_window=\(error.rawValue)")
                     }
                 } else if settableError != .success {
-                    failures.append("focused_window_settable=\(settableError.rawValue)")
+                    recordFailure("focused_window_settable=\(settableError.rawValue)")
                 } else {
-                    failures.append("focused_window=not_settable")
+                    recordFailure("focused_window=not_settable")
                 }
             case .activateApplication:
                 if let application {
                     if !application.activate(options: []) {
-                        failures.append("activate=false")
+                        recordFailure("activate=false")
                     }
                 } else {
-                    failures.append("application=missing")
+                    recordFailure("application=missing")
                 }
             case .focus:
                 let error = AXUIElementSetAttributeValue(
                     element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
                 if error != .success {
-                    failures.append("focus=\(error.rawValue)")
+                    recordFailure("focus=\(error.rawValue)")
                 }
             case .raise:
                 let error = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
                 if error != .success {
-                    failures.append("raise=\(error.rawValue)")
+                    recordFailure("raise=\(error.rawValue)")
                 }
             }
+        }
+        for step in WindowActivationSequence.preparationSteps {
+            performStep(step)
+        }
+        for step in WindowActivationSequence.completionSteps(
+            targetWasPrepared: targetWasPrepared)
+        {
+            performStep(step)
         }
         if !failures.isEmpty {
             let summary = failures.joined(separator: ",")

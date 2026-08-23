@@ -354,6 +354,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onHideMacDockChanged = { [weak self] hidden in
             self?.setDockHidden(hidden)
         }
+        settingsWindow.onInstantWindowSwitchingChanged = { [weak self] enabled in
+            self?.preferencesStore.setInstantWindowSwitching(enabled)
+        }
         settingsWindow.onClosed = { [weak self] in
             guard let self else { return }
             self.preferencesStore.setOnboardingComplete(true)
@@ -418,7 +421,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handlePrimaryClick(_ item: TaskbarItem) {
-        store.performPrimaryClick(item)
+        store.performPrimaryClick(
+            item,
+            focusedWindowBehavior: preferencesStore.values.instantWindowSwitching
+                ? .switchWithoutMinimizing : .minimize)
     }
 
     private func installStatusItem() {

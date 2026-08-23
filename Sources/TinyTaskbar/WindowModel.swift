@@ -380,13 +380,16 @@ enum NativeTabGroupMembershipResolver {
 struct TinyTaskbarPreferences: Equatable, Sendable {
     var onboardingComplete = false
     var hideMacDock = false
+    var instantWindowSwitching = false
 
     init(
         onboardingComplete: Bool = false,
-        hideMacDock: Bool = false
+        hideMacDock: Bool = false,
+        instantWindowSwitching: Bool = false
     ) {
         self.onboardingComplete = onboardingComplete
         self.hideMacDock = hideMacDock
+        self.instantWindowSwitching = instantWindowSwitching
     }
 
     static let defaults = TinyTaskbarPreferences()

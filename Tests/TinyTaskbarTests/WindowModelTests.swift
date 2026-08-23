@@ -642,6 +642,13 @@ struct WindowModelTests {
 
         #expect(bottomFrame.minY == 70)
         #expect(bottomFrame.height == TaskbarAppearance.panelHeight)
+        #expect(
+            TaskbarPanelLayout.interactionFrame(for: bottomFrame)
+                == CGRect(
+                    x: bottomFrame.minX,
+                    y: bottomFrame.minY,
+                    width: bottomFrame.width,
+                    height: bottomFrame.height + TaskbarPanelLayout.cursorSeamOverlap))
         #expect(sideFrame.minY == 0)
         #expect(sideFrame.minX == 1_520)
         #expect(sideFrame.width == 1_360)

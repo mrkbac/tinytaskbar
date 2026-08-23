@@ -433,7 +433,9 @@ struct PermissionTests {
         #expect(separator.frame.isFiniteGeometry)
         #expect(separator.frame.minX == contentView.bounds.minX)
         #expect(separator.frame.width == contentView.bounds.width)
-        #expect(separator.frame.maxY == contentView.bounds.maxY)
+        #expect(
+            separator.frame.maxY
+                == TaskbarPanelLayout.visualBounds(in: contentView.bounds).maxY)
         #expect(separator.frame.height == TaskbarPanelLayout.topSeparatorHeight)
         #expect(separator.layer?.backgroundColor != nil)
         #expect(
@@ -548,7 +550,7 @@ struct PermissionTests {
         #expect(activatedItem?.id == item.id)
     }
 
-    @Test("taskbar restores the arrow cursor after crossing a window resize border")
+    @Test("taskbar owns the window resize seam without growing its visible content")
     @MainActor
     func taskbarRestoresArrowCursor() {
         let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
@@ -557,6 +559,8 @@ struct PermissionTests {
             NSCursor.arrow.set()
             panel.close()
         }
+        panel.update(frame: frame, items: [])
+        panel.contentView?.layoutSubtreeIfNeeded()
 
         guard
             let event = NSEvent.mouseEvent(
@@ -574,6 +578,24 @@ struct PermissionTests {
             return
         }
 
+        guard let contentView = panel.contentView,
+            let separator = allSubviews(of: contentView).first(where: {
+                $0.identifier?.rawValue == TaskbarPanelLayout.topSeparatorIdentifier
+            })
+        else {
+            Issue.record("taskbar seam fixture was not rendered")
+            return
+        }
+
+        let interactionFrame = TaskbarPanelLayout.interactionFrame(for: frame)
+        let shieldPoint = NSPoint(
+            x: contentView.bounds.midX,
+            y: contentView.bounds.maxY - TaskbarPanelLayout.cursorSeamOverlap / 2)
+        #expect(panel.frame == interactionFrame)
+        #expect(!panel.isOpaque)
+        #expect(separator.frame.maxY == TaskbarPanelLayout.defaultHeight)
+        #expect(shieldPoint.y > separator.frame.maxY)
+        #expect(contentView.hitTest(shieldPoint) === contentView)
         #expect(panel.acceptsMouseMovedEvents)
         NSCursor.resizeUpDown.set()
         panel.sendEvent(event)

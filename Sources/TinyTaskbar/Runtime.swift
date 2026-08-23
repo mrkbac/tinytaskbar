@@ -1357,14 +1357,14 @@ final class TaskbarPanel: NSPanel {
             canExecuteApplicationCommand: canExecuteApplicationCommand,
             onApplicationCommand: onApplicationCommand)
         super.init(
-            contentRect: frame,
+            contentRect: TaskbarPanelLayout.interactionFrame(for: frame),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
 
-        isOpaque = true
-        backgroundColor = .windowBackgroundColor
+        isOpaque = false
+        backgroundColor = .clear
         hasShadow = false
         level = .statusBar
         collectionBehavior = [
@@ -1402,7 +1402,8 @@ final class TaskbarPanel: NSPanel {
         items: [TaskbarItem],
         indicators: ApplicationIndicatorSnapshot = .empty
     ) {
-        if self.frame != frame { setFrame(frame, display: false) }
+        let interactionFrame = TaskbarPanelLayout.interactionFrame(for: frame)
+        if self.frame != interactionFrame { setFrame(interactionFrame, display: false) }
         barView.update(items: items, indicators: indicators)
         barView.layoutSubtreeIfNeeded()
     }
@@ -2326,6 +2327,17 @@ private final class TaskbarBarView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.intersection(TaskbarPanelLayout.visualBounds(in: bounds)).fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Preserve the bottom edge as a Fitts's-law target. The visible controls
         // remain vertically inset, but the otherwise empty strip at y == 0 must
@@ -2347,28 +2359,29 @@ private final class TaskbarBarView: NSView {
 
     override func layout() {
         super.layout()
-        let availableHeight = max(0, bounds.height)
+        let visualBounds = TaskbarPanelLayout.visualBounds(in: bounds)
+        let availableHeight = max(0, visualBounds.height)
         let separatorHeight = min(TaskbarPanelLayout.topSeparatorHeight, availableHeight)
         let verticalInset = min(
             TaskbarPanelLayout.contentVerticalInset,
             max(0, (availableHeight - separatorHeight) / 2)
         )
         separatorView.frame = NSRect(
-            x: bounds.minX,
-            y: bounds.maxY - separatorHeight,
-            width: max(0, bounds.width),
+            x: visualBounds.minX,
+            y: visualBounds.maxY - separatorHeight,
+            width: max(0, visualBounds.width),
             height: separatorHeight
         )
 
-        let contentMinY = bounds.minY + verticalInset
+        let contentMinY = visualBounds.minY + verticalInset
         let contentMaxY = max(
             contentMinY,
-            bounds.maxY - separatorHeight - verticalInset
+            visualBounds.maxY - separatorHeight - verticalInset
         )
         let contentFrame = NSRect(
-            x: bounds.minX,
+            x: visualBounds.minX,
             y: contentMinY,
-            width: max(0, bounds.width),
+            width: max(0, visualBounds.width),
             height: max(0, contentMaxY - contentMinY)
         )
         scrollView.frame = contentFrame

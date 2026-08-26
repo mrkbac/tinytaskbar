@@ -247,6 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onWindowCommand: { [weak self] command in
                 self?.store.execute(command)
             },
+            fullscreenCapability: { [weak self] item in
+                self?.store.fullscreenCapability(for: item)
+            },
             applicationMenuCommands: { [weak self] item in
                 self?.store.applicationMenuCommands(for: item) ?? []
             },

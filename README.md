@@ -21,7 +21,7 @@ thumbnails, visual clutter, or a browser runtime.
   shrink, then scroll horizontally.
 - **Direct control** — click to focus or restore; click the focused window to
   minimize; drag-hover to raise a drop target; hover or right-click for close and the
-  app's Command-N/Command-T actions.
+  app's Command-N-family/Command-T actions, plus fullscreen when the window exposes it.
 - **Display-aware** — windows appear only on their physical display, and only the
   display occupied by a fullscreen window hides its taskbar.
 - **Quiet system integration** — stays out of Mission Control, remains attached to
@@ -35,7 +35,7 @@ thumbnails, visual clutter, or a browser runtime.
 | Click the focused window | Minimize it |
 | Drag-hover over a window | Raise it without ending the drag |
 | Hover | Show its full title and available tab or close actions |
-| Right-click | Use the app's Command-N/Command-T actions, or minimize, restore, and close |
+| Right-click | Use available app commands, or minimize, restore, enter/exit fullscreen, and close |
 
 Settings and Quit live only in the menu-bar icon.
 

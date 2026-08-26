@@ -125,6 +125,66 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
+    @Test("Taskbar window menu exposes the exact window fullscreen capability")
+    @MainActor
+    func taskbarContextMenuTogglesFullscreenWhenExposed() {
+        let item = TaskbarItem(
+            id: "fullscreen-window",
+            pid: 42,
+            applicationName: "Editor",
+            title: "Document",
+            displayIdentifier: "main",
+            cgWindowNumber: 7,
+            isActive: false
+        )
+        var command: WindowCommand?
+        let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { _ in },
+            onWindowCommand: { command = $0 },
+            fullscreenCapability: { _ in
+                WindowFullscreenCapability(isFullscreen: false, isSettable: true)
+            }
+        )
+        defer { panel.close() }
+        update(panel, frame: frame, items: [item])
+        panel.contentView?.layoutSubtreeIfNeeded()
+
+        guard let button = taskbarButtons(in: panel).first,
+            let enterMenu = button.onMenuRequested?(),
+            enterMenu.items.count == 4,
+            let action = enterMenu.items[1].action
+        else {
+            Issue.record("fullscreen context command was not rendered")
+            return
+        }
+        #expect(enterMenu.items.map(\.title) == ["Minimize", "Enter Full Screen", "", "Close"])
+        #expect(enterMenu.items[1].isEnabled)
+        #expect(
+            NSApplication.shared.sendAction(
+                action, to: enterMenu.items[1].target, from: enterMenu.items[1]))
+        #expect(command == .setFullscreen(item, true))
+
+        let readOnlyPanel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { _ in },
+            fullscreenCapability: { _ in
+                WindowFullscreenCapability(isFullscreen: true, isSettable: false)
+            }
+        )
+        defer { readOnlyPanel.close() }
+        update(readOnlyPanel, frame: frame, items: [item])
+        guard let exitMenu = taskbarButtons(in: readOnlyPanel).first?.onMenuRequested?() else {
+            Issue.record("fullscreen context command did not refresh")
+            return
+        }
+        #expect(exitMenu.items[1].title == "Exit Full Screen")
+        #expect(!exitMenu.items[1].isEnabled)
+    }
+
     @Test("taskbar context menu stays anchored to the right-click location")
     @MainActor
     func taskbarContextMenuStaysAtRightClick() {
@@ -151,10 +211,13 @@ struct PermissionTests {
             cgWindowNumber: 7,
             isActive: false
         )
+        let newDocumentCommand = ApplicationMenuCommand(
+            title: "New Text File", commandCharacter: "n", commandModifiers: 0)
         let newWindowCommand = ApplicationMenuCommand(
-            title: "New Editor Window", commandCharacter: "n")
+            title: "New Editor Window", commandCharacter: "n",
+            commandModifiers: AXMenuItemModifiers.shift.rawValue)
         let newTabCommand = ApplicationMenuCommand(
-            title: "New Tab", commandCharacter: "t")
+            title: "New Tab", commandCharacter: "t", commandModifiers: 0)
         var requestedItem: TaskbarItem?
         var applicationCommands: [ApplicationCommand] = []
         let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
@@ -164,7 +227,7 @@ struct PermissionTests {
             onClose: { _ in },
             applicationMenuCommands: {
                 requestedItem = $0
-                return [newWindowCommand, newTabCommand]
+                return [newDocumentCommand, newWindowCommand, newTabCommand]
             },
             onApplicationCommand: { applicationCommands.append($0) }
         )
@@ -175,9 +238,11 @@ struct PermissionTests {
         #expect(requestedItem == nil)
         guard let button = taskbarButtons(in: panel).first,
             let menu = button.onMenuRequested?(),
-            let newWindowItem = menu.items.first,
+            let newDocumentItem = menu.items.first,
+            let newDocumentAction = newDocumentItem.action,
+            let newWindowItem = menu.items.dropFirst().first,
             let newWindowAction = newWindowItem.action,
-            let newTabItem = menu.items.dropFirst().first,
+            let newTabItem = menu.items.dropFirst(2).first,
             let newTabAction = newTabItem.action
         else {
             Issue.record("supported application menu commands were not rendered")
@@ -187,8 +252,11 @@ struct PermissionTests {
         #expect(requestedItem == item)
         #expect(
             menu.items.map(\.title) == [
-                "New Editor Window", "New Tab", "", "Minimize", "", "Close",
+                "New Text File", "New Editor Window", "New Tab", "", "Minimize", "", "Close",
             ])
+        #expect(
+            NSApplication.shared.sendAction(
+                newDocumentAction, to: newDocumentItem.target, from: newDocumentItem))
         #expect(
             NSApplication.shared.sendAction(
                 newWindowAction, to: newWindowItem.target, from: newWindowItem))
@@ -197,6 +265,7 @@ struct PermissionTests {
                 newTabAction, to: newTabItem.target, from: newTabItem))
         #expect(
             applicationCommands == [
+                .performMenuCommand(item, newDocumentCommand),
                 .performMenuCommand(item, newWindowCommand),
                 .performMenuCommand(item, newTabCommand),
             ])
@@ -965,7 +1034,7 @@ struct PermissionTests {
             ])
     }
 
-    @Test("Application menu matching accepts unique exact Command-N and Command-T shortcuts")
+    @Test("Application menu matching accepts unique Command-N family and Command-T shortcuts")
     func newWindowMenuCommandMatching() {
         let commandN = ApplicationMenuItemDescriptor(
             title: "Nouveau document", commandCharacter: "n", commandModifiers: 0,
@@ -994,11 +1063,16 @@ struct PermissionTests {
         #expect(
             ApplicationMenuCommandMatcher.command(for: commandN)
                 == ApplicationMenuCommand(
-                    title: "Nouveau document", commandCharacter: "n"))
+                    title: "Nouveau document", commandCharacter: "n", commandModifiers: 0))
         #expect(
             ApplicationMenuCommandMatcher.command(for: commandT)
-                == ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t"))
-        #expect(ApplicationMenuCommandMatcher.command(for: shifted) == nil)
+                == ApplicationMenuCommand(
+                    title: "Neuer Tab", commandCharacter: "t", commandModifiers: 0))
+        #expect(
+            ApplicationMenuCommandMatcher.command(for: shifted)
+                == ApplicationMenuCommand(
+                    title: "New Window", commandCharacter: "n",
+                    commandModifiers: AXMenuItemModifiers.shift.rawValue))
         #expect(ApplicationMenuCommandMatcher.command(for: disabled) == nil)
         #expect(ApplicationMenuCommandMatcher.command(for: wrongAction) == nil)
         #expect(ApplicationMenuCommandMatcher.command(for: wrongShortcut) == nil)
@@ -1006,12 +1080,24 @@ struct PermissionTests {
         #expect(
             ApplicationMenuCommandMatcher.uniqueCommands(in: [commandT, commandN]) == [
                 ApplicationMenuCommand(
-                    title: "Nouveau document", commandCharacter: "n"),
-                ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t"),
+                    title: "Nouveau document", commandCharacter: "n", commandModifiers: 0),
+                ApplicationMenuCommand(
+                    title: "Neuer Tab", commandCharacter: "t", commandModifiers: 0),
             ])
         #expect(
             ApplicationMenuCommandMatcher.uniqueCommands(in: [commandN, commandN, commandT]) == [
-                ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t")
+                ApplicationMenuCommand(
+                    title: "Neuer Tab", commandCharacter: "t", commandModifiers: 0)
+            ])
+        #expect(
+            ApplicationMenuCommandMatcher.uniqueCommands(in: [commandT, shifted, commandN]) == [
+                ApplicationMenuCommand(
+                    title: "Nouveau document", commandCharacter: "n", commandModifiers: 0),
+                ApplicationMenuCommand(
+                    title: "New Window", commandCharacter: "n",
+                    commandModifiers: AXMenuItemModifiers.shift.rawValue),
+                ApplicationMenuCommand(
+                    title: "Neuer Tab", commandCharacter: "t", commandModifiers: 0),
             ])
     }
 
@@ -1111,6 +1197,36 @@ struct PermissionTests {
                 in: [kAXShowAlternateUIAction as String, kAXShowDefaultUIAction as String]))
     }
 
+    @Test("Fullscreen capability distinguishes exposed, read-only, and inconclusive attributes")
+    func fullscreenCapabilityRequiresSuccessfulBooleanRead() {
+        #expect(
+            AXFullscreenCapabilityResolver.resolve(
+                readError: .success,
+                value: false,
+                settableError: .success,
+                isSettable: true)
+                == WindowFullscreenCapability(isFullscreen: false, isSettable: true))
+        #expect(
+            AXFullscreenCapabilityResolver.resolve(
+                readError: .success,
+                value: true,
+                settableError: .cannotComplete,
+                isSettable: true)
+                == WindowFullscreenCapability(isFullscreen: true, isSettable: false))
+        #expect(
+            AXFullscreenCapabilityResolver.resolve(
+                readError: .attributeUnsupported,
+                value: false,
+                settableError: .success,
+                isSettable: true) == nil)
+        #expect(
+            AXFullscreenCapabilityResolver.resolve(
+                readError: .success,
+                value: nil,
+                settableError: .success,
+                isSettable: true) == nil)
+    }
+
     @Test("hover tracking emits balanced enter and exit events")
     @MainActor
     func hoverTrackingEvents() {
@@ -1193,7 +1309,8 @@ struct PermissionTests {
     func applicationMenuCommandUsesCurrentItem() {
         let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
         let menuCommand = ApplicationMenuCommand(
-            title: "New Fixture Window", commandCharacter: "n")
+            title: "New Fixture Window", commandCharacter: "n",
+            commandModifiers: AXMenuItemModifiers.shift.rawValue)
         provider.applicationMenuCommandsValue = [menuCommand]
         let store = TaskbarStore(provider: provider)
         defer { store.stop() }
@@ -1210,6 +1327,31 @@ struct PermissionTests {
         #expect(provider.applicationMenuCommandItemIDs == [item.id])
         #expect(provider.performedApplicationMenuCommands.map(\.itemID) == [item.id])
         #expect(provider.performedApplicationMenuCommands.map(\.command) == [menuCommand])
+    }
+
+    @Test("Fullscreen capability and execution stay scoped to the current exact item")
+    @MainActor
+    func fullscreenCommandUsesCurrentItem() {
+        let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
+        provider.fullscreenCapabilityValue = WindowFullscreenCapability(
+            isFullscreen: false, isSettable: true)
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let item = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("fixture item was not projected")
+            return
+        }
+
+        #expect(
+            store.fullscreenCapability(for: item)
+                == WindowFullscreenCapability(isFullscreen: false, isSettable: true))
+        store.execute(.setFullscreen(item, true))
+
+        #expect(provider.fullscreenCapabilityItemIDs == [item.id])
+        #expect(provider.fullscreenUpdates.map(\.itemID) == [item.id])
+        #expect(provider.fullscreenUpdates.map(\.fullscreen) == [true])
     }
 
     @Test("standard titled presentation remains vertically contained")
@@ -2827,6 +2969,9 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var events: [Event] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
     var applicationMenuCommandsValue: [ApplicationMenuCommand] = []
+    var fullscreenCapabilityValue: WindowFullscreenCapability?
+    var fullscreenCapabilityItemIDs: [String] = []
+    var fullscreenUpdates: [(itemID: String, fullscreen: Bool)] = []
     var applicationMenuCommandItemIDs: [String] = []
     var performedApplicationMenuCommands: [(itemID: String, command: ApplicationMenuCommand)] = []
     var invalidatedPIDs: [pid_t] = []
@@ -2882,6 +3027,15 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
         minimizeCount += 1
         minimizedItemIDs.append(item.id)
         events.append(.minimize(item.id))
+    }
+
+    func fullscreenCapability(for item: TaskbarItem) -> WindowFullscreenCapability? {
+        fullscreenCapabilityItemIDs.append(item.id)
+        return fullscreenCapabilityValue
+    }
+
+    func setFullscreen(_ fullscreen: Bool, for item: TaskbarItem) {
+        fullscreenUpdates.append((item.id, fullscreen))
     }
 
     func close(_: TaskbarItem) {

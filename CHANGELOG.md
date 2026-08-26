@@ -6,13 +6,15 @@
   inspecting or accepting the dragged content.
 - Keep window context menus full-height and anchored to the right-click location at
   the bottom edge of the screen.
+- Add Enter/Exit Full Screen beside Minimize when the exact window exposes the
+  `AXFullScreen` Accessibility attribute; keep read-only attributes visible but disabled.
 - Restore exactly identified hidden application windows after TinyTaskbar starts,
   without admitting ambiguous off-screen records.
 - Align the top separator with the taskbar edge while preserving the opaque pointer
   seam that blocks neighboring window resize cursors.
-- Show each application's own labels for its exact Command-N and Command-T menu
-  actions, including localized labels, while continuing to reject disabled,
-  non-actionable, and ambiguous shortcuts.
+- Show each application's own labels for its Command-N, Command-Shift-N, and
+  Command-T menu actions, including localized labels, while continuing to reject
+  disabled, non-actionable, and ambiguous shortcuts.
 
 ## 1.3.0
 

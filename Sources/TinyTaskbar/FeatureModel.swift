@@ -29,15 +29,22 @@ enum WindowCommand: Equatable, Sendable {
     case activate(TaskbarItem)
     case minimize(TaskbarItem)
     case restore(TaskbarItem)
+    case setFullscreen(TaskbarItem, Bool)
     case selectTab(TaskbarItem, TaskbarTab)
     case closeTab(TaskbarItem, TaskbarTab)
     case closeTabGroup(TaskbarItem)
     case close(TaskbarItem)
 }
 
+struct WindowFullscreenCapability: Equatable, Sendable {
+    let isFullscreen: Bool
+    let isSettable: Bool
+}
+
 struct ApplicationMenuCommand: Equatable, Sendable {
     let title: String
     let commandCharacter: String
+    let commandModifiers: UInt32
 }
 
 enum ApplicationCommand: Equatable, Sendable {

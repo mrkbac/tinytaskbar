@@ -592,7 +592,7 @@ final class TaskbarStore {
         let requestedItem: TaskbarItem
         switch command {
         case .activate(let item), .minimize(let item), .restore(let item),
-            .close(let item), .closeTabGroup(let item):
+            .close(let item), .closeTabGroup(let item), .setFullscreen(let item, _):
             requestedItem = item
         case .selectTab(let item, _), .closeTab(let item, _):
             requestedItem = item
@@ -607,6 +607,8 @@ final class TaskbarStore {
             provider.activate(item)
         case .minimize:
             provider.minimize(item)
+        case .setFullscreen(_, let fullscreen):
+            provider.setFullscreen(fullscreen, for: item)
         case .selectTab(_, let tab):
             provider.selectTab(tab, in: item)
         case .closeTab(_, let tab):
@@ -627,6 +629,15 @@ final class TaskbarStore {
         guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return [] }
         return provider.applicationMenuCommands(for: item)
+    }
+
+    func fullscreenCapability(
+        for requestedItem: TaskbarItem
+    ) -> WindowFullscreenCapability? {
+        guard accessibilityAvailable else { return nil }
+        guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
+        else { return nil }
+        return provider.fullscreenCapability(for: item)
     }
 
     func execute(_ command: ApplicationCommand) {
@@ -1339,6 +1350,9 @@ final class TaskbarPanel: NSPanel {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in },
+        fullscreenCapability: @escaping @MainActor (TaskbarItem) -> WindowFullscreenCapability? = {
+            _ in nil
+        },
         applicationMenuCommands: @escaping @MainActor (TaskbarItem) -> [ApplicationMenuCommand] = {
             _ in []
         },
@@ -1348,6 +1362,7 @@ final class TaskbarPanel: NSPanel {
             onActivate: onActivate,
             onClose: onClose,
             onWindowCommand: onWindowCommand,
+            fullscreenCapability: fullscreenCapability,
             applicationMenuCommands: applicationMenuCommands,
             onApplicationCommand: onApplicationCommand)
         super.init(
@@ -2340,6 +2355,7 @@ private final class TaskbarBarView: NSView {
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
     private let onWindowCommand: @MainActor (WindowCommand) -> Void
+    private let fullscreenCapability: @MainActor (TaskbarItem) -> WindowFullscreenCapability?
     private let applicationMenuCommands: @MainActor (TaskbarItem) -> [ApplicationMenuCommand]
     private let onApplicationCommand: @MainActor (ApplicationCommand) -> Void
     private var currentIndicators = ApplicationIndicatorSnapshot.empty
@@ -2348,12 +2364,14 @@ private final class TaskbarBarView: NSView {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void,
+        fullscreenCapability: @escaping @MainActor (TaskbarItem) -> WindowFullscreenCapability?,
         applicationMenuCommands: @escaping @MainActor (TaskbarItem) -> [ApplicationMenuCommand],
         onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void
     ) {
         self.onActivate = onActivate
         self.onClose = onClose
         self.onWindowCommand = onWindowCommand
+        self.fullscreenCapability = fullscreenCapability
         self.applicationMenuCommands = applicationMenuCommands
         self.onApplicationCommand = onApplicationCommand
         super.init(frame: .zero)
@@ -2752,6 +2770,14 @@ private final class TaskbarBarView: NSView {
             windowMenuItem(
                 visibilityActionTitle, action: #selector(toggleMinimize(_:)),
                 item: item))
+        if let capability = fullscreenCapability(item) {
+            let fullscreenItem = windowMenuItem(
+                capability.isFullscreen ? "Exit Full Screen" : "Enter Full Screen",
+                action: #selector(toggleFullscreen(_:)),
+                item: item)
+            fullscreenItem.isEnabled = capability.isSettable
+            menu.addItem(fullscreenItem)
+        }
         menu.addItem(.separator())
         let closeTitle = item.nativeTabs.count > 1 ? "Close All Tabs" : "Close"
         menu.addItem(windowMenuItem(closeTitle, action: #selector(closeWindow(_:)), item: item))
@@ -2843,5 +2869,12 @@ private final class TaskbarBarView: NSView {
         guard let item = currentItem(sender) else { return }
         onWindowCommand(
             item.isHidden || item.isMinimized ? .restore(item) : .minimize(item))
+    }
+
+    @objc private func toggleFullscreen(_ sender: NSMenuItem) {
+        guard let item = currentItem(sender), let capability = fullscreenCapability(item),
+            capability.isSettable
+        else { return }
+        onWindowCommand(.setFullscreen(item, !capability.isFullscreen))
     }
 }

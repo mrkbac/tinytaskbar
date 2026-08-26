@@ -119,6 +119,8 @@ protocol WindowSnapshotProvider: AnyObject {
     func closeTab(_ tab: TaskbarTab, in item: TaskbarItem)
     func closeTabGroup(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
+    func fullscreenCapability(for item: TaskbarItem) -> WindowFullscreenCapability?
+    func setFullscreen(_ fullscreen: Bool, for item: TaskbarItem)
     func close(_ item: TaskbarItem)
     func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand]
     func performApplicationMenuCommand(_ command: ApplicationMenuCommand, for item: TaskbarItem)
@@ -130,6 +132,8 @@ extension WindowSnapshotProvider {
     func invalidateApplication(_: pid_t) {}
     func invalidateAllApplications() {}
     func invalidateWindowServer() {}
+    func fullscreenCapability(for _: TaskbarItem) -> WindowFullscreenCapability? { nil }
+    func setFullscreen(_: Bool, for _: TaskbarItem) {}
     func applicationMenuCommands(for _: TaskbarItem) -> [ApplicationMenuCommand] { [] }
     func performApplicationMenuCommand(_: ApplicationMenuCommand, for _: TaskbarItem) {}
 }
@@ -325,6 +329,24 @@ enum AXActionSupport {
     }
 }
 
+enum AXFullscreenCapabilityResolver {
+    static func resolve(
+        readError: AXError,
+        value: Bool?,
+        settableError: AXError,
+        isSettable: Bool
+    ) -> WindowFullscreenCapability? {
+        guard readError == .success, let value else { return nil }
+        return WindowFullscreenCapability(
+            isFullscreen: value,
+            isSettable: settableError == .success && isSettable)
+    }
+}
+
+private enum AXWindowAttribute {
+    static let fullscreen = NSAccessibility.Attribute(rawValue: "AXFullScreen").rawValue
+}
+
 struct ApplicationMenuItemDescriptor: Equatable, Sendable {
     let title: String
     let commandCharacter: String?
@@ -334,29 +356,45 @@ struct ApplicationMenuItemDescriptor: Equatable, Sendable {
 }
 
 enum ApplicationMenuCommandMatcher {
-    private static let supportedCommandCharacters = ["n", "t"]
+    private struct Shortcut {
+        let commandCharacter: String
+        let commandModifiers: UInt32
+    }
+
+    private static let supportedShortcuts = [
+        Shortcut(commandCharacter: "n", commandModifiers: 0),
+        Shortcut(
+            commandCharacter: "n",
+            commandModifiers: AXMenuItemModifiers.shift.rawValue),
+        Shortcut(commandCharacter: "t", commandModifiers: 0),
+    ]
 
     static func command(for item: ApplicationMenuItemDescriptor) -> ApplicationMenuCommand? {
         guard item.isEnabled,
             AXActionSupport.contains(kAXPressAction, in: item.actions),
             let commandCharacter = item.commandCharacter?.lowercased(),
-            supportedCommandCharacters.contains(commandCharacter),
-            item.commandModifiers == 0,
+            let commandModifiers = item.commandModifiers,
+            supportedShortcuts.contains(where: {
+                $0.commandCharacter == commandCharacter
+                    && $0.commandModifiers == commandModifiers
+            }),
             !item.title.isEmpty
         else { return nil }
 
         return ApplicationMenuCommand(
             title: item.title,
-            commandCharacter: commandCharacter)
+            commandCharacter: commandCharacter,
+            commandModifiers: commandModifiers)
     }
 
     static func uniqueCommands(
         in items: [ApplicationMenuItemDescriptor]
     ) -> [ApplicationMenuCommand] {
         let commands = items.compactMap(command(for:))
-        return supportedCommandCharacters.compactMap { commandCharacter in
+        return supportedShortcuts.compactMap { shortcut in
             let matches = commands.filter {
-                $0.commandCharacter == commandCharacter
+                $0.commandCharacter == shortcut.commandCharacter
+                    && $0.commandModifiers == shortcut.commandModifiers
             }
             return matches.count == 1 ? matches[0] : nil
         }
@@ -1075,6 +1113,49 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         publishChange(.ordinary, for: item.pid)
     }
 
+    func fullscreenCapability(for item: TaskbarItem) -> WindowFullscreenCapability? {
+        guard let element = actionableElement(for: item) else { return nil }
+        var rawValue: CFTypeRef?
+        let readError = AXUIElementCopyAttributeValue(
+            element, AXWindowAttribute.fullscreen as CFString, &rawValue)
+        let value = (rawValue as? NSNumber)?.boolValue
+        guard readError == .success, value != nil else {
+            return AXFullscreenCapabilityResolver.resolve(
+                readError: readError,
+                value: value,
+                settableError: .failure,
+                isSettable: false)
+        }
+        var isSettable = DarwinBoolean(false)
+        let settableError = AXUIElementIsAttributeSettable(
+            element, AXWindowAttribute.fullscreen as CFString, &isSettable)
+        return AXFullscreenCapabilityResolver.resolve(
+            readError: readError,
+            value: value,
+            settableError: settableError,
+            isSettable: isSettable.boolValue)
+    }
+
+    func setFullscreen(_ fullscreen: Bool, for item: TaskbarItem) {
+        guard let element = actionableElement(for: item) else {
+            logger.debug(
+                "Fullscreen update skipped because AX reference is stale for \(item.id, privacy: .public)"
+            )
+            return
+        }
+        let error = AXUIElementSetAttributeValue(
+            element,
+            AXWindowAttribute.fullscreen as CFString,
+            fullscreen ? kCFBooleanTrue : kCFBooleanFalse
+        )
+        if error != .success {
+            logger.debug(
+                "Fullscreen update failed pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
+            )
+        }
+        publishChange(.ordinary, for: item.pid)
+    }
+
     func close(_ item: TaskbarItem) {
         guard let element = actionableElement(for: item) else {
             logger.debug(
@@ -1271,8 +1352,6 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
 @MainActor
 private final class AXWindowInspector {
-    private static let fullscreenAttribute =
-        NSAccessibility.Attribute(rawValue: "AXFullScreen").rawValue
     private static let windowAttributes: [String] = [
         kAXRoleAttribute,
         kAXSubroleAttribute,
@@ -1391,7 +1470,7 @@ private final class AXWindowInspector {
                 frame: AXScreenCoordinateMapper.toCGScreen(axFrame),
                 isHidden: boolValue(values[5]) ?? false,
                 isMinimized: boolValue(values[6]) ?? false,
-                isFullscreen: boolAttribute(Self.fullscreenAttribute, from: element) ?? false,
+                isFullscreen: boolAttribute(AXWindowAttribute.fullscreen, from: element) ?? false,
                 isFocused: boolValue(values[7]) ?? false,
                 isMain: boolValue(values[8]) ?? false
             )

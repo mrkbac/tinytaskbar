@@ -120,8 +120,8 @@ protocol WindowSnapshotProvider: AnyObject {
     func closeTabGroup(_ item: TaskbarItem)
     func minimize(_ item: TaskbarItem)
     func close(_ item: TaskbarItem)
-    func canOpenNewWindow(for item: TaskbarItem) -> Bool
-    func openNewWindow(for item: TaskbarItem)
+    func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand]
+    func performApplicationMenuCommand(_ command: ApplicationMenuCommand, for item: TaskbarItem)
     @discardableResult
     func setHeight(_ height: CGFloat, for item: TaskbarItem) -> Bool
 }
@@ -130,8 +130,8 @@ extension WindowSnapshotProvider {
     func invalidateApplication(_: pid_t) {}
     func invalidateAllApplications() {}
     func invalidateWindowServer() {}
-    func canOpenNewWindow(for _: TaskbarItem) -> Bool { false }
-    func openNewWindow(for _: TaskbarItem) {}
+    func applicationMenuCommands(for _: TaskbarItem) -> [ApplicationMenuCommand] { [] }
+    func performApplicationMenuCommand(_: ApplicationMenuCommand, for _: TaskbarItem) {}
 }
 
 @MainActor
@@ -333,69 +333,74 @@ struct ApplicationMenuItemDescriptor: Equatable, Sendable {
     let actions: [String]
 }
 
-enum NewWindowMenuCommandMatcher {
-    static func matches(
-        _ item: ApplicationMenuItemDescriptor,
-        applicationName: String?
-    ) -> Bool {
+enum ApplicationMenuCommandMatcher {
+    private static let supportedCommandCharacters = ["n", "t"]
+
+    static func command(for item: ApplicationMenuItemDescriptor) -> ApplicationMenuCommand? {
         guard item.isEnabled,
             AXActionSupport.contains(kAXPressAction, in: item.actions),
-            item.commandCharacter?.caseInsensitiveCompare("n") == .orderedSame,
-            let rawModifiers = item.commandModifiers,
-            !AXMenuItemModifiers(rawValue: rawModifiers).contains(.noCommand)
-        else { return false }
+            let commandCharacter = item.commandCharacter?.lowercased(),
+            supportedCommandCharacters.contains(commandCharacter),
+            item.commandModifiers == 0,
+            !item.title.isEmpty
+        else { return nil }
 
-        if item.title == "New Window" { return true }
-        guard let applicationName else { return false }
-        return item.title == "New \(applicationName) Window"
+        return ApplicationMenuCommand(
+            title: item.title,
+            commandCharacter: commandCharacter)
     }
 
-    static func uniqueMatchIndex(
-        in items: [ApplicationMenuItemDescriptor],
-        applicationName: String?
-    ) -> Int? {
-        let matchingIndices = items.indices.filter {
-            matches(items[$0], applicationName: applicationName)
+    static func uniqueCommands(
+        in items: [ApplicationMenuItemDescriptor]
+    ) -> [ApplicationMenuCommand] {
+        let commands = items.compactMap(command(for:))
+        return supportedCommandCharacters.compactMap { commandCharacter in
+            let matches = commands.filter {
+                $0.commandCharacter == commandCharacter
+            }
+            return matches.count == 1 ? matches[0] : nil
         }
-        return matchingIndices.count == 1 ? matchingIndices[0] : nil
     }
 }
 
 @MainActor
-private enum NewWindowMenuCommandResolver {
+private enum ApplicationMenuCommandResolver {
     private static let traversalLimit = 512
 
-    static func isAvailable(for pid: pid_t) -> Bool {
-        resolve(for: pid) != nil
+    static func commands(for pid: pid_t) -> [ApplicationMenuCommand] {
+        guard let menuItems = menuItems(for: pid) else { return [] }
+        return ApplicationMenuCommandMatcher.uniqueCommands(in: menuItems.map(\.descriptor))
     }
 
-    static func perform(for pid: pid_t) -> AXError {
-        guard let command = resolve(for: pid) else { return .actionUnsupported }
-        return AXUIElementPerformAction(command, kAXPressAction as CFString)
+    static func perform(_ command: ApplicationMenuCommand, for pid: pid_t) -> AXError {
+        guard let menuItems = menuItems(for: pid) else { return .actionUnsupported }
+        let matches = menuItems.filter {
+            ApplicationMenuCommandMatcher.command(for: $0.descriptor) == command
+        }
+        guard matches.count == 1 else { return .actionUnsupported }
+        return AXUIElementPerformAction(matches[0].element, kAXPressAction as CFString)
     }
 
-    private static func resolve(for pid: pid_t) -> AXUIElement? {
+    private static func menuItems(
+        for pid: pid_t
+    ) -> [(element: AXUIElement, descriptor: ApplicationMenuItemDescriptor)]? {
         let application = AXUIElementCreateApplication(pid)
         guard let menuBar = elementAttribute(kAXMenuBarAttribute, from: application) else {
             return nil
         }
-        let applicationName = NSRunningApplication(processIdentifier: pid)?.localizedName
 
         var pending = [menuBar]
-        var matches: [AXUIElement] = []
+        var menuItems: [(AXUIElement, ApplicationMenuItemDescriptor)] = []
         var visitedCount = 0
         while let element = pending.popLast(), visitedCount < traversalLimit {
             visitedCount += 1
-            if descriptor(for: element).map({
-                NewWindowMenuCommandMatcher.matches($0, applicationName: applicationName)
-            }) == true {
-                matches.append(element)
-                if matches.count > 1 { return nil }
+            if let descriptor = descriptor(for: element) {
+                menuItems.append((element, descriptor))
             }
             pending.append(contentsOf: elementArrayAttribute(kAXChildrenAttribute, from: element))
         }
         guard pending.isEmpty else { return nil }
-        return matches.count == 1 ? matches[0] : nil
+        return menuItems
     }
 
     private static func descriptor(for element: AXUIElement) -> ApplicationMenuItemDescriptor? {
@@ -543,24 +548,27 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         refreshWindowServer = true
     }
 
-    func canOpenNewWindow(for item: TaskbarItem) -> Bool {
-        NewWindowMenuCommandResolver.isAvailable(for: item.pid)
+    func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand] {
+        ApplicationMenuCommandResolver.commands(for: item.pid)
     }
 
-    func openNewWindow(for item: TaskbarItem) {
+    func performApplicationMenuCommand(
+        _ command: ApplicationMenuCommand,
+        for item: TaskbarItem
+    ) {
         guard let application = NSRunningApplication(processIdentifier: item.pid),
             !application.isTerminated
         else { return }
         if application.isHidden, !application.unhide() {
-            logger.debug("New Window could not unhide pid=\(item.pid, privacy: .public)")
+            logger.debug("menu command could not unhide pid=\(item.pid, privacy: .public)")
         }
         if !application.activate(options: []) {
-            logger.debug("New Window could not activate pid=\(item.pid, privacy: .public)")
+            logger.debug("menu command could not activate pid=\(item.pid, privacy: .public)")
         }
-        let error = NewWindowMenuCommandResolver.perform(for: item.pid)
+        let error = ApplicationMenuCommandResolver.perform(command, for: item.pid)
         guard error == .success else {
             logger.debug(
-                "New Window unavailable at execution pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
+                "menu command unavailable at execution pid=\(item.pid, privacy: .public) error=\(error.rawValue, privacy: .public)"
             )
             return
         }

@@ -247,8 +247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onWindowCommand: { [weak self] command in
                 self?.store.execute(command)
             },
-            canExecuteApplicationCommand: { [weak self] command in
-                self?.store.canExecute(command) ?? false
+            applicationMenuCommands: { [weak self] item in
+                self?.store.applicationMenuCommands(for: item) ?? []
             },
             onApplicationCommand: { [weak self] command in
                 self?.store.execute(command)

@@ -35,6 +35,11 @@ enum WindowCommand: Equatable, Sendable {
     case close(TaskbarItem)
 }
 
+struct ApplicationMenuCommand: Equatable, Sendable {
+    let title: String
+    let commandCharacter: String
+}
+
 enum ApplicationCommand: Equatable, Sendable {
-    case newWindow(TaskbarItem)
+    case performMenuCommand(TaskbarItem, ApplicationMenuCommand)
 }

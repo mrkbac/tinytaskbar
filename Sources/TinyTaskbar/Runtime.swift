@@ -622,33 +622,27 @@ final class TaskbarStore {
         requestRefresh()
     }
 
-    func canExecute(_ command: ApplicationCommand) -> Bool {
-        guard accessibilityAvailable else { return false }
-        let requestedItem: TaskbarItem
-        switch command {
-        case .newWindow(let item):
-            requestedItem = item
-        }
+    func applicationMenuCommands(for requestedItem: TaskbarItem) -> [ApplicationMenuCommand] {
+        guard accessibilityAvailable else { return [] }
         guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
-        else { return false }
-        return provider.canOpenNewWindow(for: item)
+        else { return [] }
+        return provider.applicationMenuCommands(for: item)
     }
 
     func execute(_ command: ApplicationCommand) {
         guard accessibilityAvailable else { return }
         let requestedItem: TaskbarItem
+        let menuCommand: ApplicationMenuCommand
         switch command {
-        case .newWindow(let item):
+        case .performMenuCommand(let item, let command):
             requestedItem = item
+            menuCommand = command
         }
         provider.invalidateApplication(requestedItem.pid)
         refreshNow()
         guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return }
-        switch command {
-        case .newWindow:
-            provider.openNewWindow(for: item)
-        }
+        provider.performApplicationMenuCommand(menuCommand, for: item)
         requestRefresh()
         requestWindowMutationConfirmation(applicationPID: item.pid)
     }
@@ -1345,8 +1339,8 @@ final class TaskbarPanel: NSPanel {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in },
-        canExecuteApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Bool = { _ in
-            false
+        applicationMenuCommands: @escaping @MainActor (TaskbarItem) -> [ApplicationMenuCommand] = {
+            _ in []
         },
         onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void = { _ in }
     ) {
@@ -1354,7 +1348,7 @@ final class TaskbarPanel: NSPanel {
             onActivate: onActivate,
             onClose: onClose,
             onWindowCommand: onWindowCommand,
-            canExecuteApplicationCommand: canExecuteApplicationCommand,
+            applicationMenuCommands: applicationMenuCommands,
             onApplicationCommand: onApplicationCommand)
         super.init(
             contentRect: TaskbarPanelLayout.interactionFrame(for: frame),
@@ -2251,6 +2245,11 @@ final class TaskbarScrollView: NSScrollView {
 
 @MainActor
 private final class TaskbarBarView: NSView {
+    private struct ApplicationMenuCommandTarget {
+        let itemID: String
+        let command: ApplicationMenuCommand
+    }
+
     private struct ApplicationIconKey: Hashable {
         let stableIdentity: String
 
@@ -2270,7 +2269,7 @@ private final class TaskbarBarView: NSView {
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
     private let onWindowCommand: @MainActor (WindowCommand) -> Void
-    private let canExecuteApplicationCommand: @MainActor (ApplicationCommand) -> Bool
+    private let applicationMenuCommands: @MainActor (TaskbarItem) -> [ApplicationMenuCommand]
     private let onApplicationCommand: @MainActor (ApplicationCommand) -> Void
     private var currentIndicators = ApplicationIndicatorSnapshot.empty
 
@@ -2278,13 +2277,13 @@ private final class TaskbarBarView: NSView {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void,
-        canExecuteApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Bool,
+        applicationMenuCommands: @escaping @MainActor (TaskbarItem) -> [ApplicationMenuCommand],
         onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void
     ) {
         self.onActivate = onActivate
         self.onClose = onClose
         self.onWindowCommand = onWindowCommand
-        self.canExecuteApplicationCommand = canExecuteApplicationCommand
+        self.applicationMenuCommands = applicationMenuCommands
         self.onApplicationCommand = onApplicationCommand
         super.init(frame: .zero)
 
@@ -2613,12 +2612,15 @@ private final class TaskbarBarView: NSView {
     ) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let newWindowCommand = ApplicationCommand.newWindow(item)
-        if includeApplicationCommands,
-            canExecuteApplicationCommand(newWindowCommand)
-        {
-            menu.addItem(
-                windowMenuItem("New Window", action: #selector(openNewWindow(_:)), item: item))
+        let menuCommands = includeApplicationCommands ? applicationMenuCommands(item) : []
+        for command in menuCommands {
+            let menuItem = self.menuItem(
+                command.title, action: #selector(performApplicationMenuCommand(_:)))
+            menuItem.representedObject = ApplicationMenuCommandTarget(
+                itemID: item.id, command: command)
+            menu.addItem(menuItem)
+        }
+        if !menuCommands.isEmpty {
             menu.addItem(.separator())
         }
         let visibilityActionTitle =
@@ -2702,9 +2704,11 @@ private final class TaskbarBarView: NSView {
         }
     }
 
-    @objc private func openNewWindow(_ sender: NSMenuItem) {
-        guard let item = currentItem(sender) else { return }
-        onApplicationCommand(.newWindow(item))
+    @objc private func performApplicationMenuCommand(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ApplicationMenuCommandTarget,
+            let item = currentItems.first(where: { $0.id == target.itemID })
+        else { return }
+        onApplicationCommand(.performMenuCommand(item, target.command))
     }
 
     private func currentItem(_ sender: NSMenuItem) -> TaskbarItem? {

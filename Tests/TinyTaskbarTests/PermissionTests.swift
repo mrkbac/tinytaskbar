@@ -125,9 +125,9 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
-    @Test("Taskbar window menu exposes a supported New Window application command")
+    @Test("Taskbar window menu copies supported application menu command labels")
     @MainActor
-    func taskbarContextMenuOpensNewApplicationWindow() {
+    func taskbarContextMenuCopiesApplicationMenuCommands() {
         let item = TaskbarItem(
             id: "context-window",
             pid: 42,
@@ -137,39 +137,55 @@ struct PermissionTests {
             cgWindowNumber: 7,
             isActive: false
         )
-        var availabilityCommand: ApplicationCommand?
-        var applicationCommand: ApplicationCommand?
+        let newWindowCommand = ApplicationMenuCommand(
+            title: "New Editor Window", commandCharacter: "n")
+        let newTabCommand = ApplicationMenuCommand(
+            title: "New Tab", commandCharacter: "t")
+        var requestedItem: TaskbarItem?
+        var applicationCommands: [ApplicationCommand] = []
         let frame = NSRect(x: 0, y: 0, width: 600, height: 30)
         let panel = TaskbarPanel(
             frame: frame,
             onActivate: { _ in },
             onClose: { _ in },
-            canExecuteApplicationCommand: {
-                availabilityCommand = $0
-                return true
+            applicationMenuCommands: {
+                requestedItem = $0
+                return [newWindowCommand, newTabCommand]
             },
-            onApplicationCommand: { applicationCommand = $0 }
+            onApplicationCommand: { applicationCommands.append($0) }
         )
         defer { panel.close() }
         update(panel, frame: frame, items: [item])
         panel.contentView?.layoutSubtreeIfNeeded()
 
-        #expect(availabilityCommand == nil)
+        #expect(requestedItem == nil)
         guard let button = taskbarButtons(in: panel).first,
             let menu = button.onMenuRequested?(),
             let newWindowItem = menu.items.first,
-            let action = newWindowItem.action
+            let newWindowAction = newWindowItem.action,
+            let newTabItem = menu.items.dropFirst().first,
+            let newTabAction = newTabItem.action
         else {
-            Issue.record("supported New Window command was not rendered")
+            Issue.record("supported application menu commands were not rendered")
             return
         }
 
-        #expect(availabilityCommand == .newWindow(item))
-        #expect(menu.items.map(\.title) == ["New Window", "", "Minimize", "", "Close"])
+        #expect(requestedItem == item)
+        #expect(
+            menu.items.map(\.title) == [
+                "New Editor Window", "New Tab", "", "Minimize", "", "Close",
+            ])
         #expect(
             NSApplication.shared.sendAction(
-                action, to: newWindowItem.target, from: newWindowItem))
-        #expect(applicationCommand == .newWindow(item))
+                newWindowAction, to: newWindowItem.target, from: newWindowItem))
+        #expect(
+            NSApplication.shared.sendAction(
+                newTabAction, to: newTabItem.target, from: newTabItem))
+        #expect(
+            applicationCommands == [
+                .performMenuCommand(item, newWindowCommand),
+                .performMenuCommand(item, newTabCommand),
+            ])
     }
 
     @Test("taskbar panels hide from Mission Control and remain attached to one Space")
@@ -883,13 +899,13 @@ struct PermissionTests {
             ])
     }
 
-    @Test("New Window menu matching requires a window title and Command-N shortcut")
+    @Test("Application menu matching accepts unique exact Command-N and Command-T shortcuts")
     func newWindowMenuCommandMatching() {
-        let supported = ApplicationMenuItemDescriptor(
-            title: "New Window", commandCharacter: "n", commandModifiers: 0,
+        let commandN = ApplicationMenuItemDescriptor(
+            title: "Nouveau document", commandCharacter: "n", commandModifiers: 0,
             isEnabled: true, actions: [kAXPressAction])
-        let appQualified = ApplicationMenuItemDescriptor(
-            title: "New Finder Window", commandCharacter: "N", commandModifiers: 0,
+        let commandT = ApplicationMenuItemDescriptor(
+            title: "Neuer Tab", commandCharacter: "T", commandModifiers: 0,
             isEnabled: true, actions: [kAXPressAction])
         let shifted = ApplicationMenuItemDescriptor(
             title: "New Window", commandCharacter: "N",
@@ -901,32 +917,36 @@ struct PermissionTests {
         let wrongAction = ApplicationMenuItemDescriptor(
             title: "New Window", commandCharacter: "n", commandModifiers: 0,
             isEnabled: true, actions: [])
-        let wrongTitle = ApplicationMenuItemDescriptor(
-            title: "New File", commandCharacter: "n", commandModifiers: 0,
-            isEnabled: true, actions: [kAXPressAction])
         let wrongShortcut = ApplicationMenuItemDescriptor(
-            title: "New Window", commandCharacter: "t", commandModifiers: 0,
+            title: "Open", commandCharacter: "o", commandModifiers: 0,
             isEnabled: true, actions: [kAXPressAction])
         let noCommand = ApplicationMenuItemDescriptor(
             title: "New Window", commandCharacter: "n",
             commandModifiers: AXMenuItemModifiers.noCommand.rawValue,
             isEnabled: true, actions: [kAXPressAction])
 
-        #expect(NewWindowMenuCommandMatcher.matches(supported, applicationName: "Finder"))
-        #expect(NewWindowMenuCommandMatcher.matches(appQualified, applicationName: "Finder"))
-        #expect(NewWindowMenuCommandMatcher.matches(shifted, applicationName: nil))
-        #expect(!NewWindowMenuCommandMatcher.matches(appQualified, applicationName: "Safari"))
-        #expect(!NewWindowMenuCommandMatcher.matches(disabled, applicationName: nil))
-        #expect(!NewWindowMenuCommandMatcher.matches(wrongAction, applicationName: nil))
-        #expect(!NewWindowMenuCommandMatcher.matches(wrongTitle, applicationName: nil))
-        #expect(!NewWindowMenuCommandMatcher.matches(wrongShortcut, applicationName: nil))
-        #expect(!NewWindowMenuCommandMatcher.matches(noCommand, applicationName: nil))
         #expect(
-            NewWindowMenuCommandMatcher.uniqueMatchIndex(
-                in: [wrongTitle, supported], applicationName: nil) == 1)
+            ApplicationMenuCommandMatcher.command(for: commandN)
+                == ApplicationMenuCommand(
+                    title: "Nouveau document", commandCharacter: "n"))
         #expect(
-            NewWindowMenuCommandMatcher.uniqueMatchIndex(
-                in: [supported, supported], applicationName: nil) == nil)
+            ApplicationMenuCommandMatcher.command(for: commandT)
+                == ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t"))
+        #expect(ApplicationMenuCommandMatcher.command(for: shifted) == nil)
+        #expect(ApplicationMenuCommandMatcher.command(for: disabled) == nil)
+        #expect(ApplicationMenuCommandMatcher.command(for: wrongAction) == nil)
+        #expect(ApplicationMenuCommandMatcher.command(for: wrongShortcut) == nil)
+        #expect(ApplicationMenuCommandMatcher.command(for: noCommand) == nil)
+        #expect(
+            ApplicationMenuCommandMatcher.uniqueCommands(in: [commandT, commandN]) == [
+                ApplicationMenuCommand(
+                    title: "Nouveau document", commandCharacter: "n"),
+                ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t"),
+            ])
+        #expect(
+            ApplicationMenuCommandMatcher.uniqueCommands(in: [commandN, commandN, commandT]) == [
+                ApplicationMenuCommand(title: "Neuer Tab", commandCharacter: "t")
+            ])
     }
 
     @Test("actionable references survive only exact live physical identity gaps")
@@ -1102,11 +1122,13 @@ struct PermissionTests {
         #expect(provider.closedGroupIDs == [item.id])
     }
 
-    @Test("New Window capability and execution stay scoped to the selected application")
+    @Test("Application menu capability and execution stay scoped to the selected application")
     @MainActor
-    func newWindowCommandUsesCurrentItem() {
+    func applicationMenuCommandUsesCurrentItem() {
         let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
-        provider.newWindowAvailable = true
+        let menuCommand = ApplicationMenuCommand(
+            title: "New Fixture Window", commandCharacter: "n")
+        provider.applicationMenuCommandsValue = [menuCommand]
         let store = TaskbarStore(provider: provider)
         defer { store.stop() }
         store.start(accessibilityTrusted: true)
@@ -1116,11 +1138,12 @@ struct PermissionTests {
             return
         }
 
-        #expect(store.canExecute(.newWindow(item)))
-        store.execute(.newWindow(item))
+        #expect(store.applicationMenuCommands(for: item) == [menuCommand])
+        store.execute(.performMenuCommand(item, menuCommand))
 
-        #expect(provider.newWindowAvailabilityItemIDs == [item.id])
-        #expect(provider.openedNewWindowItemIDs == [item.id])
+        #expect(provider.applicationMenuCommandItemIDs == [item.id])
+        #expect(provider.performedApplicationMenuCommands.map(\.itemID) == [item.id])
+        #expect(provider.performedApplicationMenuCommands.map(\.command) == [menuCommand])
     }
 
     @Test("standard titled presentation remains vertically contained")
@@ -2737,9 +2760,9 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var minimizedItemIDs: [String] = []
     var events: [Event] = []
     var heightUpdates: [(itemID: String, height: CGFloat)] = []
-    var newWindowAvailable = false
-    var newWindowAvailabilityItemIDs: [String] = []
-    var openedNewWindowItemIDs: [String] = []
+    var applicationMenuCommandsValue: [ApplicationMenuCommand] = []
+    var applicationMenuCommandItemIDs: [String] = []
+    var performedApplicationMenuCommands: [(itemID: String, command: ApplicationMenuCommand)] = []
     var invalidatedPIDs: [pid_t] = []
     var invalidateAllCount = 0
     var invalidateWindowServerCount = 0
@@ -2799,13 +2822,16 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
         closeCount += 1
     }
 
-    func canOpenNewWindow(for item: TaskbarItem) -> Bool {
-        newWindowAvailabilityItemIDs.append(item.id)
-        return newWindowAvailable
+    func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand] {
+        applicationMenuCommandItemIDs.append(item.id)
+        return applicationMenuCommandsValue
     }
 
-    func openNewWindow(for item: TaskbarItem) {
-        openedNewWindowItemIDs.append(item.id)
+    func performApplicationMenuCommand(
+        _ command: ApplicationMenuCommand,
+        for item: TaskbarItem
+    ) {
+        performedApplicationMenuCommands.append((item.id, command))
     }
 
     @discardableResult

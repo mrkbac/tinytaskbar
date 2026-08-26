@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Raise an exact window after a 500 ms drag-hover over its taskbar button, without
+  inspecting or accepting the dragged content.
+- Keep window context menus full-height and anchored to the right-click location at
+  the bottom edge of the screen.
 - Restore exactly identified hidden application windows after TinyTaskbar starts,
   without admitting ambiguous off-screen records.
 - Align the top separator with the taskbar edge while preserving the opaque pointer

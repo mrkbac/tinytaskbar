@@ -1665,15 +1665,21 @@ private enum TaskbarSelectionAppearance {
 
 @MainActor
 final class TaskbarButton: TaskbarHoverButton {
+    private static let dragHoverActivationDelay = Duration.milliseconds(500)
+
     var contextualMenu: NSMenu?
     var itemID = ""
     var widthConstraint: NSLayoutConstraint?
     var heightConstraint: NSLayoutConstraint?
     var onMenuRequested: (@MainActor () -> NSMenu)?
+    var onDragHoverActivation: (@MainActor (TaskbarButton) -> Void)?
     var preferredIntrinsicHeight = TaskbarPanelLayout.contentHeight {
         didSet { invalidateIntrinsicContentSize() }
     }
     private(set) var presentsActiveFocus = false
+    private var activatedDraggingSequenceNumber: Int?
+    private var pendingDraggingSequenceNumber: Int?
+    private var dragHoverActivationTask: Task<Void, Never>?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1706,9 +1712,64 @@ final class TaskbarButton: TaskbarHoverButton {
         return refreshed
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        onPrimaryInteraction?(self)
+        guard let menu = menu(for: event), let window else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        let clickLocation = window.convertPoint(toScreen: event.locationInWindow)
+        let location = Self.contextMenuScreenLocation(
+            clickLocation: clickLocation,
+            menuSize: menu.size)
+        menu.popUp(positioning: nil, at: location, in: nil)
+    }
+
+    static func contextMenuScreenLocation(
+        clickLocation: NSPoint,
+        menuSize: NSSize
+    ) -> NSPoint {
+        NSPoint(x: clickLocation.x, y: clickLocation.y + menuSize.height)
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateFocusAppearance()
+    }
+
+    func beginDragHover(sequenceNumber: Int) {
+        guard activatedDraggingSequenceNumber != sequenceNumber,
+            pendingDraggingSequenceNumber != sequenceNumber
+        else { return }
+        cancelDragHover()
+        pendingDraggingSequenceNumber = sequenceNumber
+        dragHoverActivationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.dragHoverActivationDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.activatePendingDragHover(sequenceNumber: sequenceNumber)
+        }
+    }
+
+    func activatePendingDragHover(sequenceNumber: Int) {
+        guard pendingDraggingSequenceNumber == sequenceNumber,
+            activatedDraggingSequenceNumber != sequenceNumber
+        else { return }
+        pendingDraggingSequenceNumber = nil
+        dragHoverActivationTask?.cancel()
+        dragHoverActivationTask = nil
+        activatedDraggingSequenceNumber = sequenceNumber
+        onDragHoverActivation?(self)
+    }
+
+    func cancelDragHover() {
+        pendingDraggingSequenceNumber = nil
+        dragHoverActivationTask?.cancel()
+        dragHoverActivationTask = nil
+    }
+
+    func endDragHover() {
+        cancelDragHover()
+        activatedDraggingSequenceNumber = nil
     }
 
     func setActiveFocus(_ active: Bool) {
@@ -2245,6 +2306,15 @@ final class TaskbarScrollView: NSScrollView {
 
 @MainActor
 private final class TaskbarBarView: NSView {
+    private static let dragHoverPasteboardTypes: [NSPasteboard.PasteboardType] =
+        [
+            .fileURL, .URL, .string, .tiff, .png, .pdf, .rtf, .rtfd, .html,
+            .tabularText, .color, .sound,
+        ]
+        + NSFilePromiseReceiver.readableDraggedTypes.map {
+            NSPasteboard.PasteboardType($0)
+        }
+
     private struct ApplicationMenuCommandTarget {
         let itemID: String
         let command: ApplicationMenuCommand
@@ -2264,6 +2334,7 @@ private final class TaskbarBarView: NSView {
     private var currentItems: [TaskbarItem] = []
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var buttonsByID: [String: TaskbarButton] = [:]
+    private weak var dragHoverButton: TaskbarButton?
     private var iconCache: [ApplicationIconKey: NSImage] = [:]
     private let hoverPresenter = TaskbarHoverPresenter()
     private let onActivate: @MainActor (TaskbarItem) -> Void
@@ -2289,6 +2360,7 @@ private final class TaskbarBarView: NSView {
 
         wantsLayer = true
         layer?.cornerRadius = 0
+        registerForDraggedTypes(Self.dragHoverPasteboardTypes)
 
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -2348,6 +2420,48 @@ private final class TaskbarBarView: NSView {
             return
         }
         control.performClick(nil)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        updateDragHover(sender)
+        return []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        updateDragHover(sender)
+        return []
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dragHoverButton?.cancelDragHover()
+        dragHoverButton = nil
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        dragHoverButton?.cancelDragHover()
+        dragHoverButton = nil
+        for button in buttonsByID.values {
+            button.endDragHover()
+        }
+        super.draggingEnded(sender)
+    }
+
+    private func updateDragHover(_ sender: any NSDraggingInfo) {
+        let point = convert(sender.draggingLocation, from: nil)
+        let nextButton = dragHoverButton(at: point)
+        guard nextButton !== dragHoverButton else { return }
+        dragHoverButton?.cancelDragHover()
+        dragHoverButton = nextButton
+        nextButton?.beginDragHover(sequenceNumber: sender.draggingSequenceNumber)
+    }
+
+    private func dragHoverButton(at point: NSPoint) -> TaskbarButton? {
+        guard bounds.contains(point) else { return nil }
+        let stackPoint = stackView.convert(point, from: self)
+        return stackView.arrangedSubviews.compactMap { $0 as? TaskbarButton }.first {
+            stackPoint.x >= $0.frame.minX && stackPoint.x < $0.frame.maxX
+        }
     }
 
     override func layout() {
@@ -2531,6 +2645,15 @@ private final class TaskbarBarView: NSView {
         button.preferredIntrinsicHeight = TaskbarAppearance.buttonHeight
         button.onPrimaryInteraction = { [weak self] anchor in
             self?.hoverPresenter.hide(from: anchor)
+        }
+        button.onDragHoverActivation = { [weak self] windowButton in
+            guard let self,
+                let current = self.currentItems.first(where: {
+                    $0.id == windowButton.itemID
+                })
+            else { return }
+            self.hoverPresenter.hide(from: windowButton)
+            self.onWindowCommand(.activate(current))
         }
         button.onHoverChanged = { [weak self] anchor, hovering in
             guard let self, let windowButton = anchor as? TaskbarButton else { return }

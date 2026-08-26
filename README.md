@@ -20,7 +20,8 @@ thumbnails, visual clutter, or a browser runtime.
 - **Stable geometry** — balanced buttons keep their identity and order; crowded bars
   shrink, then scroll horizontally.
 - **Direct control** — click to focus or restore; click the focused window to
-  minimize; hover or right-click for close and the app's Command-N/Command-T actions.
+  minimize; drag-hover to raise a drop target; hover or right-click for close and the
+  app's Command-N/Command-T actions.
 - **Display-aware** — windows appear only on their physical display, and only the
   display occupied by a fullscreen window hides its taskbar.
 - **Quiet system integration** — stays out of Mission Control, remains attached to
@@ -32,6 +33,7 @@ thumbnails, visual clutter, or a browser runtime.
 | --- | --- |
 | Click a window | Focus or restore it |
 | Click the focused window | Minimize it |
+| Drag-hover over a window | Raise it without ending the drag |
 | Hover | Show its full title and available tab or close actions |
 | Right-click | Use the app's Command-N/Command-T actions, or minimize, restore, and close |
 

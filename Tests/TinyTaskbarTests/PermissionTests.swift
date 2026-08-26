@@ -125,6 +125,20 @@ struct PermissionTests {
         #expect(closedItem?.id == item.id)
     }
 
+    @Test("taskbar context menu stays anchored to the right-click location")
+    @MainActor
+    func taskbarContextMenuStaysAtRightClick() {
+        let clickLocation = NSPoint(x: 237, y: 14)
+        let menuSize = NSSize(width: 170, height: 122)
+
+        let location = TaskbarButton.contextMenuScreenLocation(
+            clickLocation: clickLocation,
+            menuSize: menuSize)
+
+        #expect(location.x == clickLocation.x)
+        #expect(location.y - menuSize.height == clickLocation.y)
+    }
+
     @Test("Taskbar window menu copies supported application menu command labels")
     @MainActor
     func taskbarContextMenuCopiesApplicationMenuCommands() {
@@ -267,6 +281,58 @@ struct PermissionTests {
         #expect(
             updatedFirst.widthConstraint?.constant
                 == TaskbarButtonLayout.preferredWidth)
+    }
+
+    @Test("drag hover activates the exact retained window once per drag")
+    @MainActor
+    func dragHoverActivatesExactWindowOnce() {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+        let first = makeTaskbarItem(id: "first", title: "First")
+        let second = makeTaskbarItem(id: "second", title: "Second")
+        var commands: [WindowCommand] = []
+        let panel = TaskbarPanel(
+            frame: frame,
+            onActivate: { _ in },
+            onClose: { _ in },
+            onWindowCommand: { commands.append($0) })
+        defer { panel.close() }
+
+        update(panel, frame: frame, items: [first, second])
+        panel.contentView?.layoutSubtreeIfNeeded()
+        guard
+            let secondButton = taskbarButtons(in: panel).first(where: {
+                $0.itemID == second.id
+            })
+        else {
+            Issue.record("second taskbar button was not rendered")
+            return
+        }
+        let dragDestination = panel.contentView.flatMap { contentView in
+            ([contentView] + allSubviews(of: contentView)).first {
+                $0.registeredDraggedTypes.contains(.fileURL)
+            }
+        }
+        #expect(dragDestination != nil)
+        #expect(!(dragDestination is TaskbarButton))
+        #expect(dragDestination?.registeredDraggedTypes.contains(.URL) == true)
+        #expect(dragDestination?.registeredDraggedTypes.contains(.string) == true)
+
+        secondButton.beginDragHover(sequenceNumber: 41)
+        secondButton.activatePendingDragHover(sequenceNumber: 41)
+        #expect(commands == [.activate(second)])
+
+        secondButton.beginDragHover(sequenceNumber: 41)
+        secondButton.activatePendingDragHover(sequenceNumber: 41)
+        #expect(commands == [.activate(second)])
+
+        secondButton.beginDragHover(sequenceNumber: 42)
+        secondButton.cancelDragHover()
+        secondButton.activatePendingDragHover(sequenceNumber: 42)
+        #expect(commands == [.activate(second)])
+
+        secondButton.beginDragHover(sequenceNumber: 42)
+        secondButton.activatePendingDragHover(sequenceNumber: 42)
+        #expect(commands == [.activate(second), .activate(second)])
     }
 
     @Test("focus and title changes never change taskbar button widths or positions")

@@ -954,15 +954,19 @@ enum WindowProjection {
             }
 
             // Only project windows with physical-window evidence. Normal windows must
-            // be on-screen; minimized windows may use their exact AX-derived CG window
-            // number to match an off-screen `.optionAll` record. AX-only minimized
-            // candidates remain excluded, so ambiguous tab siblings are never admitted
-            // through title/frame guesses alone. Hidden applications are retained by
-            // continuity only after their windows were physically observed on-screen;
-            // admitting every hidden off-screen record would also admit background tabs.
+            // be on-screen. Minimized and application-hidden windows may use an exact
+            // AX-derived CG window number to match an off-screen `.optionAll` record;
+            // candidates without that identity remain excluded, so ambiguous tab
+            // siblings are never admitted through title/frame guesses alone.
             guard let cgWindowIndex = assignments[candidateIndex] else { continue }
             let cgWindow = cgWindows[cgWindowIndex]
-            guard cgWindow.isOnScreen || candidate.isMinimized else { continue }
+            let hasExactPhysicalIdentity =
+                candidate.cgWindowNumber != nil
+                && candidate.cgWindowNumber == cgWindow.windowNumber
+            guard
+                cgWindow.isOnScreen || candidate.isMinimized
+                    || (candidate.applicationIsHidden && hasExactPhysicalIdentity)
+            else { continue }
 
             if !candidate.applicationIsHidden,
                 !candidate.isHidden,

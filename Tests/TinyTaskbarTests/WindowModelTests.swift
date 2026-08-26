@@ -449,8 +449,8 @@ struct WindowModelTests {
         #expect(item?.isMinimized == true)
     }
 
-    @Test("cold-start projection does not promote hidden off-screen records")
-    func hiddenWindowRequiresPriorOnScreenEvidence() {
+    @Test("cold-start projection includes an exactly identified hidden window")
+    func hiddenWindowWithIdentityIsProjected() {
         let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
         let display = DisplayDescriptor(
             identifier: "main",
@@ -459,6 +459,43 @@ struct WindowModelTests {
         let hidden = WindowCandidate(
             stableKey: "hidden",
             cgWindowNumber: 43,
+            pid: 10,
+            applicationName: "Editor",
+            applicationIsHidden: true,
+            title: "Document",
+            frame: frame
+        )
+        let offScreen = CGWindowMetadata(
+            windowNumber: 43,
+            ownerPID: 10,
+            bounds: frame,
+            title: "Document",
+            isOnScreen: false
+        )
+
+        let state = WindowProjection.project(
+            candidates: [hidden],
+            cgWindows: [offScreen],
+            displays: [display],
+            selfPID: 999
+        )
+
+        #expect(state.itemsByDisplay["main"]?.count == 1)
+        let item = state.itemsByDisplay["main"]?.first
+        #expect(item?.id == "hidden")
+        #expect(item?.cgWindowNumber == 43)
+        #expect(item?.isHidden == true)
+    }
+
+    @Test("cold-start projection rejects an ambiguous hidden off-screen record")
+    func hiddenWindowWithoutIdentityStaysExcluded() {
+        let frame = CGRect(x: 100, y: 100, width: 500, height: 300)
+        let display = DisplayDescriptor(
+            identifier: "main",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let hidden = WindowCandidate(
+            stableKey: "hidden",
             pid: 10,
             applicationName: "Editor",
             applicationIsHidden: true,

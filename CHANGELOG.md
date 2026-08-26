@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- Strengthened New Window capability detection with standard Command-N menu metadata
-  and app-qualified titles such as Finder's New Finder Window, while continuing to
-  reject disabled, non-actionable, and ambiguous commands.
+- Restore exactly identified hidden application windows after TinyTaskbar starts,
+  without admitting ambiguous off-screen records.
+- Align the top separator with the taskbar edge while preserving the opaque pointer
+  seam that blocks neighboring window resize cursors.
+- Show each application's own labels for its exact Command-N and Command-T menu
+  actions, including localized labels, while continuing to reject disabled,
+  non-actionable, and ambiguous shortcuts.
 
 ## 1.3.0
 

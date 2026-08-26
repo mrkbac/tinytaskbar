@@ -20,8 +20,7 @@ thumbnails, visual clutter, or a browser runtime.
 - **Stable geometry** — balanced buttons keep their identity and order; crowded bars
   shrink, then scroll horizontally.
 - **Direct control** — click to focus or restore; click the focused window to
-  minimize or switch back instantly; hover or right-click for close and supported
-  New Window actions.
+  minimize; hover or right-click for close and the app's Command-N/Command-T actions.
 - **Display-aware** — windows appear only on their physical display, and only the
   display occupied by a fullscreen window hides its taskbar.
 - **Quiet system integration** — stays out of Mission Control, remains attached to
@@ -32,9 +31,9 @@ thumbnails, visual clutter, or a browser runtime.
 | Action | Result |
 | --- | --- |
 | Click a window | Focus or restore it |
-| Click the focused window | Minimize it, or switch back without minimizing when Instant window switching is enabled |
+| Click the focused window | Minimize it |
 | Hover | Show its full title and available tab or close actions |
-| Right-click | Open a new app window when supported, or minimize, restore, and close |
+| Right-click | Use the app's Command-N/Command-T actions, or minimize, restore, and close |
 
 Settings and Quit live only in the menu-bar icon.
 

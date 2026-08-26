@@ -10,6 +10,8 @@
   the bottom edge of the screen.
 - Add Enter/Exit Full Screen beside Minimize when the exact window exposes the
   `AXFullScreen` Accessibility attribute; keep read-only attributes visible but disabled.
+- Show a draggable native document proxy in a hover card only when its exact window
+  exposes an existing local file through `AXDocument`; drags publish a copy-only file URL.
 - Restore exactly identified hidden application windows after TinyTaskbar starts,
   without admitting ambiguous off-screen records.
 - Align the top separator with the taskbar edge while preserving the opaque pointer

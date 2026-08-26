@@ -247,6 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onWindowCommand: { [weak self] command in
                 self?.store.execute(command)
             },
+            documentURL: { [weak self] item in
+                self?.store.documentURL(for: item)
+            },
             fullscreenCapability: { [weak self] item in
                 self?.store.fullscreenCapability(for: item)
             },

@@ -121,6 +121,7 @@ protocol WindowSnapshotProvider: AnyObject {
     func minimize(_ item: TaskbarItem)
     func fullscreenCapability(for item: TaskbarItem) -> WindowFullscreenCapability?
     func setFullscreen(_ fullscreen: Bool, for item: TaskbarItem)
+    func documentURL(for item: TaskbarItem) -> URL?
     func close(_ item: TaskbarItem)
     func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand]
     func performApplicationMenuCommand(_ command: ApplicationMenuCommand, for item: TaskbarItem)
@@ -134,6 +135,7 @@ extension WindowSnapshotProvider {
     func invalidateWindowServer() {}
     func fullscreenCapability(for _: TaskbarItem) -> WindowFullscreenCapability? { nil }
     func setFullscreen(_: Bool, for _: TaskbarItem) {}
+    func documentURL(for _: TaskbarItem) -> URL? { nil }
     func applicationMenuCommands(for _: TaskbarItem) -> [ApplicationMenuCommand] { [] }
     func performApplicationMenuCommand(_: ApplicationMenuCommand, for _: TaskbarItem) {}
 }
@@ -340,6 +342,27 @@ enum AXFullscreenCapabilityResolver {
         return WindowFullscreenCapability(
             isFullscreen: value,
             isSettable: settableError == .success && isSettable)
+    }
+}
+
+enum AXDocumentURLResolver {
+    static func verifiedLocalFileURL(
+        from attributeValue: String?,
+        fileExists: (String) -> Bool = FileManager.default.fileExists(atPath:)
+    ) -> URL? {
+        guard let attributeValue, !attributeValue.isEmpty,
+            attributeValue == attributeValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            let url = URL(string: attributeValue),
+            url.scheme?.lowercased() == "file",
+            url.user == nil,
+            url.password == nil,
+            url.query == nil,
+            url.fragment == nil,
+            url.host == nil || url.host?.isEmpty == true || url.host == "localhost",
+            url.path.hasPrefix("/"),
+            fileExists(url.path)
+        else { return nil }
+        return url.standardizedFileURL
     }
 }
 
@@ -1154,6 +1177,17 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             )
         }
         publishChange(.ordinary, for: item.pid)
+    }
+
+    func documentURL(for item: TaskbarItem) -> URL? {
+        guard let element = actionableElement(for: item) else { return nil }
+        var rawValue: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                element, kAXDocumentAttribute as CFString, &rawValue) == .success,
+            let attributeValue = rawValue as? String
+        else { return nil }
+        return AXDocumentURLResolver.verifiedLocalFileURL(from: attributeValue)
     }
 
     func close(_ item: TaskbarItem) {

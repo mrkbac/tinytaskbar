@@ -923,6 +923,53 @@ struct PermissionTests {
         #expect(controller.preferredContentSize.height > 44)
     }
 
+    @Test("hover card document proxy revalidates a copy-only file URL without reflow")
+    @MainActor
+    func hoverCardDocumentProxyIsCurrentAndCopyOnly() {
+        let firstURL = URL(fileURLWithPath: "/tmp/first image.png")
+        let currentURL = URL(fileURLWithPath: "/tmp/current image.png")
+        var requests = 0
+        let proxyController = TaskbarHoverCardViewController(
+            applicationName: "Preview",
+            title: "current image.png",
+            icon: nil,
+            documentURL: {
+                requests += 1
+                return requests == 1 ? firstURL : currentURL
+            })
+        let ordinaryController = TaskbarHoverCardViewController(
+            applicationName: "Preview",
+            title: "current image.png",
+            icon: nil)
+        proxyController.loadView()
+        ordinaryController.loadView()
+        proxyController.view.layoutSubtreeIfNeeded()
+        ordinaryController.view.layoutSubtreeIfNeeded()
+
+        guard let proxyView = proxyController.documentProxyView,
+            let pasteboardItem = proxyView.pasteboardItemForCurrentDocument()
+        else {
+            Issue.record("verified document proxy was not rendered")
+            return
+        }
+        #expect(requests == 2)
+        #expect(pasteboardItem.string(forType: .fileURL) == currentURL.absoluteString)
+        #expect(TaskbarDocumentProxyView.sourceOperationMask == .copy)
+        #expect(TaskbarDocumentProxyView.ignoresModifierKeys)
+        #expect(proxyController.iconView === proxyView)
+        #expect(proxyController.preferredContentSize == ordinaryController.preferredContentSize)
+        #expect(proxyView.frame.size == ordinaryController.iconView.frame.size)
+        #expect(proxyView.frame.size == NSSize(width: 24, height: 24))
+
+        let unsupportedController = TaskbarHoverCardViewController(
+            applicationName: "Preview",
+            title: "Unsaved",
+            icon: nil,
+            documentURL: { nil })
+        unsupportedController.loadView()
+        #expect(unsupportedController.documentProxyView == nil)
+    }
+
     @Test("hover card lists native tabs and dispatches the selected tab")
     @MainActor
     func hoverCardSelectsNativeTab() {
@@ -933,10 +980,15 @@ struct PermissionTests {
         ]
         var selectedTab: TaskbarTab?
         var closedTab: TaskbarTab?
+        var documentURLRequests = 0
         let controller = TaskbarHoverCardViewController(
             applicationName: "Terminal",
             title: "Alpha project",
             icon: nil,
+            documentURL: {
+                documentURLRequests += 1
+                return URL(fileURLWithPath: "/tmp/unsupported-tab-group.txt")
+            },
             tabs: tabs,
             onSelectTab: { selectedTab = $0 },
             onCloseTab: { closedTab = $0 }
@@ -950,6 +1002,8 @@ struct PermissionTests {
         #expect(controller.tabCloseButtons.count == tabs.count)
         #expect(controller.tabCloseButtons.allSatisfy { $0.acceptsFirstMouse(for: nil) })
         #expect(controller.closeWindowButton == nil)
+        #expect(controller.documentProxyView == nil)
+        #expect(documentURLRequests == 0)
         #expect(controller.applicationLabel.stringValue == "Terminal")
         #expect(controller.titleLabel.stringValue == "3 Tabs")
         #expect(controller.preferredContentSize.height > 100)
@@ -1227,6 +1281,40 @@ struct PermissionTests {
                 isSettable: true) == nil)
     }
 
+    @Test("document proxy accepts only verified existing local file URLs")
+    func documentURLCapabilityFiltering() {
+        let expectedPath = "/tmp/Saved Image.png"
+        let existingFile: (String) -> Bool = { $0 == expectedPath }
+        let direct = AXDocumentURLResolver.verifiedLocalFileURL(
+            from: "file:///tmp/Saved%20Image.png",
+            fileExists: existingFile)
+        let localhost = AXDocumentURLResolver.verifiedLocalFileURL(
+            from: "file://localhost/tmp/Saved%20Image.png",
+            fileExists: existingFile)
+
+        #expect(direct?.path == expectedPath)
+        #expect(localhost?.path == expectedPath)
+        #expect(
+            AXDocumentURLResolver.verifiedLocalFileURL(
+                from: "file:///tmp/Missing.png",
+                fileExists: { _ in false }) == nil)
+        for unsupported in [
+            nil,
+            "",
+            " file:///tmp/Saved%20Image.png",
+            "https://example.com/Saved%20Image.png",
+            "file://fileserver/tmp/Saved%20Image.png",
+            "file:Saved%20Image.png",
+            "file:///tmp/Saved%20Image.png?version=2",
+            "file:///tmp/Saved%20Image.png#page=1",
+        ] as [String?] {
+            #expect(
+                AXDocumentURLResolver.verifiedLocalFileURL(
+                    from: unsupported,
+                    fileExists: existingFile) == nil)
+        }
+    }
+
     @Test("hover tracking emits balanced enter and exit events")
     @MainActor
     func hoverTrackingEvents() {
@@ -1352,6 +1440,42 @@ struct PermissionTests {
         #expect(provider.fullscreenCapabilityItemIDs == [item.id])
         #expect(provider.fullscreenUpdates.map(\.itemID) == [item.id])
         #expect(provider.fullscreenUpdates.map(\.fullscreen) == [true])
+    }
+
+    @Test("document capability follows current exact identity and rejects stale absence")
+    @MainActor
+    func documentURLUsesCurrentExactItem() {
+        let provider = MockWindowSnapshotProvider(
+            snapshot: identitySnapshot(stableKey: "old-identity"))
+        let documentURL = URL(fileURLWithPath: "/tmp/current-document.png")
+        provider.documentURLValue = documentURL
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        guard let oldItem = store.state.itemsByDisplay["main"]?.first else {
+            Issue.record("old fixture identity was not projected")
+            return
+        }
+
+        provider.snapshotValue = identitySnapshot(stableKey: "new-identity")
+        store.refreshNow()
+        #expect(store.documentURL(for: oldItem) == documentURL)
+        #expect(provider.documentURLItemIDs == ["new-identity"])
+
+        provider.snapshotValue = RawWindowSnapshot(
+            candidates: [],
+            cgWindows: [],
+            displays: [fixtureDisplay],
+            frontmostPID: nil,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [fixturePID],
+                axWindowListReadPIDs: [fixturePID],
+                observedAXWindowIDs: []))
+        store.refreshNow()
+        #expect(store.documentURL(for: oldItem) == nil)
+        #expect(provider.documentURLItemIDs == ["new-identity"])
     }
 
     @Test("standard titled presentation remains vertically contained")
@@ -2997,6 +3121,8 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var fullscreenCapabilityValue: WindowFullscreenCapability?
     var fullscreenCapabilityItemIDs: [String] = []
     var fullscreenUpdates: [(itemID: String, fullscreen: Bool)] = []
+    var documentURLValue: URL?
+    var documentURLItemIDs: [String] = []
     var applicationMenuCommandItemIDs: [String] = []
     var performedApplicationMenuCommands: [(itemID: String, command: ApplicationMenuCommand)] = []
     var invalidatedPIDs: [pid_t] = []
@@ -3061,6 +3187,11 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
 
     func setFullscreen(_ fullscreen: Bool, for item: TaskbarItem) {
         fullscreenUpdates.append((item.id, fullscreen))
+    }
+
+    func documentURL(for item: TaskbarItem) -> URL? {
+        documentURLItemIDs.append(item.id)
+        return documentURLValue
     }
 
     func close(_: TaskbarItem) {

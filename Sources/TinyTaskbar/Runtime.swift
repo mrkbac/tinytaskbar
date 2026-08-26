@@ -698,6 +698,13 @@ final class TaskbarStore {
         return provider.fullscreenCapability(for: item)
     }
 
+    func documentURL(for requestedItem: TaskbarItem) -> URL? {
+        guard accessibilityAvailable else { return nil }
+        guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
+        else { return nil }
+        return provider.documentURL(for: item)
+    }
+
     func execute(_ command: ApplicationCommand) {
         guard accessibilityAvailable else { return }
         let requestedItem: TaskbarItem
@@ -1453,6 +1460,7 @@ final class TaskbarPanel: NSPanel {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void = { _ in },
+        documentURL: @escaping @MainActor (TaskbarItem) -> URL? = { _ in nil },
         fullscreenCapability: @escaping @MainActor (TaskbarItem) -> WindowFullscreenCapability? = {
             _ in nil
         },
@@ -1465,6 +1473,7 @@ final class TaskbarPanel: NSPanel {
             onActivate: onActivate,
             onClose: onClose,
             onWindowCommand: onWindowCommand,
+            documentURL: documentURL,
             fullscreenCapability: fullscreenCapability,
             applicationMenuCommands: applicationMenuCommands,
             onApplicationCommand: onApplicationCommand)
@@ -1931,6 +1940,51 @@ final class TaskbarHoverCardView: NSView {
 }
 
 @MainActor
+final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
+    static let sourceOperationMask = NSDragOperation.copy
+    static let ignoresModifierKeys = true
+
+    private let documentURL: @MainActor () -> URL?
+
+    init(image: NSImage, documentURL: @escaping @MainActor () -> URL?) {
+        self.documentURL = documentURL
+        super.init(frame: .zero)
+        self.image = image
+        imageScaling = .scaleProportionallyDown
+        setAccessibilityLabel("Drag document file")
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
+
+    func pasteboardItemForCurrentDocument() -> NSPasteboardItem? {
+        guard let url = documentURL() else { return nil }
+        let item = NSPasteboardItem()
+        guard item.setString(url.absoluteString, forType: .fileURL) else { return nil }
+        return item
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let item = pasteboardItemForCurrentDocument(), let image else { return }
+        let draggingItem = NSDraggingItem(pasteboardWriter: item)
+        draggingItem.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    func draggingSession(
+        _: NSDraggingSession,
+        sourceOperationMaskFor _: NSDraggingContext
+    ) -> NSDragOperation {
+        Self.sourceOperationMask
+    }
+
+    func ignoreModifierKeys(for _: NSDraggingSession) -> Bool { Self.ignoresModifierKeys }
+}
+
+@MainActor
 private final class TaskbarTabButton: TaskbarHoverButton {
     var isSelectedTab = false {
         didSet { updateSelectionAppearance() }
@@ -1995,6 +2049,7 @@ final class TaskbarHoverCardViewController: NSViewController {
     let applicationLabel: NSTextField
     let titleLabel: NSTextField
     let iconView: NSImageView
+    let documentProxyView: TaskbarDocumentProxyView?
     let closeWindowButton: NSButton?
     private(set) var tabButtons: [NSButton] = []
     private(set) var tabCloseButtons: [NSButton] = []
@@ -2011,6 +2066,7 @@ final class TaskbarHoverCardViewController: NSViewController {
         applicationName: String,
         title: String,
         icon: NSImage?,
+        documentURL: @escaping @MainActor () -> URL? = { nil },
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
         onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
@@ -2020,7 +2076,17 @@ final class TaskbarHoverCardViewController: NSViewController {
         let displayedTitle = showsTabList ? "\(tabs.count) Tabs" : title
         applicationLabel = NSTextField(labelWithString: applicationName)
         titleLabel = NSTextField(wrappingLabelWithString: displayedTitle)
-        iconView = NSImageView(image: icon ?? NSImage())
+        let initialDocumentURL = showsTabList ? nil : documentURL()
+        if let initialDocumentURL {
+            let proxyView = TaskbarDocumentProxyView(
+                image: NSWorkspace.shared.icon(forFile: initialDocumentURL.path),
+                documentURL: documentURL)
+            documentProxyView = proxyView
+            iconView = proxyView
+        } else {
+            documentProxyView = nil
+            iconView = NSImageView(image: icon ?? NSImage())
+        }
         closeWindowButton = showsTabList ? nil : TaskbarCloseButton()
         self.tabs = tabs
         self.onSelectTab = onSelectTab
@@ -2299,6 +2365,7 @@ final class TaskbarHoverPresenter {
         applicationName: String,
         title: String,
         icon: NSImage?,
+        documentURL: @escaping @MainActor () -> URL? = { nil },
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
         onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
@@ -2321,6 +2388,7 @@ final class TaskbarHoverPresenter {
                 applicationName: applicationName,
                 title: title,
                 icon: icon,
+                documentURL: documentURL,
                 tabs: tabs,
                 onSelectTab: { [weak self] tab in
                     onSelectTab(tab)
@@ -2458,6 +2526,7 @@ private final class TaskbarBarView: NSView {
     private let onActivate: @MainActor (TaskbarItem) -> Void
     private let onClose: @MainActor (TaskbarItem) -> Void
     private let onWindowCommand: @MainActor (WindowCommand) -> Void
+    private let documentURL: @MainActor (TaskbarItem) -> URL?
     private let fullscreenCapability: @MainActor (TaskbarItem) -> WindowFullscreenCapability?
     private let applicationMenuCommands: @MainActor (TaskbarItem) -> [ApplicationMenuCommand]
     private let onApplicationCommand: @MainActor (ApplicationCommand) -> Void
@@ -2467,6 +2536,7 @@ private final class TaskbarBarView: NSView {
         onActivate: @escaping @MainActor (TaskbarItem) -> Void,
         onClose: @escaping @MainActor (TaskbarItem) -> Void,
         onWindowCommand: @escaping @MainActor (WindowCommand) -> Void,
+        documentURL: @escaping @MainActor (TaskbarItem) -> URL?,
         fullscreenCapability: @escaping @MainActor (TaskbarItem) -> WindowFullscreenCapability?,
         applicationMenuCommands: @escaping @MainActor (TaskbarItem) -> [ApplicationMenuCommand],
         onApplicationCommand: @escaping @MainActor (ApplicationCommand) -> Void
@@ -2474,6 +2544,7 @@ private final class TaskbarBarView: NSView {
         self.onActivate = onActivate
         self.onClose = onClose
         self.onWindowCommand = onWindowCommand
+        self.documentURL = documentURL
         self.fullscreenCapability = fullscreenCapability
         self.applicationMenuCommands = applicationMenuCommands
         self.onApplicationCommand = onApplicationCommand
@@ -2785,6 +2856,9 @@ private final class TaskbarBarView: NSView {
                     applicationName: current.applicationName,
                     title: current.displayTitle,
                     icon: anchor.image,
+                    documentURL: { [weak self] in
+                        self?.documentURL(current)
+                    },
                     tabs: current.nativeTabs,
                     onSelectTab: { [weak self] tab in
                         self?.onWindowCommand(.selectTab(current, tab))

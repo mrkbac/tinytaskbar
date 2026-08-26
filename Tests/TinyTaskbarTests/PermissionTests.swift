@@ -427,21 +427,21 @@ struct PermissionTests {
 
         let buttonFrame = contentView.convert(button.bounds, from: button)
         #expect(buttonFrame.isFiniteGeometry)
-        #expect(buttonFrame.minX >= TaskbarPanelLayout.contentLeadingInset)
+        #expect(buttonFrame.minX == TaskbarPanelLayout.contentLeadingInset)
         #expect(buttonFrame.minY >= contentView.bounds.minY)
         #expect(buttonFrame.maxY <= separator.frame.minY)
         #expect(separator.frame.isFiniteGeometry)
         #expect(separator.frame.minX == contentView.bounds.minX)
         #expect(separator.frame.width == contentView.bounds.width)
-        #expect(
-            separator.frame.maxY
-                == TaskbarPanelLayout.visualBounds(in: contentView.bounds).maxY)
+        #expect(separator.frame.maxY == contentView.bounds.maxY)
         #expect(separator.frame.height == TaskbarPanelLayout.topSeparatorHeight)
         #expect(separator.layer?.backgroundColor != nil)
-        #expect(
-            separator.frame.minY - buttonFrame.maxY
-                >= TaskbarPanelLayout.contentVerticalInset
-        )
+        let visualBounds = TaskbarPanelLayout.visualBounds(in: contentView.bounds)
+        let topGap = separator.frame.minY - buttonFrame.maxY
+        let bottomGap = buttonFrame.minY - visualBounds.minY
+        #expect(topGap == TaskbarPanelLayout.contentVerticalInset)
+        #expect(bottomGap == TaskbarPanelLayout.contentVerticalInset)
+        #expect(topGap == bottomGap)
     }
 
     @Test("taskbar button content keeps a small leading inset")
@@ -594,8 +594,9 @@ struct PermissionTests {
         #expect(panel.frame == interactionFrame)
         #expect(panel.isOpaque)
         #expect(panel.backgroundColor == .windowBackgroundColor)
-        #expect(separator.frame.maxY == TaskbarPanelLayout.defaultHeight)
-        #expect(shieldPoint.y > separator.frame.maxY)
+        #expect(separator.frame.minY == TaskbarPanelLayout.defaultHeight)
+        #expect(separator.frame.maxY == contentView.bounds.maxY)
+        #expect(separator.frame.contains(shieldPoint))
         #expect(contentView.hitTest(shieldPoint) === contentView)
         #expect(panel.acceptsMouseMovedEvents)
         NSCursor.resizeUpDown.set()

@@ -64,7 +64,7 @@ struct FeatureModelTests {
         #expect(window.buttonTitle == "Window window")
         #expect(window.accessibilityLabel == "Editor, Window window")
         #expect(TaskbarAppearance.panelHeight == 30)
-        #expect(TaskbarAppearance.buttonHeight == 27)
+        #expect(TaskbarAppearance.buttonHeight == 28)
         #expect(TaskbarAppearance.iconSize == 18)
         #expect(TaskbarButtonLayout.widthRange == 102...168)
     }

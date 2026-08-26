@@ -2328,6 +2328,11 @@ private final class TaskbarBarView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // The visual separator fills the cursor-seam overlap at the panel's top edge,
+        // but the bar view must continue to own pointer handling in that strip.
+        if separatorView.frame.contains(point) {
+            return self
+        }
         // Preserve the bottom edge as a Fitts's-law target. The visible controls
         // remain vertically inset, but the otherwise empty strip at y == 0 must
         // behave like the control directly above it.
@@ -2357,15 +2362,16 @@ private final class TaskbarBarView: NSView {
         )
         separatorView.frame = NSRect(
             x: visualBounds.minX,
-            y: visualBounds.maxY - separatorHeight,
+            y: bounds.maxY - separatorHeight,
             width: max(0, visualBounds.width),
             height: separatorHeight
         )
 
         let contentMinY = visualBounds.minY + verticalInset
+        let contentUpperEdge = min(visualBounds.maxY, separatorView.frame.minY)
         let contentMaxY = max(
             contentMinY,
-            visualBounds.maxY - separatorHeight - verticalInset
+            contentUpperEdge - verticalInset
         )
         let contentFrame = NSRect(
             x: visualBounds.minX,

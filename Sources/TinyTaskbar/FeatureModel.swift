@@ -3,7 +3,7 @@ import Foundation
 enum TaskbarAppearance {
     static let panelHeight: CGFloat = 30
     static let iconSize: CGFloat = 18
-    static let buttonHeight: CGFloat = 27
+    static let buttonHeight: CGFloat = 28
 }
 
 struct TaskbarPresentationState: Equatable, Sendable {

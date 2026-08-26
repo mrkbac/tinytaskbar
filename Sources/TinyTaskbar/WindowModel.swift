@@ -546,12 +546,12 @@ enum TaskbarPanelLayout {
     static let defaultBottomInset: CGFloat = 0
     static let topSeparatorHeight: CGFloat = 1
     static let contentVerticalInset: CGFloat = 1
-    static let contentLeadingInset: CGFloat = 6
+    static let contentLeadingInset: CGFloat = 1
     static let cursorSeamOverlap: CGFloat = 1
     static let topSeparatorIdentifier = "TinyTaskbar.TaskbarPanel.topSeparator"
 
     static var contentHeight: CGFloat {
-        max(0, defaultHeight - topSeparatorHeight - contentVerticalInset * 2)
+        max(0, defaultHeight - contentVerticalInset * 2)
     }
 
     static func interactionFrame(for visualFrame: CGRect) -> CGRect {

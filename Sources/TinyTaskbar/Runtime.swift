@@ -42,6 +42,32 @@ enum TaskbarItemResolver {
     }
 }
 
+enum WindowFocusReturnResolver {
+    static func resolve(
+        selected: TaskbarItem,
+        items: [TaskbarItem],
+        orderedCGWindows: [CGWindowMetadata]
+    ) -> TaskbarItem? {
+        guard let selectedWindowNumber = selected.cgWindowNumber,
+            let selectedIndex = orderedCGWindows.firstIndex(where: {
+                $0.ownerPID == selected.pid && $0.windowNumber == selectedWindowNumber
+            })
+        else { return nil }
+
+        for window in orderedCGWindows.dropFirst(selectedIndex + 1)
+        where window.layer == 0 && window.isOnScreen && window.ownerPID != selected.pid {
+            guard let windowNumber = window.windowNumber else { continue }
+            let matches = items.filter {
+                $0.pid == window.ownerPID && $0.cgWindowNumber == windowNumber
+            }
+            if matches.count == 1 {
+                return matches[0]
+            }
+        }
+        return nil
+    }
+}
+
 struct TaskbarStateContinuity {
     func resolve(
         previous: TaskbarState,
@@ -343,6 +369,11 @@ final class TaskbarStore {
         let returnItem: TaskbarItem
     }
 
+    private struct PendingPrimaryClickMinimize {
+        let targetItem: TaskbarItem
+        let returnPID: pid_t
+    }
+
     private static let maximumWorkAreaAdjustmentAttempts = 5
     private static let windowMutationConfirmationDelay = Duration.milliseconds(350)
     nonisolated static let ordinaryRefreshDelay = Duration.milliseconds(50)
@@ -356,11 +387,14 @@ final class TaskbarStore {
     private var continuity = TaskbarStateContinuity()
     private var pendingRefreshCause: TaskbarRefreshCause = .ordinary
     private var activeSpaceNotificationToken: NSObjectProtocol?
+    private var applicationActivationNotificationToken: NSObjectProtocol?
+    private var pendingPrimaryClickMinimize: PendingPrimaryClickMinimize?
     private var latestFramesByItemID: [String: CGRect] = [:]
     private var latestDisplaysByID: [String: DisplayDescriptor] = [:]
     private var taskbarHeightsByDisplay: [String: CGFloat] = [:]
     private var workAreaAdjustments: [String: TaskbarWorkAreaAdjustment] = [:]
     private var workAreaApplicationCount: UInt = 0
+    private var latestCGWindows: [CGWindowMetadata] = []
     private var primaryClickFocusReturn: PrimaryClickFocusReturn?
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
@@ -381,6 +415,7 @@ final class TaskbarStore {
         accessibilityAvailable = accessibilityTrusted
         if accessibilityTrusted {
             observeActiveSpaceChanges()
+            observeApplicationActivations()
             requestRefresh()
         }
     }
@@ -402,8 +437,11 @@ final class TaskbarStore {
             pendingWindowMutationConfirmation?.cancel()
             pendingWindowMutationConfirmation = nil
             pendingRefreshCause = .ordinary
+            latestCGWindows = []
             primaryClickFocusReturn = nil
+            pendingPrimaryClickMinimize = nil
             removeActiveSpaceObserver()
+            removeApplicationActivationObserver()
             if state != .empty {
                 state = .empty
                 onStateChange?(state)
@@ -413,6 +451,7 @@ final class TaskbarStore {
 
         provider.invalidateAllApplications()
         observeActiveSpaceChanges()
+        observeApplicationActivations()
         requestRefresh()
     }
 
@@ -471,6 +510,7 @@ final class TaskbarStore {
 
         let start = DispatchTime.now().uptimeNanoseconds
         let snapshot = provider.snapshot()
+        latestCGWindows = snapshot.cgWindows
         latestFramesByItemID = Dictionary(
             uniqueKeysWithValues: snapshot.candidates.compactMap { candidate in
                 guard candidate.isNativeTabGroupRepresentative,
@@ -566,17 +606,35 @@ final class TaskbarStore {
 
     func performPrimaryClick(_ requestedItem: TaskbarItem) {
         guard accessibilityAvailable else { return }
+        pendingPrimaryClickMinimize = nil
         provider.invalidateApplication(requestedItem.pid)
+        provider.invalidateWindowServer()
         refreshNow()
         guard
             let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return }
 
         if item.isActive {
-            if let returnItem = primaryClickReturnItem(for: item) {
-                // Move focus away first. Minimizing a frontmost window can make macOS
-                // promote a sibling from the same app before another app is activated.
+            let returnItem =
+                WindowFocusReturnResolver.resolve(
+                    selected: item,
+                    items: Array(state.itemsByDisplay.values.joined()),
+                    orderedCGWindows: latestCGWindows)
+                ?? primaryClickReturnItem(for: item)
+            if let returnItem {
+                // Reveal the exact non-sibling window that is already directly underneath.
+                // Wait for macOS to complete that activation before minimizing; activation
+                // is asynchronous, and minimizing early can still promote an app sibling.
+                pendingPrimaryClickMinimize = PendingPrimaryClickMinimize(
+                    targetItem: item,
+                    returnPID: returnItem.pid)
                 provider.activate(returnItem)
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == returnItem.pid {
+                    applicationDidActivate(returnItem.pid)
+                }
+                primaryClickFocusReturn = nil
+                requestRefresh()
+                return
             }
             primaryClickFocusReturn = nil
             provider.minimize(item)
@@ -675,8 +733,11 @@ final class TaskbarStore {
         pendingWorkAreaVerification?.cancel()
         pendingWorkAreaVerification = nil
         pendingRefreshCause = .ordinary
+        latestCGWindows = []
         primaryClickFocusReturn = nil
+        pendingPrimaryClickMinimize = nil
         removeActiveSpaceObserver()
+        removeApplicationActivationObserver()
         lifecycleState = LifecycleReducer.reduce(state: lifecycleState, event: .stopped)
         accessibilityAvailable = false
         if state != .empty {
@@ -771,6 +832,23 @@ final class TaskbarStore {
         return TaskbarItemResolver.currentItem(for: focusReturn.returnItem, in: state)
     }
 
+    func applicationDidActivate(_ pid: pid_t) {
+        guard let pending = pendingPrimaryClickMinimize,
+            pending.returnPID == pid,
+            accessibilityAvailable
+        else { return }
+        pendingPrimaryClickMinimize = nil
+        provider.invalidateApplication(pending.targetItem.pid)
+        refreshNow()
+        guard
+            let currentItem = TaskbarItemResolver.currentItem(
+                for: pending.targetItem,
+                in: state)
+        else { return }
+        provider.minimize(currentItem)
+        requestRefresh()
+    }
+
     private func scheduleWorkAreaVerification() {
         guard pendingWorkAreaVerification == nil else { return }
         pendingWorkAreaVerification = Task { @MainActor [weak self] in
@@ -852,6 +930,31 @@ final class TaskbarStore {
         if let token = activeSpaceNotificationToken {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
             activeSpaceNotificationToken = nil
+        }
+    }
+
+    private func observeApplicationActivations() {
+        guard applicationActivationNotificationToken == nil else { return }
+        applicationActivationNotificationToken =
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let pid =
+                    (notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication)?.processIdentifier
+                guard let pid else { return }
+                Task { @MainActor [weak self] in
+                    self?.applicationDidActivate(pid)
+                }
+            }
+    }
+
+    private func removeApplicationActivationObserver() {
+        if let token = applicationActivationNotificationToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+            applicationActivationNotificationToken = nil
         }
     }
 

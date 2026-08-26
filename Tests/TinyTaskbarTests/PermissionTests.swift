@@ -2660,9 +2660,9 @@ struct PermissionTests {
         #expect(provider.activationCount == 1)
     }
 
-    @Test("second primary click leaves the app before minimizing its active window")
+    @Test("repeated minimize and restore returns past an application sibling")
     @MainActor
-    func primaryClickReturnsBeforeMinimizing() {
+    func primaryClickReturnsPastSiblingWindow() {
         let provider = MockWindowSnapshotProvider(
             snapshot: focusToggleSnapshot(activeWindow: "chatgpt"))
         let store = TaskbarStore(provider: provider)
@@ -2685,9 +2685,27 @@ struct PermissionTests {
         provider.events = []
         provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
         store.performPrimaryClick(chromeOne)
-
+        #expect(provider.events == [.activate(chatGPT.id)])
+        store.applicationDidActivate(chromeOne.pid)
+        #expect(provider.events == [.activate(chatGPT.id)])
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
+        store.applicationDidActivate(chatGPT.pid)
         #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+
+        provider.events = []
+        store.performPrimaryClick(chromeOne)
+        #expect(provider.events == [.activate(chromeOne.id)])
+
+        provider.events = []
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
+        store.performPrimaryClick(chromeOne)
+        #expect(provider.events == [.activate(chatGPT.id)])
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
+        store.applicationDidActivate(chatGPT.pid)
+        #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+
         #expect(!provider.activatedItemIDs.contains(chromeTwo.id))
+        #expect(provider.invalidateWindowServerCount == 4)
     }
 
     @Test("primary click follows physical identity through AX identity turnover")
@@ -2802,7 +2820,15 @@ struct PermissionTests {
                 isMain: input.key == activeWindow
             )
         }
-        let cgWindows = inputs.enumerated().map { index, input in
+        let activePID = inputs.first(where: { $0.key == activeWindow })?.pid
+        let cgWindows = inputs.enumerated().sorted { lhs, rhs in
+            if lhs.element.key == activeWindow { return true }
+            if rhs.element.key == activeWindow { return false }
+            if (lhs.element.pid == activePID) != (rhs.element.pid == activePID) {
+                return lhs.element.pid == activePID
+            }
+            return lhs.offset < rhs.offset
+        }.map { index, input in
             CGWindowMetadata(
                 windowNumber: UInt32(100 + index),
                 ownerPID: input.pid,
@@ -2810,7 +2836,6 @@ struct PermissionTests {
                 title: input.title
             )
         }
-        let activePID = inputs.first(where: { $0.key == activeWindow })?.pid
         return RawWindowSnapshot(
             candidates: candidates,
             cgWindows: cgWindows,

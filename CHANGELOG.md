@@ -4,6 +4,8 @@
 
 - Raise an exact window after a 500 ms drag-hover over its taskbar button, without
   inspecting or accepting the dragged content.
+- Preserve the current Window Server order when minimizing an active window, skipping
+  same-application siblings so repeated toggles do not expose an unrelated window.
 - Keep window context menus full-height and anchored to the right-click location at
   the bottom edge of the screen.
 - Add Enter/Exit Full Screen beside Minimize when the exact window exposes the

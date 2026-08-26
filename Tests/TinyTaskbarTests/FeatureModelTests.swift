@@ -9,7 +9,6 @@ struct FeatureModelTests {
         #expect(TinyTaskbarPreferences.defaults == TinyTaskbarPreferences())
         #expect(!TinyTaskbarPreferences.defaults.onboardingComplete)
         #expect(!TinyTaskbarPreferences.defaults.hideMacDock)
-        #expect(!TinyTaskbarPreferences.defaults.instantWindowSwitching)
     }
 
     @Test("removed customization and application preferences are ignored")

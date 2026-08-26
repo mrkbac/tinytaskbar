@@ -338,11 +338,6 @@ private struct TaskbarWorkAreaAdjustment {
 
 @MainActor
 final class TaskbarStore {
-    enum FocusedWindowClickBehavior: Equatable, Sendable {
-        case minimize
-        case switchWithoutMinimizing
-    }
-
     private struct PrimaryClickFocusReturn {
         let activatedItem: TaskbarItem
         let returnItem: TaskbarItem
@@ -569,10 +564,7 @@ final class TaskbarStore {
         requestRefresh()
     }
 
-    func performPrimaryClick(
-        _ requestedItem: TaskbarItem,
-        focusedWindowBehavior: FocusedWindowClickBehavior = .minimize
-    ) {
+    func performPrimaryClick(_ requestedItem: TaskbarItem) {
         guard accessibilityAvailable else { return }
         provider.invalidateApplication(requestedItem.pid)
         refreshNow()
@@ -582,23 +574,12 @@ final class TaskbarStore {
 
         if item.isActive {
             if let returnItem = primaryClickReturnItem(for: item) {
-                // Leave the selected physical window before any optional minimize so macOS
-                // never chooses a sibling window from the same application.
+                // Move focus away first. Minimizing a frontmost window can make macOS
+                // promote a sibling from the same app before another app is activated.
                 provider.activate(returnItem)
-                if focusedWindowBehavior == .switchWithoutMinimizing {
-                    // Keep both windows live and reverse the pair. The next focused click can
-                    // switch back immediately without invoking macOS restore animation.
-                    primaryClickFocusReturn = PrimaryClickFocusReturn(
-                        activatedItem: returnItem,
-                        returnItem: item)
-                    requestRefresh()
-                    return
-                }
             }
             primaryClickFocusReturn = nil
-            if focusedWindowBehavior == .minimize {
-                provider.minimize(item)
-            }
+            provider.minimize(item)
         } else {
             rememberPrimaryClickReturn(for: item)
             provider.activate(item)
@@ -914,7 +895,6 @@ struct SettingsActivationPolicyState: Equatable, Sendable {
 final class TinyTaskbarPreferencesStore {
     private static let onboardingCompleteKey = "onboardingComplete"
     private static let hideMacDockKey = "hideMacDock"
-    private static let instantWindowSwitchingKey = "instantWindowSwitching"
 
     private let defaults: UserDefaults
     private(set) var values: TinyTaskbarPreferences
@@ -925,10 +905,7 @@ final class TinyTaskbarPreferencesStore {
             onboardingComplete: defaults.object(forKey: Self.onboardingCompleteKey) as? Bool
                 ?? TinyTaskbarPreferences.defaults.onboardingComplete,
             hideMacDock: defaults.object(forKey: Self.hideMacDockKey) as? Bool
-                ?? TinyTaskbarPreferences.defaults.hideMacDock,
-            instantWindowSwitching: defaults.object(
-                forKey: Self.instantWindowSwitchingKey) as? Bool
-                ?? TinyTaskbarPreferences.defaults.instantWindowSwitching
+                ?? TinyTaskbarPreferences.defaults.hideMacDock
         )
     }
 
@@ -942,10 +919,6 @@ final class TinyTaskbarPreferencesStore {
         defaults.set(hidden, forKey: Self.hideMacDockKey)
     }
 
-    func setInstantWindowSwitching(_ enabled: Bool) {
-        values.instantWindowSwitching = enabled
-        defaults.set(enabled, forKey: Self.instantWindowSwitchingKey)
-    }
 }
 
 @MainActor
@@ -958,7 +931,6 @@ final class TinyTaskbarSettingsModel {
 
     var onAccessibilityRequest: (@MainActor () -> Void)?
     var onHideMacDockChanged: (@MainActor (Bool) -> String?)?
-    var onInstantWindowSwitchingChanged: (@MainActor (Bool) -> Void)?
     var onChange: (@MainActor () -> Void)?
 
     private let launchAtLoginService = SMAppService.mainApp
@@ -1019,12 +991,6 @@ final class TinyTaskbarSettingsModel {
         onChange?()
     }
 
-    func setInstantWindowSwitching(_ enabled: Bool) {
-        onInstantWindowSwitchingChanged?(enabled)
-        preferences.instantWindowSwitching = enabled
-        onChange?()
-    }
-
     var accessibilityButtonTitle: String {
         accessibilityTrusted || accessibilityRequestWasMade
             ? "Open System Settings…"
@@ -1042,11 +1008,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     var onHideMacDockChanged: (@MainActor (Bool) -> String?)? {
         didSet { model.onHideMacDockChanged = onHideMacDockChanged }
     }
-    var onInstantWindowSwitchingChanged: (@MainActor (Bool) -> Void)? {
-        didSet {
-            model.onInstantWindowSwitchingChanged = onInstantWindowSwitchingChanged
-        }
-    }
     var onClosed: (@MainActor () -> Void)?
 
     private let model = TinyTaskbarSettingsModel()
@@ -1054,7 +1015,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
     private let permissionButton = NSButton()
     private let launchAtLoginSwitch = NSButton()
     private let hideDockSwitch = NSButton()
-    private let instantWindowSwitchingSwitch = NSButton()
     private let footerLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
@@ -1154,9 +1114,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         let startupHeading = sectionHeading("Startup & Desktop")
         configureSwitch(launchAtLoginSwitch, action: #selector(toggleLaunchAtLogin))
         configureSwitch(hideDockSwitch, action: #selector(toggleDock))
-        configureSwitch(
-            instantWindowSwitchingSwitch,
-            action: #selector(toggleInstantWindowSwitching))
         let launchRow = settingsRow(
             title: "Launch at Login",
             detail: "Start TinyTaskbar automatically when you sign in.",
@@ -1165,17 +1122,7 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
             title: "Fully hide the Mac Dock",
             detail: "Prevent edge reveal while TinyTaskbar is running.",
             trailing: hideDockSwitch)
-        let instantSwitchingRow = settingsRow(
-            title: "Instant window switching",
-            detail: "Switch back without minimizing the focused window.",
-            trailing: instantWindowSwitchingSwitch)
-        let startupBox = settingsBox(rows: [
-            launchRow,
-            separator(),
-            dockRow,
-            separator(),
-            instantSwitchingRow,
-        ])
+        let startupBox = settingsBox(rows: [launchRow, separator(), dockRow])
 
         footerLabel.textColor = .secondaryLabelColor
         footerLabel.font = .systemFont(ofSize: 11)
@@ -1293,8 +1240,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
         launchAtLoginSwitch.state = model.launchAtLoginEnabled ? .on : .off
         launchAtLoginSwitch.isEnabled = model.launchAtLoginAvailable
         hideDockSwitch.state = model.preferences.hideMacDock ? .on : .off
-        instantWindowSwitchingSwitch.state =
-            model.preferences.instantWindowSwitching ? .on : .off
 
         let dockStatus =
             model.dockVisibilityError
@@ -1316,10 +1261,6 @@ final class TinyTaskbarSettingsWindow: NSWindow, NSWindowDelegate {
 
     @objc private func toggleDock() {
         model.setHideMacDock(hideDockSwitch.state == .on)
-    }
-
-    @objc private func toggleInstantWindowSwitching() {
-        model.setInstantWindowSwitching(instantWindowSwitchingSwitch.state == .on)
     }
 }
 

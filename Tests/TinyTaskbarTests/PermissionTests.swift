@@ -947,13 +947,21 @@ struct PermissionTests {
         ordinaryController.view.layoutSubtreeIfNeeded()
 
         guard let proxyView = proxyController.documentProxyView,
-            let pasteboardItem = proxyView.pasteboardItemForCurrentDocument()
+            let pasteboardWriter = proxyView.pasteboardWriterForCurrentDocument()
         else {
             Issue.record("verified document proxy was not rendered")
             return
         }
         #expect(requests == 2)
-        #expect(pasteboardItem.string(forType: .fileURL) == currentURL.absoluteString)
+        #expect(pasteboardWriter.absoluteURL == currentURL)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        pasteboard.clearContents()
+        #expect(pasteboard.writeObjects([pasteboardWriter]))
+        let writtenURLs =
+            pasteboard.readObjects(
+                forClasses: [NSURL.self],
+                options: [.urlReadingFileURLsOnly: true]) as? [URL]
+        #expect(writtenURLs == [currentURL])
         #expect(TaskbarDocumentProxyView.sourceOperationMask == .copy)
         #expect(TaskbarDocumentProxyView.ignoresModifierKeys)
         #expect(proxyController.iconView === proxyView)
@@ -968,6 +976,23 @@ struct PermissionTests {
             documentURL: { nil })
         unsupportedController.loadView()
         #expect(unsupportedController.documentProxyView == nil)
+    }
+
+    @Test("document drag keeps its hover card alive until the session ends")
+    @MainActor
+    func documentDragRetainsHoverCard() {
+        #expect(
+            !TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
+                isDocumentDragActive: true,
+                pointerIsInsideInteractionCorridor: false))
+        #expect(
+            !TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
+                isDocumentDragActive: false,
+                pointerIsInsideInteractionCorridor: true))
+        #expect(
+            TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
+                isDocumentDragActive: false,
+                pointerIsInsideInteractionCorridor: false))
     }
 
     @Test("hover card lists native tabs and dispatches the selected tab")

@@ -11,7 +11,9 @@
 - Add Enter/Exit Full Screen beside Minimize when the exact window exposes the
   `AXFullScreen` Accessibility attribute; keep read-only attributes visible but disabled.
 - Show a draggable native document proxy in a hover card only when its exact window
-  exposes an existing local file through `AXDocument`; drags publish a copy-only file URL.
+  exposes an existing local file through `AXDocument`; keep the source alive for the
+  complete gesture and publish the file through macOS's native copy-only URL writer so
+  sandboxed drop targets can access it.
 - Restore exactly identified hidden application windows after TinyTaskbar starts,
   without admitting ambiguous off-screen records.
 - Align the top separator with the taskbar edge while preserving the opaque pointer

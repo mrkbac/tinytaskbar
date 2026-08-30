@@ -34,7 +34,7 @@ thumbnails, visual clutter, or a browser runtime.
 | Click a window | Focus or restore it |
 | Click the focused window | Minimize it |
 | Drag-hover over a window | Raise it without ending the drag |
-| Hover | Show its full title, available tab or close actions, and a draggable saved-file proxy when exposed |
+| Hover | Show its full title, available tab or close actions, and a draggable saved-file proxy when exposed; the proxy copies the file into sandboxed drop targets |
 | Right-click | Use available app commands, or minimize, restore, enter/exit fullscreen, and close |
 
 Settings and Quit live only in the menu-bar icon.

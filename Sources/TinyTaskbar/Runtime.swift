@@ -1945,9 +1945,15 @@ final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
     static let ignoresModifierKeys = true
 
     private let documentURL: @MainActor () -> URL?
+    private let onDragStateChanged: @MainActor (Bool) -> Void
 
-    init(image: NSImage, documentURL: @escaping @MainActor () -> URL?) {
+    init(
+        image: NSImage,
+        documentURL: @escaping @MainActor () -> URL?,
+        onDragStateChanged: @escaping @MainActor (Bool) -> Void = { _ in }
+    ) {
         self.documentURL = documentURL
+        self.onDragStateChanged = onDragStateChanged
         super.init(frame: .zero)
         self.image = image
         imageScaling = .scaleProportionallyDown
@@ -1960,17 +1966,16 @@ final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
 
     override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
 
-    func pasteboardItemForCurrentDocument() -> NSPasteboardItem? {
+    func pasteboardWriterForCurrentDocument() -> NSURL? {
         guard let url = documentURL() else { return nil }
-        let item = NSPasteboardItem()
-        guard item.setString(url.absoluteString, forType: .fileURL) else { return nil }
-        return item
+        return url as NSURL
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let item = pasteboardItemForCurrentDocument(), let image else { return }
-        let draggingItem = NSDraggingItem(pasteboardWriter: item)
+        guard let writer = pasteboardWriterForCurrentDocument(), let image else { return }
+        let draggingItem = NSDraggingItem(pasteboardWriter: writer)
         draggingItem.setDraggingFrame(bounds, contents: image)
+        onDragStateChanged(true)
         beginDraggingSession(with: [draggingItem], event: event, source: self)
     }
 
@@ -1982,6 +1987,14 @@ final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
     }
 
     func ignoreModifierKeys(for _: NSDraggingSession) -> Bool { Self.ignoresModifierKeys }
+
+    func draggingSession(
+        _: NSDraggingSession,
+        endedAt _: NSPoint,
+        operation _: NSDragOperation
+    ) {
+        onDragStateChanged(false)
+    }
 }
 
 @MainActor
@@ -2067,6 +2080,7 @@ final class TaskbarHoverCardViewController: NSViewController {
         title: String,
         icon: NSImage?,
         documentURL: @escaping @MainActor () -> URL? = { nil },
+        onDocumentDragStateChanged: @escaping @MainActor (Bool) -> Void = { _ in },
         tabs: [TaskbarTab] = [],
         onSelectTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
         onCloseTab: @escaping @MainActor (TaskbarTab) -> Void = { _ in },
@@ -2080,7 +2094,8 @@ final class TaskbarHoverCardViewController: NSViewController {
         if let initialDocumentURL {
             let proxyView = TaskbarDocumentProxyView(
                 image: NSWorkspace.shared.icon(forFile: initialDocumentURL.path),
-                documentURL: documentURL)
+                documentURL: documentURL,
+                onDragStateChanged: onDocumentDragStateChanged)
             documentProxyView = proxyView
             iconView = proxyView
         } else {
@@ -2360,6 +2375,7 @@ final class TaskbarHoverPresenter {
     private var pendingHide: Task<Void, Never>?
     private weak var requestedAnchor: TaskbarHoverButton?
     private var popover: NSPopover?
+    private var isDocumentDragActive = false
 
     func schedule(
         applicationName: String,
@@ -2389,6 +2405,9 @@ final class TaskbarHoverPresenter {
                 title: title,
                 icon: icon,
                 documentURL: documentURL,
+                onDocumentDragStateChanged: { [weak self] active in
+                    self?.documentDragStateChanged(active)
+                },
                 tabs: tabs,
                 onSelectTab: { [weak self] tab in
                     onSelectTab(tab)
@@ -2438,6 +2457,7 @@ final class TaskbarHoverPresenter {
         pendingShow = nil
         pendingHide?.cancel()
         pendingHide = nil
+        isDocumentDragActive = false
         requestedAnchor = nil
         popover?.performClose(nil)
         popover = nil
@@ -2449,11 +2469,33 @@ final class TaskbarHoverPresenter {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.interactivePollDelay)
                 guard !Task.isCancelled, let self else { return }
-                if self.pointerIsInsideInteractionCorridor { continue }
+                if !Self.shouldHideAfterInteractivePoll(
+                    isDocumentDragActive: self.isDocumentDragActive,
+                    pointerIsInsideInteractionCorridor: self.pointerIsInsideInteractionCorridor)
+                {
+                    continue
+                }
                 self.hide()
                 return
             }
         }
+    }
+
+    private func documentDragStateChanged(_ active: Bool) {
+        isDocumentDragActive = active
+        if active {
+            pendingHide?.cancel()
+            pendingHide = nil
+        } else {
+            scheduleInteractiveHide()
+        }
+    }
+
+    static func shouldHideAfterInteractivePoll(
+        isDocumentDragActive: Bool,
+        pointerIsInsideInteractionCorridor: Bool
+    ) -> Bool {
+        !isDocumentDragActive && !pointerIsInsideInteractionCorridor
     }
 
     private var pointerIsInsideInteractionCorridor: Bool {

@@ -481,7 +481,7 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
         let element: AXUIElement
     }
 
-    private static let statusLabelAttribute = "AXStatusLabel" as CFString
+    private static let statusLabelAttribute = "AXStatusLabel"
     nonisolated static let badgeChangeNotificationNames = [
         kAXValueChangedNotification,
         kAXTitleChangedNotification,
@@ -683,7 +683,7 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
 
         var nextBadges: [String: String] = [:]
         for item in badgeItems where observedApplicationIdentities.contains(item.identity) {
-            let label = stringAttribute(Self.statusLabelAttribute, from: item.element)?
+            let label = axStringAttribute(Self.statusLabelAttribute, from: item.element)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let label, !label.isEmpty else { continue }
             nextBadges[item.identity] = String(label.prefix(64))
@@ -709,7 +709,7 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
         while cursor < queue.count, cursor < Self.maximumElementCount {
             let (element, depth) = queue[cursor]
             cursor += 1
-            if stringAttribute(kAXSubroleAttribute as CFString, from: element)
+            if axStringAttribute(kAXSubroleAttribute, from: element)
                 == "AXApplicationDockItem"
             {
                 result.append(element)
@@ -759,17 +759,6 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
             guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
             return (cfValue as! AXUIElement)
         }
-    }
-
-    private func stringAttribute(
-        _ attribute: CFString,
-        from element: AXUIElement
-    ) -> String? {
-        var rawValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &rawValue) == .success,
-            let rawValue, CFGetTypeID(rawValue) == CFStringGetTypeID()
-        else { return nil }
-        return rawValue as? String
     }
 
     private func scheduleRefresh(after delay: Duration = .milliseconds(50)) {

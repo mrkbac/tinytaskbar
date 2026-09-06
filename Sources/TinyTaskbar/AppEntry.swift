@@ -30,7 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferencesStore: TinyTaskbarPreferencesStore
     private let temporaryPreferencesSuiteName: String?
     private var permissionRequestState = AccessibilityPermissionRequestState()
-    private var settingsActivationState = SettingsActivationPolicyState()
     private var settingsWindow: TinyTaskbarSettingsWindow?
     // Keep each panel attached to the Space where it was created. A single
     // `.canJoinAllSpaces` panel is cloned by WindowServer during an interactive
@@ -321,7 +320,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showSettingsWindow() {
         let settingsWindow = settingsWindow ?? makeSettingsWindow()
         settingsWindow.restoreFixedContentSize()
-        _ = settingsActivationState.apply(.show)
         let policyChanged = NSApp.setActivationPolicy(.regular)
         if !policyChanged {
             logger.error(
@@ -371,7 +369,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restoreAccessoryActivationPolicy() {
-        _ = settingsActivationState.apply(.close)
         NSApp.setActivationPolicy(.accessory)
     }
 

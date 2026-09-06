@@ -800,30 +800,6 @@ struct AccessibilityPermissionRequestState: Equatable, Sendable {
     }
 }
 
-enum SettingsActivationPolicy: Equatable, Sendable {
-    case accessory
-    case regular
-}
-
-enum SettingsVisibilityEvent: Equatable, Sendable {
-    case show
-    case close
-}
-
-struct SettingsActivationPolicyState: Equatable, Sendable {
-    private(set) var policy: SettingsActivationPolicy = .accessory
-
-    mutating func apply(_ event: SettingsVisibilityEvent) -> SettingsActivationPolicy {
-        switch event {
-        case .show:
-            policy = .regular
-        case .close:
-            policy = .accessory
-        }
-        return policy
-    }
-}
-
 @MainActor
 final class TinyTaskbarPreferencesStore {
     private static let onboardingCompleteKey = "onboardingComplete"
@@ -2334,10 +2310,7 @@ final class TaskbarHoverPresenter {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.interactivePollDelay)
                 guard !Task.isCancelled, let self else { return }
-                if !Self.shouldHideAfterInteractivePoll(
-                    isDocumentDragActive: self.isDocumentDragActive,
-                    pointerIsInsideInteractionCorridor: self.pointerIsInsideInteractionCorridor)
-                {
+                if self.isDocumentDragActive || self.pointerIsInsideInteractionCorridor {
                     continue
                 }
                 self.hide()
@@ -2354,13 +2327,6 @@ final class TaskbarHoverPresenter {
         } else {
             scheduleInteractiveHide()
         }
-    }
-
-    static func shouldHideAfterInteractivePoll(
-        isDocumentDragActive: Bool,
-        pointerIsInsideInteractionCorridor: Bool
-    ) -> Bool {
-        !isDocumentDragActive && !pointerIsInsideInteractionCorridor
     }
 
     private var pointerIsInsideInteractionCorridor: Bool {

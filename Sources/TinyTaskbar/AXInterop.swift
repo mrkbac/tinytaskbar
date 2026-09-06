@@ -14,6 +14,13 @@ private func axUIElementGetWindowID(
     _ identifier: UnsafeMutablePointer<CGWindowID>
 ) -> AXError
 
+func axStringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
+    var rawValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success
+    else { return nil }
+    return rawValue as? String
+}
+
 private struct AXPhysicalWindowIdentity: Hashable {
     let pid: Int32
     let cgWindowNumber: UInt32
@@ -451,8 +458,8 @@ private enum ApplicationMenuCommandResolver {
     }
 
     private static func descriptor(for element: AXUIElement) -> ApplicationMenuItemDescriptor? {
-        guard stringAttribute(kAXRoleAttribute, from: element) == kAXMenuItemRole,
-            let title = stringAttribute(kAXTitleAttribute, from: element),
+        guard axStringAttribute(kAXRoleAttribute, from: element) == kAXMenuItemRole,
+            let title = axStringAttribute(kAXTitleAttribute, from: element),
             let isEnabled = boolAttribute(kAXEnabledAttribute, from: element)
         else { return nil }
 
@@ -462,7 +469,7 @@ private enum ApplicationMenuCommandResolver {
         else { return nil }
         return ApplicationMenuItemDescriptor(
             title: title,
-            commandCharacter: stringAttribute(kAXMenuItemCmdCharAttribute, from: element),
+            commandCharacter: axStringAttribute(kAXMenuItemCmdCharAttribute, from: element),
             commandModifiers: uint32Attribute(
                 kAXMenuItemCmdModifiersAttribute, from: element),
             isEnabled: isEnabled,
@@ -495,16 +502,6 @@ private enum ApplicationMenuCommandResolver {
             guard CFGetTypeID(rawElement) == AXUIElementGetTypeID() else { return nil }
             return (rawElement as! AXUIElement)
         }
-    }
-
-    private static func stringAttribute(
-        _ attribute: String,
-        from element: AXUIElement
-    ) -> String? {
-        var rawValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success
-        else { return nil }
-        return rawValue as? String
     }
 
     private static func boolAttribute(
@@ -1234,7 +1231,8 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
     private func tabCloseButton(for tabElement: AXUIElement) -> AXUIElement? {
         axElementArray(kAXChildrenAttribute, from: tabElement).first { element in
-            stringAttribute(kAXSubroleAttribute, from: element) == kAXCloseButtonSubrole as String
+            axStringAttribute(kAXSubroleAttribute, from: element)
+                == kAXCloseButtonSubrole as String
         }
     }
 
@@ -1267,15 +1265,6 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
             return (cfValue as! AXUIElement)
         }
-    }
-
-    private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
-        var rawValue: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(element, attribute as CFString, &rawValue) == .success,
-            let rawValue
-        else { return nil }
-        return rawValue as? String
     }
 
     private func supportsAction(_ action: String, on element: AXUIElement) -> Bool {
@@ -1555,7 +1544,7 @@ private final class AXWindowInspector {
             return nil
         }
         let tabGroups = children.filter {
-            stringAttribute(kAXRoleAttribute, from: $0) == kAXTabGroupRole as String
+            axStringAttribute(kAXRoleAttribute, from: $0) == kAXTabGroupRole as String
         }
         guard tabGroups.count == 1,
             let tabElements = elementArrayAttribute(kAXTabsAttribute, from: tabGroups[0]),
@@ -1645,21 +1634,6 @@ private final class AXWindowInspector {
             guard CFGetTypeID(cfValue) == AXUIElementGetTypeID() else { return nil }
             return (cfValue as! AXUIElement)
         }
-    }
-
-    private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
-        var rawValue: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(
-                element,
-                attribute as CFString,
-                &rawValue
-            ) == .success,
-            let rawValue
-        else {
-            return nil
-        }
-        return stringValue(rawValue)
     }
 
     private func stringValue(_ value: Any) -> String? {

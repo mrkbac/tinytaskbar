@@ -834,17 +834,6 @@ struct PermissionTests {
         #expect(state.decision() == .alreadyRequested)
     }
 
-    @Test("Settings visibility temporarily uses regular activation")
-    func settingsActivationPolicyTransitions() {
-        var state = SettingsActivationPolicyState()
-
-        #expect(state.policy == .accessory)
-        #expect(state.apply(.show) == .regular)
-        #expect(state.policy == .regular)
-        #expect(state.apply(.close) == .accessory)
-        #expect(state.policy == .accessory)
-    }
-
     @Test("preferences default and persisted state transitions")
     @MainActor
     func preferencesPersist() {
@@ -1054,23 +1043,6 @@ struct PermissionTests {
             documentURL: { nil })
         unsupportedController.loadView()
         #expect(unsupportedController.documentProxyView == nil)
-    }
-
-    @Test("document drag keeps its hover card alive until the session ends")
-    @MainActor
-    func documentDragRetainsHoverCard() {
-        #expect(
-            !TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
-                isDocumentDragActive: true,
-                pointerIsInsideInteractionCorridor: false))
-        #expect(
-            !TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
-                isDocumentDragActive: false,
-                pointerIsInsideInteractionCorridor: true))
-        #expect(
-            TaskbarHoverPresenter.shouldHideAfterInteractivePoll(
-                isDocumentDragActive: false,
-                pointerIsInsideInteractionCorridor: false))
     }
 
     @Test("hover card lists native tabs and dispatches the selected tab")

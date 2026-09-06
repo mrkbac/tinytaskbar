@@ -422,6 +422,18 @@ enum ApplicationMenuCommandMatcher {
             return matches.count == 1 ? matches[0] : nil
         }
     }
+
+    static func firstUniqueCommands<Branch>(
+        in menuBranches: [Branch],
+        descriptors: (Branch) -> [ApplicationMenuItemDescriptor]?
+    ) -> [ApplicationMenuCommand] {
+        for branch in menuBranches {
+            guard let items = descriptors(branch) else { continue }
+            let commands = uniqueCommands(in: items)
+            if !commands.isEmpty { return commands }
+        }
+        return []
+    }
 }
 
 @MainActor
@@ -429,28 +441,41 @@ private enum ApplicationMenuCommandResolver {
     private static let traversalLimit = 512
 
     static func commands(for pid: pid_t) -> [ApplicationMenuCommand] {
-        guard let menuItems = menuItems(for: pid) else { return [] }
-        return ApplicationMenuCommandMatcher.uniqueCommands(in: menuItems.map(\.descriptor))
+        guard let menuBranches = menuBranches(for: pid) else { return [] }
+        return ApplicationMenuCommandMatcher.firstUniqueCommands(in: menuBranches) { branch in
+            menuItems(in: branch)?.map(\.descriptor)
+        }
     }
 
     static func perform(_ command: ApplicationMenuCommand, for pid: pid_t) -> AXError {
-        guard let menuItems = menuItems(for: pid) else { return .actionUnsupported }
-        let matches = menuItems.filter {
-            ApplicationMenuCommandMatcher.command(for: $0.descriptor) == command
+        guard let menuBranches = menuBranches(for: pid) else { return .actionUnsupported }
+        for branch in menuBranches {
+            guard let menuItems = menuItems(in: branch) else { continue }
+            let commands = ApplicationMenuCommandMatcher.uniqueCommands(
+                in: menuItems.map(\.descriptor))
+            guard !commands.isEmpty else { continue }
+            let matches = menuItems.filter {
+                ApplicationMenuCommandMatcher.command(for: $0.descriptor) == command
+            }
+            guard matches.count == 1 else { return .actionUnsupported }
+            return AXUIElementPerformAction(matches[0].element, kAXPressAction as CFString)
         }
-        guard matches.count == 1 else { return .actionUnsupported }
-        return AXUIElementPerformAction(matches[0].element, kAXPressAction as CFString)
+        return .actionUnsupported
     }
 
-    private static func menuItems(
-        for pid: pid_t
-    ) -> [(element: AXUIElement, descriptor: ApplicationMenuItemDescriptor)]? {
+    private static func menuBranches(for pid: pid_t) -> [AXUIElement]? {
         let application = AXUIElementCreateApplication(pid)
         guard let menuBar = elementAttribute(kAXMenuBarAttribute, from: application) else {
             return nil
         }
+        let branches = elementArrayAttribute(kAXChildrenAttribute, from: menuBar)
+        return branches.isEmpty ? [menuBar] : branches
+    }
 
-        var pending = [menuBar]
+    private static func menuItems(
+        in branch: AXUIElement
+    ) -> [(element: AXUIElement, descriptor: ApplicationMenuItemDescriptor)]? {
+        var pending = [branch]
         var menuItems: [(AXUIElement, ApplicationMenuItemDescriptor)] = []
         var visitedCount = 0
         while let element = pending.popLast(), visitedCount < traversalLimit {
@@ -458,7 +483,8 @@ private enum ApplicationMenuCommandResolver {
             if let descriptor = descriptor(for: element) {
                 menuItems.append((element, descriptor))
             }
-            pending.append(contentsOf: elementArrayAttribute(kAXChildrenAttribute, from: element))
+            pending.append(
+                contentsOf: elementArrayAttribute(kAXChildrenAttribute, from: element).reversed())
         }
         guard pending.isEmpty else { return nil }
         return menuItems
@@ -575,6 +601,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     private var axWindowGroupsByPID: [Int32: [[AXUIElement]]] = [:]
     private var activationPoliciesByPID: [pid_t: NSApplication.ActivationPolicy] = [:]
     private var cachedEnumerationsByPID: [pid_t: AXWindowEnumerationResult] = [:]
+    private var applicationMenuCommandsByPID: [pid_t: [ApplicationMenuCommand]] = [:]
     private var dirtyApplicationPIDs: Set<pid_t> = []
     private var refreshAllApplications = true
     private var lastFrontmostPID: pid_t?
@@ -597,10 +624,12 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
 
     func invalidateApplication(_ pid: pid_t) {
         guard pid != selfPID else { return }
+        applicationMenuCommandsByPID[pid] = nil
         dirtyApplicationPIDs.insert(pid)
     }
 
     func invalidateAllApplications() {
+        applicationMenuCommandsByPID.removeAll()
         refreshAllApplications = true
         invalidateWindowServer()
     }
@@ -610,7 +639,14 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func applicationMenuCommands(for item: TaskbarItem) -> [ApplicationMenuCommand] {
-        ApplicationMenuCommandResolver.commands(for: item.pid)
+        if let cachedCommands = applicationMenuCommandsByPID[item.pid] {
+            return cachedCommands
+        }
+        let commands = ApplicationMenuCommandResolver.commands(for: item.pid)
+        if !commands.isEmpty {
+            applicationMenuCommandsByPID[item.pid] = commands
+        }
+        return commands
     }
 
     func performApplicationMenuCommand(
@@ -660,6 +696,9 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
             !$0.isTerminated && $0.processIdentifier != selfPID
         }
         let runningPIDs = Set(runningApplications.map(\.processIdentifier))
+        applicationMenuCommandsByPID = applicationMenuCommandsByPID.filter {
+            runningPIDs.contains($0.key)
+        }
         activationPoliciesByPID = activationPoliciesByPID.filter {
             runningPIDs.contains($0.key)
         }

@@ -21,6 +21,9 @@
 - Show each application's own labels for its Command-N, Command-Shift-N, and
   Command-T menu actions, including localized labels, while continuing to reject
   disabled, non-actionable, and ambiguous shortcuts.
+- Discover those application commands from left to right and stop after the first
+  matching menu branch, avoiding unrelated large menus such as Chrome bookmarks;
+  cache successful results while re-resolving the live action before execution.
 
 ## 1.3.0
 

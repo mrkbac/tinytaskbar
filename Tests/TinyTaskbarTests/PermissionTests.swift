@@ -1180,6 +1180,33 @@ struct PermissionTests {
             ])
     }
 
+    @Test("Application menu matching stops at the first leftmost command branch")
+    func applicationMenuBranchMatching() {
+        let commandN = ApplicationMenuItemDescriptor(
+            title: "New Window", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let commandT = ApplicationMenuItemDescriptor(
+            title: "New Tab", commandCharacter: "t", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+        let laterDuplicate = ApplicationMenuItemDescriptor(
+            title: "Large later menu", commandCharacter: "n", commandModifiers: 0,
+            isEnabled: true, actions: [kAXPressAction])
+
+        #expect(
+            ApplicationMenuCommandMatcher.firstUniqueCommands(
+                in: [
+                    [],
+                    [commandN, commandT],
+                    [laterDuplicate],
+                ],
+                descriptors: { $0 }) == [
+                    ApplicationMenuCommand(
+                        title: "New Window", commandCharacter: "n", commandModifiers: 0),
+                    ApplicationMenuCommand(
+                        title: "New Tab", commandCharacter: "t", commandModifiers: 0),
+                ])
+    }
+
     @Test("actionable references survive only exact live physical identity gaps")
     func actionableReferenceContinuity() {
         let resolved = ActionableReferenceContinuity.resolve(

@@ -877,9 +877,8 @@ struct PermissionTests {
             isActive: false
         )
 
-        #expect(item.buttonTitle == "Project.swift")
+        #expect(item.displayTitle == "Project.swift")
         #expect(item.accessibilityLabel == "Editor, Project.swift")
-        #expect(item.tooltip == "Activate Editor: Project.swift")
     }
 
     @Test("hover card preserves the full title and application identity")
@@ -1342,22 +1341,6 @@ struct PermissionTests {
             ) == "stable-beta")
     }
 
-    @Test("native tab close uses only actions advertised by Accessibility")
-    func nativeTabCloseRequiresAdvertisedActions() {
-        #expect(
-            AXActionSupport.contains(
-                kAXPressAction as String,
-                in: [kAXPressAction as String]))
-        #expect(
-            !AXActionSupport.contains(
-                kAXPressAction as String,
-                in: [kAXShowAlternateUIAction as String]))
-        #expect(
-            AXActionSupport.contains(
-                kAXShowAlternateUIAction as String,
-                in: [kAXShowAlternateUIAction as String, kAXShowDefaultUIAction as String]))
-    }
-
     @Test("Fullscreen capability distinguishes exposed, read-only, and inconclusive attributes")
     func fullscreenCapabilityRequiresSuccessfulBooleanRead() {
         #expect(
@@ -1603,7 +1586,7 @@ struct PermissionTests {
             return
         }
         let buttonFrame = contentView.convert(button.bounds, from: button)
-        #expect(button.title == item.buttonTitle)
+        #expect(button.title == item.displayTitle)
         #expect(button.heightConstraint?.constant == TaskbarAppearance.buttonHeight)
         #expect(button.frame.height == TaskbarAppearance.buttonHeight)
         #expect(button.accessibilityLabel() == item.accessibilityLabel)
@@ -2277,7 +2260,6 @@ struct PermissionTests {
         )
         #expect(hiddenResult.itemsByDisplay["main"]?.map(\.id) == ["hidden"])
         #expect(hiddenResult.itemsByDisplay["main"]?.first?.isHidden == true)
-        #expect(hiddenResult.itemsByDisplay["main"]?.first?.tooltip == "Show Hidden: Hidden")
 
         let closedItem = TaskbarItem(
             id: "closed", pid: 11, applicationName: "Closed", title: "Closed",
@@ -2826,13 +2808,13 @@ struct PermissionTests {
             return
         }
 
-        store.activate(item)
+        store.performPrimaryClick(item)
         #expect(provider.minimizeCount == 1)
 
         // The button still says active, but the system snapshot has moved focus.
         // The click must activate, not minimize based on stale presentation state.
         provider.snapshotValue = makeFixtureSnapshot(isActive: false)
-        store.activate(item)
+        store.performPrimaryClick(item)
         #expect(provider.activationCount == 1)
 
         guard let inactiveItem = store.state.itemsByDisplay["main"]?.first else {
@@ -2843,16 +2825,16 @@ struct PermissionTests {
 
         // The inverse race must also toggle from the fresh system focus.
         provider.snapshotValue = makeFixtureSnapshot()
-        store.activate(inactiveItem)
+        store.performPrimaryClick(inactiveItem)
         #expect(provider.minimizeCount == 2)
 
-        store.close(item)
+        store.execute(.close(item))
         #expect(provider.closeCount == 1)
 
         store.setAccessibilityAvailable(false)
-        store.activate(item)
-        store.activate(inactiveItem)
-        store.close(item)
+        store.performPrimaryClick(item)
+        store.performPrimaryClick(inactiveItem)
+        store.execute(.close(item))
         #expect(provider.activationCount == 1)
         #expect(provider.minimizeCount == 2)
         #expect(provider.closeCount == 1)

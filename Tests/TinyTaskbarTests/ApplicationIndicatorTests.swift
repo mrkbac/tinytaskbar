@@ -63,16 +63,11 @@ struct ApplicationIndicatorTests {
     func dockMembershipRefreshDelay() {
         #expect(SystemDockBadgeObserver.applicationMembershipRefreshDelay == .seconds(1))
         #expect(
-            SystemDockBadgeObserver.applicationInformationSeedCheckInterval == .seconds(10))
+            SystemDockBadgeObserver.nextBadgeScanDelay(
+                hasObservedApplications: false) == nil)
         #expect(
             SystemDockBadgeObserver.nextBadgeScanDelay(
-                hasObservedApplications: false, badgesChanged: false) == nil)
-        #expect(
-            SystemDockBadgeObserver.nextBadgeScanDelay(
-                hasObservedApplications: true, badgesChanged: true) == .seconds(10))
-        #expect(
-            SystemDockBadgeObserver.nextBadgeScanDelay(
-                hasObservedApplications: true, badgesChanged: false) == .seconds(10))
+                hasObservedApplications: true) == .seconds(10))
     }
 
     @Test("badge observation excludes broad Dock-root animation changes")

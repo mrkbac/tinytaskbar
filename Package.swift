@@ -14,12 +14,6 @@ let package = Package(
             path: "Sources/TinyTaskbar",
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
-            ],
-            linkerSettings: [
-                .linkedFramework("AppKit"),
-                .linkedFramework("ApplicationServices"),
-                .linkedFramework("CoreGraphics"),
-                .linkedFramework("ServiceManagement"),
             ]
         ),
         .testTarget(

@@ -522,15 +522,10 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
     var onChange: (@MainActor ([String: String]) -> Void)?
 
     nonisolated static func nextBadgeScanDelay(
-        hasObservedApplications: Bool,
-        badgesChanged _: Bool
+        hasObservedApplications: Bool
     ) -> Duration? {
         guard hasObservedApplications else { return nil }
         return fallbackBadgeRefreshInterval
-    }
-
-    nonisolated static var applicationInformationSeedCheckInterval: Duration {
-        seedCheckInterval
     }
 
     func setObservedApplicationIdentities(_ identities: Set<String>) {
@@ -701,8 +696,7 @@ final class SystemDockBadgeObserver: @unchecked Sendable {
         if seedReader != nil {
             scheduleSeedCheck()
         } else if let nextDelay = Self.nextBadgeScanDelay(
-            hasObservedApplications: !observedApplicationIdentities.isEmpty,
-            badgesChanged: changed)
+            hasObservedApplications: !observedApplicationIdentities.isEmpty)
         {
             scheduleRefresh(after: nextDelay)
         }

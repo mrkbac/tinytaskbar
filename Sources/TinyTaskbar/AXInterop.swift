@@ -159,22 +159,10 @@ final class SystemAccessibilityPermissionProvider: AccessibilityPermissionProvid
 }
 
 struct WindowSnapshotEvidence: Equatable, Sendable {
-    let isComplete: Bool
-    let knownApplicationPIDs: Set<Int32>
-    let axWindowListReadPIDs: Set<Int32>
-    let observedAXWindowIDs: Set<String>
-
-    init(
-        isComplete: Bool = false,
-        knownApplicationPIDs: Set<Int32> = [],
-        axWindowListReadPIDs: Set<Int32> = [],
-        observedAXWindowIDs: Set<String> = []
-    ) {
-        self.isComplete = isComplete
-        self.knownApplicationPIDs = knownApplicationPIDs
-        self.axWindowListReadPIDs = axWindowListReadPIDs
-        self.observedAXWindowIDs = observedAXWindowIDs
-    }
+    var isComplete = false
+    var knownApplicationPIDs: Set<Int32> = []
+    var axWindowListReadPIDs: Set<Int32> = []
+    var observedAXWindowIDs: Set<String> = []
 
     static let unknown = WindowSnapshotEvidence()
 }
@@ -182,32 +170,10 @@ struct WindowSnapshotEvidence: Equatable, Sendable {
 struct RawWindowSnapshot: Equatable, Sendable {
     let candidates: [WindowCandidate]
     let cgWindows: [CGWindowMetadata]
-    let cgAssignments: [Int: Int]?
+    var cgAssignments: [Int: Int]? = nil
     let displays: [DisplayDescriptor]
     let frontmostPID: Int32?
-    let evidence: WindowSnapshotEvidence
-
-    init(
-        candidates: [WindowCandidate],
-        cgWindows: [CGWindowMetadata],
-        cgAssignments: [Int: Int]? = nil,
-        displays: [DisplayDescriptor],
-        frontmostPID: Int32?,
-        evidence: WindowSnapshotEvidence = .unknown
-    ) {
-        self.candidates = candidates
-        self.cgWindows = cgWindows
-        self.cgAssignments = cgAssignments
-        self.displays = displays
-        self.frontmostPID = frontmostPID
-        self.evidence = evidence
-    }
-}
-
-enum AXMessagingPolicy {
-    /// Bounds a single synchronous AX request so one unresponsive process cannot
-    /// indefinitely block TinyTaskbar's main-actor refresh path.
-    static let timeoutSeconds: Float = 0.25
+    var evidence: WindowSnapshotEvidence = .unknown
 }
 
 struct WindowElementIdentityRegistry<Element> {
@@ -325,12 +291,6 @@ enum NativeTabSelectionTarget {
     }
 }
 
-enum AXActionSupport {
-    static func contains(_ action: String, in advertisedActions: [String]) -> Bool {
-        advertisedActions.contains(action)
-    }
-}
-
 enum AXFullscreenCapabilityResolver {
     static func resolve(
         readError: AXError,
@@ -394,7 +354,7 @@ enum ApplicationMenuCommandMatcher {
 
     static func command(for item: ApplicationMenuItemDescriptor) -> ApplicationMenuCommand? {
         guard item.isEnabled,
-            AXActionSupport.contains(kAXPressAction, in: item.actions),
+            item.actions.contains(kAXPressAction),
             let commandCharacter = item.commandCharacter?.lowercased(),
             let commandModifiers = item.commandModifiers,
             supportedShortcuts.contains(where: {
@@ -572,6 +532,9 @@ private enum ApplicationMenuCommandResolver {
 
 @MainActor
 final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
+    /// Bounds a single synchronous AX request so one unresponsive process cannot
+    /// indefinitely block TinyTaskbar's main-actor refresh path.
+    private static let messagingTimeoutSeconds: Float = 0.25
     private let logger = Logger(subsystem: "com.tinytaskbar", category: "accessibility")
     private let selfPID = ProcessInfo.processInfo.processIdentifier
     private lazy var inspector = AXWindowInspector(logger: logger)
@@ -613,7 +576,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
     init() {
         let error = AXUIElementSetMessagingTimeout(
             AXUIElementCreateSystemWide(),
-            AXMessagingPolicy.timeoutSeconds
+            Self.messagingTimeoutSeconds
         )
         if error != .success {
             logger.error(
@@ -1320,7 +1283,7 @@ final class SystemWindowSnapshotProvider: WindowSnapshotProvider {
         guard AXUIElementCopyActionNames(element, &rawActions) == .success,
             let actions = rawActions as? [String]
         else { return false }
-        return AXActionSupport.contains(action, in: actions)
+        return actions.contains(action)
     }
 
     @discardableResult
@@ -1540,7 +1503,7 @@ private final class AXWindowInspector {
                 role: role,
                 subrole: subrole,
                 title: stringValue(values[4]) ?? "",
-                frame: AXScreenCoordinateMapper.toCGScreen(axFrame),
+                frame: axFrame,
                 isHidden: boolValue(values[5]) ?? false,
                 isMinimized: boolValue(values[6]) ?? false,
                 isFullscreen: boolAttribute(AXWindowAttribute.fullscreen, from: element) ?? false,
@@ -1921,13 +1884,10 @@ private final class AXApplicationObserver: @unchecked Sendable {
         }
     }
 
-    private func handleNotification(_ notification: String) {
-        onNotification(pid, notification)
-    }
-
     nonisolated func notificationReceived(_ notification: String) {
         Task { @MainActor [weak self] in
-            self?.handleNotification(notification)
+            guard let self else { return }
+            onNotification(pid, notification)
         }
     }
 }
@@ -1945,13 +1905,9 @@ private func axObserverCallback(
 
 enum CGWindowReader {
     static func allWindows() -> [CGWindowMetadata] {
-        windows(options: [.optionAll, .excludeDesktopElements])
-    }
-
-    private static func windows(options: CGWindowListOption) -> [CGWindowMetadata] {
         guard
             let rawWindows = CGWindowListCopyWindowInfo(
-                options,
+                [.optionAll, .excludeDesktopElements],
                 kCGNullWindowID
             ) as? [[String: Any]]
         else {

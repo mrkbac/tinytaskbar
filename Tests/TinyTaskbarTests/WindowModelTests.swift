@@ -86,16 +86,6 @@ struct WindowModelTests {
         #expect(repeatedFirst == first)
     }
 
-    @Test("AX frames preserve global top-left CG screen coordinates")
-    func axCoordinatesRemainUnchanged() {
-        let axFrame = CGRect(x: -1280, y: 100, width: 640, height: 400)
-
-        let cgFrame = AXScreenCoordinateMapper.toCGScreen(axFrame)
-
-        #expect(cgFrame == axFrame)
-        #expect(cgFrame.minY == 100)
-    }
-
     @Test("eligibility accepts standard and dialog windows")
     func eligibleWindowRules() {
         let eligibility = WindowEligibility()
@@ -1185,7 +1175,6 @@ struct WindowModelTests {
             selfPID: 999
         ).itemsByDisplay["main"]!.first!
         #expect(item.accessibilityLabel.contains(candidate.title))
-        #expect(item.tooltip.contains(candidate.title))
         #expect(item.applicationIdentity == candidate.applicationIdentity)
     }
 

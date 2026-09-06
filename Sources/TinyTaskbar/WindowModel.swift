@@ -2,30 +2,14 @@ import CoreGraphics
 import Foundation
 
 /// The public metadata that Core Graphics makes available for a window.
-/// Its coordinate system is the Quartz screen space used by AX positions after conversion.
+/// Its coordinate system is the global top-left screen space also used by AX positions.
 struct CGWindowMetadata: Equatable, Sendable {
-    let windowNumber: UInt32?
+    var windowNumber: UInt32? = nil
     let ownerPID: Int32
-    let layer: Int
+    var layer = 0
     let bounds: CGRect
-    let title: String
-    let isOnScreen: Bool
-
-    init(
-        windowNumber: UInt32? = nil,
-        ownerPID: Int32,
-        layer: Int = 0,
-        bounds: CGRect,
-        title: String = "",
-        isOnScreen: Bool = true
-    ) {
-        self.windowNumber = windowNumber
-        self.ownerPID = ownerPID
-        self.layer = layer
-        self.bounds = bounds
-        self.title = title
-        self.isOnScreen = isOnScreen
-    }
+    var title = ""
+    var isOnScreen = true
 }
 
 /// A display has both a Quartz frame for projection and an AppKit frame for its panel.
@@ -59,14 +43,7 @@ struct TaskbarTab: Equatable, Sendable, Identifiable {
     let id: String
     let title: String
     let isSelected: Bool
-    let index: Int
-
-    init(id: String, title: String, isSelected: Bool, index: Int = 0) {
-        self.id = id
-        self.title = title
-        self.isSelected = isSelected
-        self.index = index
-    }
+    var index = 0
 }
 
 /// AX-derived data before it has been matched to the public Core Graphics window list.
@@ -214,88 +191,31 @@ struct TaskbarItem: Equatable, Sendable, Identifiable {
     let id: String
     let pid: Int32
     let applicationName: String
-    let applicationIdentity: String?
-    let applicationBundlePath: String?
+    var applicationIdentity: String? = nil
+    var applicationBundlePath: String? = nil
     let title: String
     let displayIdentifier: String
     let cgWindowNumber: UInt32?
-    let stableOrderKey: String?
-    let isHidden: Bool
-    let isMinimized: Bool
+    var stableOrderKey: String? = nil
+    var isHidden = false
+    var isMinimized = false
     let isActive: Bool
-    let nativeTabGroupID: String?
-    let nativeTabs: [TaskbarTab]
-
-    init(
-        id: String,
-        pid: Int32,
-        applicationName: String,
-        applicationIdentity: String? = nil,
-        applicationBundlePath: String? = nil,
-        title: String,
-        displayIdentifier: String,
-        cgWindowNumber: UInt32?,
-        stableOrderKey: String? = nil,
-        isHidden: Bool = false,
-        isMinimized: Bool = false,
-        isActive: Bool,
-        nativeTabGroupID: String? = nil,
-        nativeTabs: [TaskbarTab] = []
-    ) {
-        self.id = id
-        self.pid = pid
-        self.applicationName = applicationName
-        self.applicationIdentity = applicationIdentity
-        self.applicationBundlePath = applicationBundlePath
-        self.title = title
-        self.displayIdentifier = displayIdentifier
-        self.cgWindowNumber = cgWindowNumber
-        self.stableOrderKey = stableOrderKey
-        self.isHidden = isHidden
-        self.isMinimized = isMinimized
-        self.isActive = isActive
-        self.nativeTabGroupID = nativeTabGroupID
-        self.nativeTabs = nativeTabs
-    }
+    var nativeTabGroupID: String? = nil
+    var nativeTabs: [TaskbarTab] = []
 
     var displayTitle: String {
         title.isEmpty ? applicationName : title
     }
 
-    var buttonTitle: String { displayTitle }
-
     var accessibilityLabel: String {
         "\(applicationName), \(displayTitle)"
-    }
-
-    var tooltip: String {
-        if isHidden {
-            return "Show \(applicationName): \(displayTitle)"
-        }
-        if isActive {
-            return "Minimize \(applicationName): \(displayTitle)"
-        }
-        if isMinimized {
-            return "Restore \(applicationName): \(displayTitle)"
-        }
-        return "Activate \(applicationName): \(displayTitle)"
     }
 }
 
 struct TaskbarState: Equatable, Sendable {
     let displays: [DisplayDescriptor]
     let itemsByDisplay: [String: [TaskbarItem]]
-    let fullscreenDisplayIdentifiers: Set<String>
-
-    init(
-        displays: [DisplayDescriptor],
-        itemsByDisplay: [String: [TaskbarItem]],
-        fullscreenDisplayIdentifiers: Set<String> = []
-    ) {
-        self.displays = displays
-        self.itemsByDisplay = itemsByDisplay
-        self.fullscreenDisplayIdentifiers = fullscreenDisplayIdentifiers
-    }
+    var fullscreenDisplayIdentifiers: Set<String> = []
 
     static let empty = TaskbarState(displays: [], itemsByDisplay: [:])
 }
@@ -381,14 +301,6 @@ struct TinyTaskbarPreferences: Equatable, Sendable {
     var onboardingComplete = false
     var hideMacDock = false
 
-    init(
-        onboardingComplete: Bool = false,
-        hideMacDock: Bool = false
-    ) {
-        self.onboardingComplete = onboardingComplete
-        self.hideMacDock = hideMacDock
-    }
-
     static let defaults = TinyTaskbarPreferences()
 }
 
@@ -403,13 +315,6 @@ extension CGRect {
             && abs(minY - other.minY) <= tolerance
             && abs(width - other.width) <= tolerance
             && abs(height - other.height) <= tolerance
-    }
-}
-
-/// AX positions and CG window bounds already use the same global top-left screen space.
-enum AXScreenCoordinateMapper {
-    static func toCGScreen(_ frame: CGRect) -> CGRect {
-        frame
     }
 }
 

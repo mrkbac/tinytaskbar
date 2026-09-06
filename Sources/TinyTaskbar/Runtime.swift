@@ -4,14 +4,6 @@ import Foundation
 import OSLog
 import ServiceManagement
 
-struct RefreshMetrics: Equatable, Sendable {
-    fileprivate(set) var refreshCount = 0
-    fileprivate(set) var lastCandidateCount = 0
-    fileprivate(set) var lastVisibleWindowCount = 0
-    fileprivate(set) var lastAXApplicationReadCount = 0
-    fileprivate(set) var lastDurationMilliseconds = 0.0
-}
-
 /// AX and Core Graphics can disagree while a window is moving. Preserve an already-
 /// rendered identity for as long as either authoritative source still reports it,
 /// rather than making a time-based guess about whether the window was closed.
@@ -33,13 +25,6 @@ enum TaskbarItemResolver {
         return physicalMatches.count == 1 ? physicalMatches[0] : nil
     }
 
-    static func representsSameWindow(_ lhs: TaskbarItem, _ rhs: TaskbarItem) -> Bool {
-        if lhs.id == rhs.id { return true }
-        guard let lhsWindowNumber = lhs.cgWindowNumber,
-            let rhsWindowNumber = rhs.cgWindowNumber
-        else { return false }
-        return lhs.pid == rhs.pid && lhsWindowNumber == rhsWindowNumber
-    }
 }
 
 struct TaskbarStateContinuity {
@@ -359,7 +344,6 @@ final class TaskbarStore {
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
     private(set) var accessibilityAvailable = false
-    private(set) var metrics = RefreshMetrics()
 
     var onStateChange: (@MainActor (TaskbarState) -> Void)?
 
@@ -495,13 +479,10 @@ final class TaskbarStore {
         let elapsed = DispatchTime.now().uptimeNanoseconds - start
         let durationMilliseconds = Double(elapsed) / 1_000_000
 
-        metrics.refreshCount += 1
-        metrics.lastCandidateCount = snapshot.candidates.count
-        metrics.lastVisibleWindowCount = resolved.itemsByDisplay.values.reduce(0) { $0 + $1.count }
-        metrics.lastAXApplicationReadCount = snapshot.evidence.axWindowListReadPIDs.count
-        metrics.lastDurationMilliseconds = durationMilliseconds
+        let visibleWindowCount = resolved.itemsByDisplay.values.reduce(0) { $0 + $1.count }
+        let axApplicationReadCount = snapshot.evidence.axWindowListReadPIDs.count
         logger.debug(
-            "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(self.metrics.lastVisibleWindowCount, privacy: .public) ax_apps_read=\(self.metrics.lastAXApplicationReadCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
+            "refresh candidates=\(snapshot.candidates.count, privacy: .public) visible=\(visibleWindowCount, privacy: .public) ax_apps_read=\(axApplicationReadCount, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
         )
 
         let workAreaApplicationCountBeforePublish = workAreaApplicationCount
@@ -533,28 +514,6 @@ final class TaskbarStore {
         }
         taskbarHeightsByDisplay = positiveHeights
         applyTaskbarWorkAreas()
-    }
-
-    func activate(_ item: TaskbarItem) {
-        guard accessibilityAvailable else { return }
-
-        // A rendered item can be one event behind the actual frontmost window.
-        // Refresh synchronously so a second click toggles the window that is truly
-        // focused now, rather than trusting stale button presentation state.
-        provider.invalidateApplication(item.pid)
-        refreshNow()
-        guard
-            let currentItem = TaskbarItemResolver.currentItem(for: item, in: state)
-        else {
-            return
-        }
-
-        if currentItem.isActive {
-            provider.minimize(currentItem)
-        } else {
-            provider.activate(currentItem)
-        }
-        requestRefresh()
     }
 
     func performPrimaryClick(_ requestedItem: TaskbarItem) {
@@ -647,13 +606,6 @@ final class TaskbarStore {
         guard let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return }
         provider.performApplicationMenuCommand(menuCommand, for: item)
-        requestRefresh()
-        requestWindowMutationConfirmation(applicationPID: item.pid)
-    }
-
-    func close(_ item: TaskbarItem) {
-        guard accessibilityAvailable else { return }
-        provider.close(item)
         requestRefresh()
         requestWindowMutationConfirmation(applicationPID: item.pid)
     }
@@ -2754,7 +2706,7 @@ private final class TaskbarBarView: NSView {
 
     private func makeButton(for item: TaskbarItem) -> TaskbarButton {
         let button = TaskbarButton(
-            title: item.buttonTitle,
+            title: item.displayTitle,
             target: self,
             action: #selector(activateButton(_:))
         )
@@ -2847,7 +2799,7 @@ private final class TaskbarBarView: NSView {
         button.setAccessibilityRole(.button)
         button.setAccessibilityLabel(item.accessibilityLabel)
         button.image = icon(for: item)
-        button.title = item.buttonTitle
+        button.title = item.displayTitle
         button.imagePosition = .imageLeading
         button.alignment = .left
 

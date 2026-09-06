@@ -61,7 +61,7 @@ struct FeatureModelTests {
     @Test("fixed standard appearance uses window titles and balanced widths")
     func fixedAppearance() {
         let window = item("window", display: "main", order: "1")
-        #expect(window.buttonTitle == "Window window")
+        #expect(window.displayTitle == "Window window")
         #expect(window.accessibilityLabel == "Editor, Window window")
         #expect(TaskbarAppearance.panelHeight == 30)
         #expect(TaskbarAppearance.buttonHeight == 28)

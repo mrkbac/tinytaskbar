@@ -2397,6 +2397,18 @@ final class TaskbarScrollView: NSScrollView {
     }
 }
 
+enum ApplicationIconSourceResolver {
+    static func resolve<Icon>(
+        runningApplicationIcon: Icon?,
+        applicationBundlePath: String?,
+        iconForFile: (String) -> Icon
+    ) -> Icon? {
+        if let runningApplicationIcon { return runningApplicationIcon }
+        guard let applicationBundlePath else { return nil }
+        return iconForFile(applicationBundlePath)
+    }
+}
+
 @MainActor
 private final class TaskbarBarView: NSView {
     private static let dragHoverPasteboardTypes: [NSPasteboard.PasteboardType] =
@@ -2904,10 +2916,11 @@ private final class TaskbarBarView: NSView {
     private func icon(for item: TaskbarItem) -> NSImage? {
         let key = ApplicationIconKey(item: item)
         if let cached = iconCache[key] { return cached }
-        let source =
-            NSRunningApplication(processIdentifier: item.pid)?.icon
-            ?? NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
-            ?? NSImage(named: NSImage.applicationIconName)
+        let source = ApplicationIconSourceResolver.resolve(
+            runningApplicationIcon: NSRunningApplication(processIdentifier: item.pid)?.icon,
+            applicationBundlePath: item.applicationBundlePath,
+            iconForFile: NSWorkspace.shared.icon(forFile:)
+        )
         if let source,
             let icon = source.copy() as? NSImage
         {
@@ -2915,7 +2928,8 @@ private final class TaskbarBarView: NSView {
             iconCache[key] = icon
             return icon
         }
-        return nil
+        return NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
+            ?? NSImage(named: NSImage.applicationIconName)
     }
 
     @objc private func activateButton(_ sender: NSButton) {

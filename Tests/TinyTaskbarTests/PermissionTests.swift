@@ -881,6 +881,30 @@ struct PermissionTests {
         #expect(item.accessibilityLabel == "Editor, Project.swift")
     }
 
+    @Test("application icons fall back to the bundle path without caching a placeholder")
+    func applicationIconSourceFallback() {
+        var requestedPaths: [String] = []
+        let iconForFile: (String) -> String = { path in
+            requestedPaths.append(path)
+            return "bundle-icon"
+        }
+
+        #expect(
+            ApplicationIconSourceResolver.resolve(
+                runningApplicationIcon: "running-icon",
+                applicationBundlePath: "/Applications/Google Chrome.app",
+                iconForFile: iconForFile
+            ) == "running-icon")
+        #expect(requestedPaths.isEmpty)
+        #expect(
+            ApplicationIconSourceResolver.resolve(
+                runningApplicationIcon: nil,
+                applicationBundlePath: "/Applications/Google Chrome.app",
+                iconForFile: iconForFile
+            ) == "bundle-icon")
+        #expect(requestedPaths == ["/Applications/Google Chrome.app"])
+    }
+
     @Test("hover card preserves the full title and application identity")
     @MainActor
     func hoverCardShowsFullTitle() {

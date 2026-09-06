@@ -901,7 +901,7 @@ struct PermissionTests {
         #expect(controller.titleLabel.lineBreakMode == .byCharWrapping)
         #expect(controller.applicationLabel.stringValue == "Editor")
         #expect(!controller.applicationLabel.isHidden)
-        #expect(controller.iconView.image != nil)
+        #expect((controller.iconView as? NSImageView)?.image != nil)
         #expect(
             controller.preferredContentSize.width
                 <= TaskbarHoverCardViewController.padding * 2
@@ -927,7 +927,10 @@ struct PermissionTests {
     @MainActor
     func hoverCardDocumentProxyIsCurrentAndCopyOnly() {
         let firstURL = URL(fileURLWithPath: "/tmp/first image.png")
-        let currentURL = URL(fileURLWithPath: "/tmp/current image.png")
+        let currentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TinyTaskbarTests-\(UUID().uuidString).png")
+        #expect(FileManager.default.createFile(atPath: currentURL.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: currentURL) }
         var requests = 0
         let proxyController = TaskbarHoverCardViewController(
             applicationName: "Preview",
@@ -953,8 +956,11 @@ struct PermissionTests {
             return
         }
         #expect(requests == 2)
-        #expect(pasteboardWriter.absoluteURL == currentURL)
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        #expect(
+            pasteboardWriter.string(forType: .fileURL).flatMap(URL.init(string:))
+                == currentURL)
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
         #expect(pasteboard.writeObjects([pasteboardWriter]))
         let writtenURLs =
@@ -968,6 +974,55 @@ struct PermissionTests {
         #expect(proxyController.preferredContentSize == ordinaryController.preferredContentSize)
         #expect(proxyView.frame.size == ordinaryController.iconView.frame.size)
         #expect(proxyView.frame.size == NSSize(width: 24, height: 24))
+        let proxyCenter = proxyController.view.convert(
+            NSPoint(x: proxyView.bounds.midX, y: proxyView.bounds.midY),
+            from: proxyView)
+        #expect(proxyController.view.hitTest(proxyCenter) === proxyView)
+
+        let mouseDown = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1)
+        let mouseDragged = NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: NSPoint(x: 8, y: 8),
+            modifierFlags: [],
+            timestamp: 0.1,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 1)
+        var initiatingEvent: NSEvent?
+        var draggedURL: URL?
+        var dragStates: [Bool] = []
+        let eventProxy = TaskbarDocumentProxyView(
+            image: NSImage(size: NSSize(width: 24, height: 24)),
+            documentURL: { currentURL },
+            onDragStateChanged: { dragStates.append($0) },
+            dragSessionStarter: { _, items, event, _ in
+                initiatingEvent = event
+                draggedURL = (items.first?.item as? NSPasteboardItem)?
+                    .string(forType: .fileURL)
+                    .flatMap(URL.init(string:))
+            })
+        eventProxy.frame.size = NSSize(width: 24, height: 24)
+        guard let mouseDown, let mouseDragged else {
+            Issue.record("could not construct document drag events")
+            return
+        }
+        eventProxy.mouseDown(with: mouseDown)
+        eventProxy.mouseDragged(with: mouseDragged)
+        #expect(initiatingEvent === mouseDown)
+        #expect(initiatingEvent?.type == .leftMouseDown)
+        #expect(draggedURL == currentURL)
+        #expect(dragStates == [true])
 
         let unsupportedController = TaskbarHoverCardViewController(
             applicationName: "Preview",
@@ -2836,9 +2891,9 @@ struct PermissionTests {
         #expect(provider.activationCount == 1)
     }
 
-    @Test("repeated minimize and restore returns past an application sibling")
+    @Test("focused primary click directly minimizes the selected physical window")
     @MainActor
-    func primaryClickReturnsPastSiblingWindow() {
+    func focusedPrimaryClickMatchesNativeMinimize() {
         let provider = MockWindowSnapshotProvider(
             snapshot: focusToggleSnapshot(activeWindow: "chatgpt"))
         let store = TaskbarStore(provider: provider)
@@ -2861,27 +2916,21 @@ struct PermissionTests {
         provider.events = []
         provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
         store.performPrimaryClick(chromeOne)
-        #expect(provider.events == [.activate(chatGPT.id)])
-        store.applicationDidActivate(chromeOne.pid)
-        #expect(provider.events == [.activate(chatGPT.id)])
-        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
-        store.applicationDidActivate(chatGPT.pid)
-        #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+        #expect(provider.events == [.minimize(chromeOne.id)])
 
         provider.events = []
+        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
         store.performPrimaryClick(chromeOne)
         #expect(provider.events == [.activate(chromeOne.id)])
 
         provider.events = []
         provider.snapshotValue = focusToggleSnapshot(activeWindow: "chrome-one")
         store.performPrimaryClick(chromeOne)
-        #expect(provider.events == [.activate(chatGPT.id)])
-        provider.snapshotValue = focusToggleSnapshot(activeWindow: "chatgpt")
-        store.applicationDidActivate(chatGPT.pid)
-        #expect(provider.events == [.activate(chatGPT.id), .minimize(chromeOne.id)])
+        #expect(provider.events == [.minimize(chromeOne.id)])
 
+        #expect(!provider.activatedItemIDs.contains(chatGPT.id))
         #expect(!provider.activatedItemIDs.contains(chromeTwo.id))
-        #expect(provider.invalidateWindowServerCount == 4)
+        #expect(provider.invalidateWindowServerCount == 0)
     }
 
     @Test("primary click follows physical identity through AX identity turnover")

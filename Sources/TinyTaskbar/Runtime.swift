@@ -42,32 +42,6 @@ enum TaskbarItemResolver {
     }
 }
 
-enum WindowFocusReturnResolver {
-    static func resolve(
-        selected: TaskbarItem,
-        items: [TaskbarItem],
-        orderedCGWindows: [CGWindowMetadata]
-    ) -> TaskbarItem? {
-        guard let selectedWindowNumber = selected.cgWindowNumber,
-            let selectedIndex = orderedCGWindows.firstIndex(where: {
-                $0.ownerPID == selected.pid && $0.windowNumber == selectedWindowNumber
-            })
-        else { return nil }
-
-        for window in orderedCGWindows.dropFirst(selectedIndex + 1)
-        where window.layer == 0 && window.isOnScreen && window.ownerPID != selected.pid {
-            guard let windowNumber = window.windowNumber else { continue }
-            let matches = items.filter {
-                $0.pid == window.ownerPID && $0.cgWindowNumber == windowNumber
-            }
-            if matches.count == 1 {
-                return matches[0]
-            }
-        }
-        return nil
-    }
-}
-
 struct TaskbarStateContinuity {
     func resolve(
         previous: TaskbarState,
@@ -364,16 +338,6 @@ private struct TaskbarWorkAreaAdjustment {
 
 @MainActor
 final class TaskbarStore {
-    private struct PrimaryClickFocusReturn {
-        let activatedItem: TaskbarItem
-        let returnItem: TaskbarItem
-    }
-
-    private struct PendingPrimaryClickMinimize {
-        let targetItem: TaskbarItem
-        let returnPID: pid_t
-    }
-
     private static let maximumWorkAreaAdjustmentAttempts = 5
     private static let windowMutationConfirmationDelay = Duration.milliseconds(350)
     nonisolated static let ordinaryRefreshDelay = Duration.milliseconds(50)
@@ -387,15 +351,11 @@ final class TaskbarStore {
     private var continuity = TaskbarStateContinuity()
     private var pendingRefreshCause: TaskbarRefreshCause = .ordinary
     private var activeSpaceNotificationToken: NSObjectProtocol?
-    private var applicationActivationNotificationToken: NSObjectProtocol?
-    private var pendingPrimaryClickMinimize: PendingPrimaryClickMinimize?
     private var latestFramesByItemID: [String: CGRect] = [:]
     private var latestDisplaysByID: [String: DisplayDescriptor] = [:]
     private var taskbarHeightsByDisplay: [String: CGFloat] = [:]
     private var workAreaAdjustments: [String: TaskbarWorkAreaAdjustment] = [:]
     private var workAreaApplicationCount: UInt = 0
-    private var latestCGWindows: [CGWindowMetadata] = []
-    private var primaryClickFocusReturn: PrimaryClickFocusReturn?
     private(set) var state = TaskbarState.empty
     private(set) var lifecycleState: LifecycleState = .stopped
     private(set) var accessibilityAvailable = false
@@ -415,7 +375,6 @@ final class TaskbarStore {
         accessibilityAvailable = accessibilityTrusted
         if accessibilityTrusted {
             observeActiveSpaceChanges()
-            observeApplicationActivations()
             requestRefresh()
         }
     }
@@ -437,11 +396,7 @@ final class TaskbarStore {
             pendingWindowMutationConfirmation?.cancel()
             pendingWindowMutationConfirmation = nil
             pendingRefreshCause = .ordinary
-            latestCGWindows = []
-            primaryClickFocusReturn = nil
-            pendingPrimaryClickMinimize = nil
             removeActiveSpaceObserver()
-            removeApplicationActivationObserver()
             if state != .empty {
                 state = .empty
                 onStateChange?(state)
@@ -451,7 +406,6 @@ final class TaskbarStore {
 
         provider.invalidateAllApplications()
         observeActiveSpaceChanges()
-        observeApplicationActivations()
         requestRefresh()
     }
 
@@ -510,7 +464,6 @@ final class TaskbarStore {
 
         let start = DispatchTime.now().uptimeNanoseconds
         let snapshot = provider.snapshot()
-        latestCGWindows = snapshot.cgWindows
         latestFramesByItemID = Dictionary(
             uniqueKeysWithValues: snapshot.candidates.compactMap { candidate in
                 guard candidate.isNativeTabGroupRepresentative,
@@ -606,40 +559,15 @@ final class TaskbarStore {
 
     func performPrimaryClick(_ requestedItem: TaskbarItem) {
         guard accessibilityAvailable else { return }
-        pendingPrimaryClickMinimize = nil
         provider.invalidateApplication(requestedItem.pid)
-        provider.invalidateWindowServer()
         refreshNow()
         guard
             let item = TaskbarItemResolver.currentItem(for: requestedItem, in: state)
         else { return }
 
         if item.isActive {
-            let returnItem =
-                WindowFocusReturnResolver.resolve(
-                    selected: item,
-                    items: Array(state.itemsByDisplay.values.joined()),
-                    orderedCGWindows: latestCGWindows)
-                ?? primaryClickReturnItem(for: item)
-            if let returnItem {
-                // Reveal the exact non-sibling window that is already directly underneath.
-                // Wait for macOS to complete that activation before minimizing; activation
-                // is asynchronous, and minimizing early can still promote an app sibling.
-                pendingPrimaryClickMinimize = PendingPrimaryClickMinimize(
-                    targetItem: item,
-                    returnPID: returnItem.pid)
-                provider.activate(returnItem)
-                if NSWorkspace.shared.frontmostApplication?.processIdentifier == returnItem.pid {
-                    applicationDidActivate(returnItem.pid)
-                }
-                primaryClickFocusReturn = nil
-                requestRefresh()
-                return
-            }
-            primaryClickFocusReturn = nil
             provider.minimize(item)
         } else {
-            rememberPrimaryClickReturn(for: item)
             provider.activate(item)
         }
         requestRefresh()
@@ -740,11 +668,7 @@ final class TaskbarStore {
         pendingWorkAreaVerification?.cancel()
         pendingWorkAreaVerification = nil
         pendingRefreshCause = .ordinary
-        latestCGWindows = []
-        primaryClickFocusReturn = nil
-        pendingPrimaryClickMinimize = nil
         removeActiveSpaceObserver()
-        removeApplicationActivationObserver()
         lifecycleState = LifecycleReducer.reduce(state: lifecycleState, event: .stopped)
         accessibilityAvailable = false
         if state != .empty {
@@ -821,39 +745,6 @@ final class TaskbarStore {
                 attemptCount: 1)
             scheduleWorkAreaVerification()
         }
-    }
-
-    private func rememberPrimaryClickReturn(for item: TaskbarItem) {
-        let activeItem = state.itemsByDisplay.values.joined().first {
-            $0.isActive && !TaskbarItemResolver.representsSameWindow($0, item)
-        }
-        primaryClickFocusReturn = activeItem.map {
-            PrimaryClickFocusReturn(activatedItem: item, returnItem: $0)
-        }
-    }
-
-    private func primaryClickReturnItem(for item: TaskbarItem) -> TaskbarItem? {
-        guard let focusReturn = primaryClickFocusReturn,
-            TaskbarItemResolver.representsSameWindow(focusReturn.activatedItem, item)
-        else { return nil }
-        return TaskbarItemResolver.currentItem(for: focusReturn.returnItem, in: state)
-    }
-
-    func applicationDidActivate(_ pid: pid_t) {
-        guard let pending = pendingPrimaryClickMinimize,
-            pending.returnPID == pid,
-            accessibilityAvailable
-        else { return }
-        pendingPrimaryClickMinimize = nil
-        provider.invalidateApplication(pending.targetItem.pid)
-        refreshNow()
-        guard
-            let currentItem = TaskbarItemResolver.currentItem(
-                for: pending.targetItem,
-                in: state)
-        else { return }
-        provider.minimize(currentItem)
-        requestRefresh()
     }
 
     private func scheduleWorkAreaVerification() {
@@ -937,31 +828,6 @@ final class TaskbarStore {
         if let token = activeSpaceNotificationToken {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
             activeSpaceNotificationToken = nil
-        }
-    }
-
-    private func observeApplicationActivations() {
-        guard applicationActivationNotificationToken == nil else { return }
-        applicationActivationNotificationToken =
-            NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                let pid =
-                    (notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication)?.processIdentifier
-                guard let pid else { return }
-                Task { @MainActor [weak self] in
-                    self?.applicationDidActivate(pid)
-                }
-            }
-    }
-
-    private func removeApplicationActivationObserver() {
-        if let token = applicationActivationNotificationToken {
-            NSWorkspace.shared.notificationCenter.removeObserver(token)
-            applicationActivationNotificationToken = nil
         }
     }
 
@@ -1939,24 +1805,35 @@ final class TaskbarHoverCardView: NSView {
     }
 }
 
-@MainActor
-final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
+final class TaskbarDocumentProxyView: NSView, NSDraggingSource {
+    typealias DragSessionStarter =
+        @MainActor (
+            TaskbarDocumentProxyView, [NSDraggingItem], NSEvent, any NSDraggingSource
+        ) -> Void
+
     static let sourceOperationMask = NSDragOperation.copy
     static let ignoresModifierKeys = true
+    private static let logger = Logger(
+        subsystem: "com.tinytaskbar", category: "document-drag")
 
+    private let proxyImage: NSImage
     private let documentURL: @MainActor () -> URL?
     private let onDragStateChanged: @MainActor (Bool) -> Void
+    private let dragSessionStarter: DragSessionStarter?
+    private var mouseDownEvent: NSEvent?
 
     init(
         image: NSImage,
         documentURL: @escaping @MainActor () -> URL?,
-        onDragStateChanged: @escaping @MainActor (Bool) -> Void = { _ in }
+        onDragStateChanged: @escaping @MainActor (Bool) -> Void = { _ in },
+        dragSessionStarter: DragSessionStarter? = nil
     ) {
+        proxyImage = image
         self.documentURL = documentURL
         self.onDragStateChanged = onDragStateChanged
+        self.dragSessionStarter = dragSessionStarter
         super.init(frame: .zero)
-        self.image = image
-        imageScaling = .scaleProportionallyDown
+        setAccessibilityRole(.button)
         setAccessibilityLabel("Drag document file")
     }
 
@@ -1966,17 +1843,46 @@ final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
 
     override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
 
-    func pasteboardWriterForCurrentDocument() -> NSURL? {
-        guard let url = documentURL() else { return nil }
-        return url as NSURL
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        proxyImage.draw(
+            in: bounds,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high.rawValue])
     }
 
-    override func mouseDragged(with event: NSEvent) {
-        guard let writer = pasteboardWriterForCurrentDocument(), let image else { return }
+    func pasteboardWriterForCurrentDocument() -> NSPasteboardItem? {
+        guard let url = documentURL() else { return nil }
+        let item = NSPasteboardItem()
+        guard item.setString(url.absoluteString, forType: .fileURL) else { return nil }
+        return item
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownEvent = event
+    }
+
+    override func mouseDragged(with _: NSEvent) {
+        guard let mouseDownEvent,
+            let writer = pasteboardWriterForCurrentDocument()
+        else { return }
+        self.mouseDownEvent = nil
         let draggingItem = NSDraggingItem(pasteboardWriter: writer)
-        draggingItem.setDraggingFrame(bounds, contents: image)
+        draggingItem.setDraggingFrame(bounds, contents: proxyImage)
         onDragStateChanged(true)
-        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        if let dragSessionStarter {
+            dragSessionStarter(self, [draggingItem], mouseDownEvent, self)
+        } else {
+            beginDraggingSession(with: [draggingItem], event: mouseDownEvent, source: self)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        mouseDownEvent = nil
+        super.mouseUp(with: event)
     }
 
     func draggingSession(
@@ -1988,13 +1894,20 @@ final class TaskbarDocumentProxyView: NSImageView, NSDraggingSource {
 
     func ignoreModifierKeys(for _: NSDraggingSession) -> Bool { Self.ignoresModifierKeys }
 
+    func draggingSession(_ session: NSDraggingSession, willBeginAt _: NSPoint) {
+        let types = session.draggingPasteboard.types?.map(\.rawValue).joined(separator: ",") ?? ""
+        Self.logger.notice("Document drag began with types: \(types, privacy: .public)")
+    }
+
     func draggingSession(
         _: NSDraggingSession,
         endedAt _: NSPoint,
-        operation _: NSDragOperation
+        operation: NSDragOperation
     ) {
+        Self.logger.notice("Document drag ended with operation: \(operation.rawValue)")
         onDragStateChanged(false)
     }
+
 }
 
 @MainActor
@@ -2061,7 +1974,7 @@ final class TaskbarHoverCardViewController: NSViewController {
 
     let applicationLabel: NSTextField
     let titleLabel: NSTextField
-    let iconView: NSImageView
+    let iconView: NSView
     let documentProxyView: TaskbarDocumentProxyView?
     let closeWindowButton: NSButton?
     private(set) var tabButtons: [NSButton] = []
@@ -2162,7 +2075,7 @@ final class TaskbarHoverCardViewController: NSViewController {
     override func loadView() {
         let container = TaskbarHoverCardView(
             frame: NSRect(origin: .zero, size: preferredContentSize))
-        iconView.imageScaling = .scaleProportionallyDown
+        (iconView as? NSImageView)?.imageScaling = .scaleProportionallyDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         applicationLabel.font = .systemFont(

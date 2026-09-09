@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
+- Remove stale taskbar items after windows close while preserving windows during
+  inconclusive Accessibility reads.
+- Restore application icons after launch and preserve background window ordering
+  when switching to an exact window.
+- Add Minimize All to every window context menu and expose the same action to the
+  macOS Shortcuts app through App Intents.
 - Make a focused taskbar-button click match the native orange window control by
   minimizing the selected window directly and leaving subsequent focus ordering to macOS.
 - Raise an exact window after a 500 ms drag-hover over its taskbar button, without

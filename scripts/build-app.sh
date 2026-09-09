@@ -165,10 +165,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+APP_INTENTS_VALUES="$STAGING_DIR/TinyTaskbar.swiftconstvalues"
+APP_INTENTS_PROTOCOLS="$STAGING_DIR/app-intents-protocols.json"
+printf '%s\n' '["AnyResolverProviding","AppEntity","AppEnum","AppExtension","AppIntent","AppIntentsPackage","AppShortcutProviding","AppShortcutsProvider","AppUnionValue","AppUnionValueCasesProviding","DynamicOptionsProvider","EntityQuery","ExtensionPointDefining","IntentValueQuery","Resolver","TransientEntity","_AssistantIntentsProvider","_GenerativeFunctionExtractable","_IntentValueRepresentable"]' > "$APP_INTENTS_PROTOCOLS"
+APP_INTENTS_BUILD_FLAGS=(
+    -Xswiftc -emit-const-values-path
+    -Xswiftc "$APP_INTENTS_VALUES"
+    -Xswiftc -Xfrontend
+    -Xswiftc -const-gather-protocols-file
+    -Xswiftc -Xfrontend
+    -Xswiftc "$APP_INTENTS_PROTOCOLS"
+)
+
 if [[ "$BUILD_ARCHITECTURE" == "universal" ]]; then
     ARM_TRIPLE="arm64-apple-macosx26.0"
     INTEL_TRIPLE="x86_64-apple-macosx26.0"
-    swift build --disable-sandbox -c "$CONFIGURATION" --triple "$ARM_TRIPLE" --product TinyTaskbar
+    swift build --disable-sandbox -c "$CONFIGURATION" --triple "$ARM_TRIPLE" --product TinyTaskbar "${APP_INTENTS_BUILD_FLAGS[@]}"
     ARM_BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --triple "$ARM_TRIPLE" --product TinyTaskbar --show-bin-path)"
     swift build --disable-sandbox -c "$CONFIGURATION" --triple "$INTEL_TRIPLE" --product TinyTaskbar
     INTEL_BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --triple "$INTEL_TRIPLE" --product TinyTaskbar --show-bin-path)"
@@ -178,7 +190,7 @@ if [[ "$BUILD_ARCHITECTURE" == "universal" ]]; then
         "$INTEL_BIN_PATH/TinyTaskbar" \
         -output "$EXECUTABLE"
 else
-    swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar
+    swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar "${APP_INTENTS_BUILD_FLAGS[@]}"
     BIN_PATH="$(swift build --disable-sandbox -c "$CONFIGURATION" --product TinyTaskbar --show-bin-path)"
     EXECUTABLE="$BIN_PATH/TinyTaskbar"
 fi
@@ -194,6 +206,35 @@ mkdir -p "$MACOS" "$RESOURCES"
 cp "$EXECUTABLE" "$MACOS/TinyTaskbar"
 cp "$INFO_PLIST" "$CONTENTS/Info.plist"
 cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
+
+APP_INTENTS_SOURCES="$STAGING_DIR/app-intents-sources.txt"
+APP_INTENTS_VALUES_LIST="$STAGING_DIR/app-intents-values.txt"
+find "$PROJECT_DIR/Sources/TinyTaskbar" -name '*.swift' -print > "$APP_INTENTS_SOURCES"
+printf '%s\n' "$APP_INTENTS_VALUES" > "$APP_INTENTS_VALUES_LIST"
+SDK_ROOT="$(xcrun --sdk macosx --show-sdk-path)"
+TOOLCHAIN_DIR="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+XCODE_BUILD_VERSION="$(xcodebuild -version | awk '/Build version/ { print $3 }')"
+if [[ "$BUILD_ARCHITECTURE" == "universal" ]]; then
+    APP_INTENTS_TRIPLE="$ARM_TRIPLE"
+else
+    APP_INTENTS_TRIPLE="$(uname -m)-apple-macosx26.0"
+fi
+xcrun appintentsmetadataprocessor \
+    --toolchain-dir "$TOOLCHAIN_DIR" \
+    --module-name TinyTaskbar \
+    --output "$RESOURCES" \
+    --sdk-root "$SDK_ROOT" \
+    --xcode-version "$XCODE_BUILD_VERSION" \
+    --platform-family macOS \
+    --deployment-target 26.0 \
+    --target-triple "$APP_INTENTS_TRIPLE" \
+    --source-file-list "$APP_INTENTS_SOURCES" \
+    --swift-const-vals-list "$APP_INTENTS_VALUES_LIST" \
+    --no-app-shortcuts-localization
+if [[ ! -s "$RESOURCES/Metadata.appintents/extract.actionsdata" ]]; then
+    echo "App Intents metadata was not produced" >&2
+    exit 1
+fi
 
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
     codesign --force --deep --sign - "$STAGED_APP"

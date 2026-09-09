@@ -28,12 +28,21 @@ enum TaskbarPresentationBuilder {
 enum WindowCommand: Equatable, Sendable {
     case activate(TaskbarItem)
     case minimize(TaskbarItem)
+    case minimizeAll
     case restore(TaskbarItem)
     case setFullscreen(TaskbarItem, Bool)
     case selectTab(TaskbarItem, TaskbarTab)
     case closeTab(TaskbarItem, TaskbarTab)
     case closeTabGroup(TaskbarItem)
     case close(TaskbarItem)
+}
+
+enum MinimizeAllTargets {
+    static func resolve(in state: TaskbarState) -> [TaskbarItem] {
+        WindowOrdering.sorted(Array(state.itemsByDisplay.values.joined())).filter {
+            !$0.isMinimized && !$0.isHidden
+        }
+    }
 }
 
 struct WindowFullscreenCapability: Equatable, Sendable {

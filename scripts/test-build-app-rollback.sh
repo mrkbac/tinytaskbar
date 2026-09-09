@@ -15,6 +15,15 @@ bash "$SCRIPT_DIR/build-app.sh" \
     --adhoc \
     --configuration release \
     --output "$OUTPUT_APP"
+INTENTS_METADATA="$OUTPUT_APP/Contents/Resources/Metadata.appintents/extract.actionsdata"
+if [[ ! -s "$INTENTS_METADATA" ]]; then
+    echo "Built bundle is missing App Intents metadata" >&2
+    exit 1
+fi
+if [[ "$(plutil -extract actions.MinimizeAllWindowsIntent.title.key raw "$INTENTS_METADATA")" != "Minimize All Windows" ]]; then
+    echo "Built bundle is missing the Minimize All Windows intent" >&2
+    exit 1
+fi
 touch "$SENTINEL"
 codesign --force --deep --sign - "$OUTPUT_APP"
 codesign --verify --deep --strict --verbose=2 "$OUTPUT_APP"

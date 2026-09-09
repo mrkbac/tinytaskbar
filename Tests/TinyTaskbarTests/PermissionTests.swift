@@ -107,7 +107,7 @@ struct PermissionTests {
         }
 
         #expect(itemButton?.menu == nil)
-        #expect(contextMenu.items.map(\.title) == ["Minimize", "", "Close"])
+        #expect(contextMenu.items.map(\.title) == ["Minimize", "Minimize All", "", "Close"])
         #expect(panel.contentView?.menu == nil)
         if let minimizeItem = contextMenu.items.first,
             let minimizeAction = minimizeItem.action
@@ -118,6 +118,16 @@ struct PermissionTests {
             #expect(windowCommand == .minimize(item))
         } else {
             Issue.record("taskbar Minimize command was not rendered")
+        }
+        if let minimizeAllItem = contextMenu.items.dropFirst().first,
+            let minimizeAllAction = minimizeAllItem.action
+        {
+            #expect(
+                NSApplication.shared.sendAction(
+                    minimizeAllAction, to: minimizeAllItem.target, from: minimizeAllItem))
+            #expect(windowCommand == .minimizeAll)
+        } else {
+            Issue.record("taskbar Minimize All command was not rendered")
         }
         itemButton?.performClick(nil)
         #expect(activatedItem?.id == item.id)
@@ -154,17 +164,19 @@ struct PermissionTests {
 
         guard let button = taskbarButtons(in: panel).first,
             let enterMenu = button.onMenuRequested?(),
-            enterMenu.items.count == 4,
-            let action = enterMenu.items[1].action
+            enterMenu.items.count == 5,
+            let action = enterMenu.items[2].action
         else {
             Issue.record("fullscreen context command was not rendered")
             return
         }
-        #expect(enterMenu.items.map(\.title) == ["Minimize", "Enter Full Screen", "", "Close"])
-        #expect(enterMenu.items[1].isEnabled)
+        #expect(
+            enterMenu.items.map(\.title)
+                == ["Minimize", "Minimize All", "Enter Full Screen", "", "Close"])
+        #expect(enterMenu.items[2].isEnabled)
         #expect(
             NSApplication.shared.sendAction(
-                action, to: enterMenu.items[1].target, from: enterMenu.items[1]))
+                action, to: enterMenu.items[2].target, from: enterMenu.items[2]))
         #expect(command == .setFullscreen(item, true))
 
         let readOnlyPanel = TaskbarPanel(
@@ -181,8 +193,8 @@ struct PermissionTests {
             Issue.record("fullscreen context command did not refresh")
             return
         }
-        #expect(exitMenu.items[1].title == "Exit Full Screen")
-        #expect(!exitMenu.items[1].isEnabled)
+        #expect(exitMenu.items[2].title == "Exit Full Screen")
+        #expect(!exitMenu.items[2].isEnabled)
     }
 
     @Test("taskbar context menu stays anchored to the right-click location")
@@ -252,7 +264,8 @@ struct PermissionTests {
         #expect(requestedItem == item)
         #expect(
             menu.items.map(\.title) == [
-                "New Text File", "New Editor Window", "New Tab", "", "Minimize", "", "Close",
+                "New Text File", "New Editor Window", "New Tab", "", "Minimize",
+                "Minimize All", "", "Close",
             ])
         #expect(
             NSApplication.shared.sendAction(
@@ -2867,6 +2880,40 @@ struct PermissionTests {
         store.performPrimaryClick(staleActiveItem)
         #expect(provider.minimizeCount == 1)
         #expect(provider.activationCount == 1)
+    }
+
+    @Test("Minimize All refreshes and minimizes every eligible window deterministically")
+    @MainActor
+    func minimizeAllWindows() throws {
+        let provider = MockWindowSnapshotProvider(
+            snapshot: focusToggleSnapshot(activeWindow: "chatgpt"))
+        let store = TaskbarStore(provider: provider)
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        defer { store.stop() }
+        let expected = MinimizeAllTargets.resolve(in: store.state).map(\.id)
+
+        let intentController = TinyTaskbarIntentController(store: store)
+        try intentController.minimizeAll()
+
+        #expect(provider.minimizedItemIDs == expected)
+        #expect(provider.activationCount == 0)
+        #expect(provider.invalidateAllCount == 1)
+        #expect(provider.invalidateWindowServerCount == 1)
+    }
+
+    @Test("Minimize All intent requires active Accessibility access")
+    @MainActor
+    func minimizeAllIntentRequiresAccessibility() {
+        let store = TaskbarStore(provider: MockWindowSnapshotProvider())
+        let intentController = TinyTaskbarIntentController(store: store)
+
+        do {
+            try intentController.minimizeAll()
+            Issue.record("intent unexpectedly ran without Accessibility")
+        } catch {
+            #expect(error as? TinyTaskbarIntentError == .unavailable)
+        }
     }
 
     @Test("focused primary click directly minimizes the selected physical window")

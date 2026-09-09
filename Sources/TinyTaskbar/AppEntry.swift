@@ -1,6 +1,46 @@
+import AppIntents
 import AppKit
 import Foundation
 import OSLog
+
+enum TinyTaskbarIntentError: LocalizedError, Equatable {
+    case unavailable
+
+    var errorDescription: String? {
+        "TinyTaskbar must be running with Accessibility permission."
+    }
+}
+
+@MainActor
+final class TinyTaskbarIntentController: Sendable {
+    private weak var store: TaskbarStore?
+
+    init(store: TaskbarStore) {
+        self.store = store
+    }
+
+    func minimizeAll() throws {
+        guard let store, store.accessibilityAvailable else {
+            throw TinyTaskbarIntentError.unavailable
+        }
+        store.execute(.minimizeAll)
+    }
+}
+
+struct MinimizeAllWindowsIntent: AppIntent {
+    static let title: LocalizedStringResource = "Minimize All Windows"
+    static let description = IntentDescription(
+        "Minimizes every visible window represented by TinyTaskbar.")
+    static var supportedModes: IntentModes { .background }
+
+    @Dependency private var controller: TinyTaskbarIntentController
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        try controller.minimizeAll()
+        return .result()
+    }
+}
 
 @main
 @MainActor
@@ -21,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let accessibilityProvider: any AccessibilityPermissionProvider
     private let provider: any WindowSnapshotProvider
     private let store: TaskbarStore
+    private let intentController: TinyTaskbarIntentController
     private let dockVisibilityManager: any DockVisibilityManaging
     private let skipsOnboarding: Bool
     private var eventObserver: SystemEventObserver?
@@ -72,14 +113,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         temporaryPreferencesSuiteName: String? = nil,
         skipsOnboarding: Bool = false
     ) {
+        let store = TaskbarStore(provider: provider)
         self.accessibilityProvider = accessibilityProvider
         self.provider = provider
-        self.store = TaskbarStore(provider: provider)
+        self.store = store
+        self.intentController = TinyTaskbarIntentController(store: store)
         self.dockVisibilityManager = dockVisibilityManager
         self.preferencesStore = preferencesStore
         self.temporaryPreferencesSuiteName = temporaryPreferencesSuiteName
         self.skipsOnboarding = skipsOnboarding
         super.init()
+        AppDependencyManager.shared.add(dependency: self.intentController)
     }
 
     func applicationDidFinishLaunching(_: Notification) {

@@ -86,6 +86,25 @@ struct FeatureModelTests {
         #expect(scrolling.requiresScrolling)
     }
 
+    @Test("Minimize All selects every visible window in stable order")
+    func minimizeAllTargets() {
+        let state = TaskbarState(
+            displays: [display("left"), display("right")],
+            itemsByDisplay: [
+                "left": [
+                    item("third", display: "left", order: "3"),
+                    item("first", display: "left", order: "1"),
+                ],
+                "right": [
+                    item("hidden", display: "right", order: "0", isHidden: true),
+                    item("second", display: "right", order: "2"),
+                    item("minimized", display: "right", order: "4", isMinimized: true),
+                ],
+            ])
+
+        #expect(MinimizeAllTargets.resolve(in: state).map(\.id) == ["first", "second", "third"])
+    }
+
     private func display(
         _ id: String,
         ordinal: Int = 0,
@@ -98,7 +117,13 @@ struct FeatureModelTests {
             isMain: isMain)
     }
 
-    private func item(_ id: String, display: String, order: String) -> TaskbarItem {
+    private func item(
+        _ id: String,
+        display: String,
+        order: String,
+        isHidden: Bool = false,
+        isMinimized: Bool = false
+    ) -> TaskbarItem {
         TaskbarItem(
             id: id,
             pid: 10,
@@ -109,6 +134,8 @@ struct FeatureModelTests {
             displayIdentifier: display,
             cgWindowNumber: nil,
             stableOrderKey: order,
+            isHidden: isHidden,
+            isMinimized: isMinimized,
             isActive: false)
     }
 }

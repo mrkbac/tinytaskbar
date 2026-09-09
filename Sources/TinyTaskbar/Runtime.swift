@@ -534,6 +534,10 @@ final class TaskbarStore {
 
     func execute(_ command: WindowCommand) {
         guard accessibilityAvailable else { return }
+        if command == .minimizeAll {
+            minimizeAll()
+            return
+        }
         let requestedItem: TaskbarItem
         switch command {
         case .activate(let item), .minimize(let item), .restore(let item),
@@ -541,6 +545,8 @@ final class TaskbarStore {
             requestedItem = item
         case .selectTab(let item, _), .closeTab(let item, _):
             requestedItem = item
+        case .minimizeAll:
+            return
         }
         provider.invalidateApplication(requestedItem.pid)
         refreshNow()
@@ -565,6 +571,18 @@ final class TaskbarStore {
         case .close:
             provider.close(item)
             requestWindowMutationConfirmation(applicationPID: item.pid)
+        case .minimizeAll:
+            return
+        }
+        requestRefresh()
+    }
+
+    private func minimizeAll() {
+        provider.invalidateAllApplications()
+        provider.invalidateWindowServer()
+        refreshNow()
+        for item in MinimizeAllTargets.resolve(in: state) {
+            provider.minimize(item)
         }
         requestRefresh()
     }
@@ -2832,6 +2850,7 @@ private final class TaskbarBarView: NSView {
             windowMenuItem(
                 visibilityActionTitle, action: #selector(toggleMinimize(_:)),
                 item: item))
+        menu.addItem(menuItem("Minimize All", action: #selector(minimizeAll)))
         if let capability = fullscreenCapability(item) {
             let fullscreenItem = windowMenuItem(
                 capability.isFullscreen ? "Exit Full Screen" : "Enter Full Screen",
@@ -2933,6 +2952,10 @@ private final class TaskbarBarView: NSView {
         guard let item = currentItem(sender) else { return }
         onWindowCommand(
             item.isHidden || item.isMinimized ? .restore(item) : .minimize(item))
+    }
+
+    @objc private func minimizeAll() {
+        onWindowCommand(.minimizeAll)
     }
 
     @objc private func toggleFullscreen(_ sender: NSMenuItem) {

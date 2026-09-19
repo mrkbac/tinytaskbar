@@ -72,6 +72,10 @@ enum WindowSnapshotChange: Equatable, Sendable {
         switch notification {
         case kAXWindowCreatedNotification,
             kAXUIElementDestroyedNotification,
+            // Closing a window can change focus without a destruction event.
+            // A cached on-screen CG record would then preserve a ghost item.
+            kAXFocusedWindowChangedNotification,
+            kAXMainWindowChangedNotification,
             kAXWindowMovedNotification,
             kAXWindowResizedNotification,
             kAXWindowMiniaturizedNotification,

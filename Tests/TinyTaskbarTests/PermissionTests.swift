@@ -2097,11 +2097,45 @@ struct PermissionTests {
             WindowSnapshotChange.invalidatesWindowServer(
                 forAXNotification: "AXWindowMiniaturized"))
         #expect(
-            !WindowSnapshotChange.invalidatesWindowServer(
+            WindowSnapshotChange.invalidatesWindowServer(
                 forAXNotification: "AXFocusedWindowChanged"))
         #expect(
             !WindowSnapshotChange.invalidatesWindowServer(
                 forAXNotification: "AXTitleChanged"))
+    }
+
+    @Test(
+        "focus changes remove closed windows without a destruction event but preserve failed AX reads",
+        arguments: ["AXFocusedWindowChanged", "AXMainWindowChanged"], [true, false]
+    )
+    @MainActor
+    func focusChangeAfterWindowClose(notification: String, didReadWindowList: Bool) {
+        let initial = makeFixtureSnapshot()
+        let provider = MockWindowSnapshotProvider(snapshot: initial)
+        let store = TaskbarStore(provider: provider)
+        defer { store.stop() }
+        store.start(accessibilityTrusted: true)
+        store.refreshNow()
+        #expect(store.state.itemsByDisplay["main"]?.count == 1)
+
+        // The application stays running and AX omits the closed window. Without
+        // invalidation, the cached on-screen CG record keeps its button alive.
+        let invalidatesCG = WindowSnapshotChange.invalidatesWindowServer(
+            forAXNotification: notification)
+        provider.snapshotValue = RawWindowSnapshot(
+            candidates: [],
+            cgWindows: invalidatesCG ? [] : initial.cgWindows,
+            displays: initial.displays,
+            frontmostPID: fixturePID,
+            evidence: WindowSnapshotEvidence(
+                isComplete: true,
+                knownApplicationPIDs: [fixturePID],
+                axWindowListReadPIDs: didReadWindowList ? [fixturePID] : []
+            )
+        )
+        store.refreshNow()
+
+        #expect(store.state.itemsByDisplay.isEmpty == didReadWindowList)
     }
 
     @Test("active Space refresh republishes an unchanged state")

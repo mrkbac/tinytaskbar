@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Refresh WindowServer evidence on focus and main-window changes so closed windows
+  do not remain as ghost taskbar items when no destruction notification arrives.
+
 ## 1.4.0
 
 - Remove stale taskbar items after windows close while preserving windows during

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1
 
 - Refresh WindowServer evidence on focus and main-window changes so closed windows
   do not remain as ghost taskbar items when no destruction notification arrives.

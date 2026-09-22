@@ -2083,7 +2083,7 @@ struct PermissionTests {
         try? await Task.sleep(for: .milliseconds(150))
         #expect(provider.snapshotCount == initialSnapshotCount)
 
-        try? await Task.sleep(for: .milliseconds(150))
+        await waitForSnapshot(from: provider, after: initialSnapshotCount)
         #expect(provider.snapshotCount == initialSnapshotCount + 1)
     }
 
@@ -3224,10 +3224,12 @@ struct PermissionTests {
     }
 
     @MainActor
-    private func waitForSnapshot(from provider: MockWindowSnapshotProvider) async {
+    private func waitForSnapshot(from provider: MockWindowSnapshotProvider, after count: Int = 0)
+        async
+    {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))
-        while provider.snapshotCount == 0, clock.now < deadline {
+        while provider.snapshotCount <= count, clock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
     }

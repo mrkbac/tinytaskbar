@@ -2394,6 +2394,15 @@ enum ApplicationIconSourceResolver {
 }
 
 @MainActor
+private final class TaskbarSeparatorView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        // Resolve the color at drawing time so the edge follows appearance changes.
+        NSColor.labelColor.withAlphaComponent(0.35).setFill()
+        bounds.fill()
+    }
+}
+
+@MainActor
 private final class TaskbarBarView: NSView {
     private static let dragHoverPasteboardTypes: [NSPasteboard.PasteboardType] =
         [
@@ -2419,7 +2428,7 @@ private final class TaskbarBarView: NSView {
 
     private let scrollView = TaskbarScrollView()
     private let stackView = NSStackView()
-    private let separatorView = NSView()
+    private let separatorView = TaskbarSeparatorView()
     private var currentItems: [TaskbarItem] = []
     private var buttons: [ObjectIdentifier: TaskbarItem] = [:]
     private var buttonsByID: [String: TaskbarButton] = [:]
@@ -2483,9 +2492,6 @@ private final class TaskbarBarView: NSView {
 
         separatorView.identifier = NSUserInterfaceItemIdentifier(
             TaskbarPanelLayout.topSeparatorIdentifier)
-        separatorView.wantsLayer = true
-        separatorView.layer?.backgroundColor =
-            NSColor.separatorColor.withAlphaComponent(0.65).cgColor
         addSubview(separatorView)
     }
 
@@ -2799,8 +2805,6 @@ private final class TaskbarBarView: NSView {
         button.imagePosition = .imageLeading
         button.alignment = .left
 
-        button.widthConstraint?.constant = TaskbarButtonLayout.preferredWidth
-        button.heightConstraint?.constant = TaskbarAppearance.buttonHeight
         button.image?.size = NSSize(
             width: TaskbarAppearance.iconSize, height: TaskbarAppearance.iconSize)
         if button.contextualMenu == nil {

@@ -417,10 +417,12 @@ struct PermissionTests {
         #expect(commands == [.activate(second), .activate(second)])
     }
 
-    @Test("focus and title changes never change taskbar button widths or positions")
+    @Test(
+        "focus and title changes never change taskbar button widths or positions",
+        arguments: [700.0, 280.0, 140.0])
     @MainActor
-    func focusStylingDoesNotReflowTaskbar() {
-        let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+    func focusStylingDoesNotReflowTaskbar(width: Double) {
+        let frame = NSRect(x: 0, y: 0, width: width, height: TaskbarPanelLayout.defaultHeight)
         let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
         defer { panel.close() }
 
@@ -430,6 +432,7 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
         let initialFrames = Dictionary(
             uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+        let initialWidths = taskbarButtons(in: panel).map { $0.widthConstraint?.constant }
 
         update(
             panel,
@@ -441,6 +444,7 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
         let firstFocusFrames = Dictionary(
             uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+        #expect(taskbarButtons(in: panel).map { $0.widthConstraint?.constant } == initialWidths)
 
         update(
             panel,
@@ -452,6 +456,7 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
         let secondFocusFrames = Dictionary(
             uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+        #expect(taskbarButtons(in: panel).map { $0.widthConstraint?.constant } == initialWidths)
 
         update(
             panel,
@@ -465,10 +470,21 @@ struct PermissionTests {
         panel.contentView?.layoutSubtreeIfNeeded()
         let changedTitleFrames = Dictionary(
             uniqueKeysWithValues: taskbarButtons(in: panel).map { ($0.itemID, $0.frame) })
+        #expect(taskbarButtons(in: panel).map { $0.widthConstraint?.constant } == initialWidths)
 
         #expect(firstFocusFrames == initialFrames)
         #expect(secondFocusFrames == initialFrames)
         #expect(changedTitleFrames == initialFrames)
+        for button in taskbarButtons(in: panel) {
+            #expect(button.frame.width >= TaskbarButtonLayout.minimumWidth)
+            #expect(button.image != nil)
+            if let cell = button.cell as? TaskbarButtonCell {
+                let iconFrame = cell.positionedImageFrame(
+                    cell.imageRect(forBounds: button.bounds), imageOnly: false)
+                #expect(iconFrame.width > 0)
+                #expect(button.bounds.contains(iconFrame))
+            }
+        }
     }
 
     @Test("application indicators decorate one stable button without reflow")
@@ -599,7 +615,6 @@ struct PermissionTests {
         #expect(separator.frame.width == contentView.bounds.width)
         #expect(separator.frame.maxY == contentView.bounds.maxY)
         #expect(separator.frame.height == TaskbarPanelLayout.topSeparatorHeight)
-        #expect(separator.layer?.backgroundColor != nil)
         let visualBounds = TaskbarPanelLayout.visualBounds(in: contentView.bounds)
         let topGap = separator.frame.minY - buttonFrame.maxY
         let bottomGap = buttonFrame.minY - visualBounds.minY
@@ -607,6 +622,71 @@ struct PermissionTests {
         #expect(bottomGap == TaskbarPanelLayout.contentVerticalInset)
         #expect(topGap == bottomGap)
     }
+
+    #if DEBUG
+        @Test(
+            "top divider remains visible in light and dark fixture panels",
+            arguments: DebugFixture.allCases)
+        @MainActor
+        func taskbarSeparatorContrast(fixture: DebugFixture) throws {
+            let provider = DebugFixtureWindowSnapshotProvider(fixture: fixture)
+            let store = TaskbarStore(provider: provider)
+            store.start(accessibilityTrusted: true)
+            defer { store.stop() }
+            store.refreshNow()
+            let frame = NSRect(x: 0, y: 0, width: 700, height: TaskbarPanelLayout.defaultHeight)
+            let panel = TaskbarPanel(frame: frame, onActivate: { _ in }, onClose: { _ in })
+            defer { panel.close() }
+            update(panel, frame: frame, items: Array(store.state.itemsByDisplay.values.joined()))
+            let content = try #require(panel.contentView)
+            let separator = try #require(
+                allSubviews(of: content).first {
+                    $0.identifier?.rawValue == TaskbarPanelLayout.topSeparatorIdentifier
+                })
+            for appearanceName in [NSAppearance.Name.aqua, .darkAqua, .aqua] {
+                panel.appearance = NSAppearance(named: appearanceName)
+                content.layoutSubtreeIfNeeded()
+                let bitmap = try #require(
+                    separator.bitmapImageRepForCachingDisplay(in: separator.bounds))
+                let image = try #require(
+                    content.bitmapImageRepForCachingDisplay(in: content.bounds))
+                separator.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    separator.cacheDisplay(in: separator.bounds, to: bitmap)
+                    content.cacheDisplay(in: content.bounds, to: image)
+                }
+                let color = try #require(
+                    bitmap.colorAt(x: bitmap.pixelsWide / 2, y: 0)?.usingColorSpace(.deviceRGB))
+                let background: CGFloat = appearanceName == .darkAqua ? 0 : 1
+                let brightness =
+                    (color.redComponent + color.greenComponent + color.blueComponent) / 3
+                #expect(abs(brightness - background) * color.alphaComponent >= 0.3)
+                if let directory = ProcessInfo.processInfo.environment[
+                    "TINYTASKBAR_RENDER_FIXTURES_DIR"]
+                {
+                    try FileManager.default.createDirectory(
+                        atPath: directory, withIntermediateDirectories: true)
+                    let foreground = NSImage(size: content.bounds.size)
+                    foreground.addRepresentation(image)
+                    let preview = NSImage(size: content.bounds.size)
+                    separator.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        preview.lockFocus()
+                        NSColor.windowBackgroundColor.setFill()
+                        content.bounds.fill()
+                        foreground.draw(
+                            in: content.bounds, from: .zero, operation: .sourceOver, fraction: 1)
+                        preview.unlockFocus()
+                    }
+                    let tiff = try #require(preview.tiffRepresentation)
+                    let data = try #require(
+                        NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
+                    try data.write(
+                        to: URL(fileURLWithPath: directory).appendingPathComponent(
+                            "\(fixture.rawValue)-\(appearanceName.rawValue).png"))
+                }
+            }
+        }
+
+    #endif
 
     @Test("taskbar button content keeps a small leading inset")
     @MainActor

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.2
+
+- Keep window buttons evenly sized during focus and title updates so neighboring
+  buttons and their icons do not collapse.
+- Give the taskbar a clearer top divider that follows light and dark appearance,
+  separating it from adjacent windows without changing its size.
+
 ## 1.4.1
 
 - Refresh WindowServer evidence on focus and main-window changes so closed windows

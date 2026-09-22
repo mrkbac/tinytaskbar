@@ -4,6 +4,8 @@ import Testing
 
 @testable import TinyTaskbar
 
+// AppKit rendering and timed callbacks share the main actor.
+@Suite(.serialized)
 struct PermissionTests {
     @Test("Settings layout keeps finite nonnegative view geometry")
     @MainActor

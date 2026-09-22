@@ -2070,23 +2070,23 @@ struct PermissionTests {
 
     @Test("noisy AX changes use a trailing debounce")
     @MainActor
-    func deferredRefreshRequestsSettleBeforeSnapshot() async {
+    func deferredRefreshRequestsSettleBeforeSnapshot() async throws {
         let provider = MockWindowSnapshotProvider(snapshot: makeFixtureSnapshot())
         let store = TaskbarStore(provider: provider)
         defer { store.stop() }
 
         store.start(accessibilityTrusted: true)
         await waitForSnapshot(from: provider)
+        store.requestRefresh(change: .deferred)
+        try? await Task.sleep(for: .milliseconds(150))
         let initialSnapshotCount = provider.snapshotCount
-
+        let lastRequestTime = ContinuousClock.now
         store.requestRefresh(change: .deferred)
-        try? await Task.sleep(for: .milliseconds(150))
-        store.requestRefresh(change: .deferred)
-        try? await Task.sleep(for: .milliseconds(150))
-        #expect(provider.snapshotCount == initialSnapshotCount)
 
         await waitForSnapshot(from: provider, after: initialSnapshotCount)
         #expect(provider.snapshotCount == initialSnapshotCount + 1)
+        let snapshotTime = try #require(provider.lastSnapshotTime)
+        #expect(lastRequestTime.duration(to: snapshotTime) >= TaskbarStore.deferredRefreshDelay)
     }
 
     @Test("ordinary events preempt deferred refreshes")
@@ -3374,6 +3374,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     var invalidateWindowServerCount = 0
     var onChange: (@MainActor @Sendable (WindowSnapshotChange, pid_t) -> Void)?
     var onInvalidateApplication: ((pid_t) -> Void)?
+    var lastSnapshotTime: ContinuousClock.Instant?
 
     init(snapshot: RawWindowSnapshot? = nil) {
         if let snapshot {
@@ -3382,6 +3383,7 @@ private final class MockWindowSnapshotProvider: WindowSnapshotProvider {
     }
 
     func snapshot() -> RawWindowSnapshot {
+        lastSnapshotTime = ContinuousClock.now
         snapshotCount += 1
         return snapshotValue
     }

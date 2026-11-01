@@ -2233,7 +2233,15 @@ final class TaskbarHoverPresenter {
     private var pendingShow: Task<Void, Never>?
     private var pendingHide: Task<Void, Never>?
     private weak var requestedAnchor: TaskbarHoverButton?
-    private var popover: NSPopover?
+    // On macOS 26 each closed NSPopover was observed to leak its glass background (an
+    // NSGlassEffectView plus its GPU surface) after it closes, so one popover
+    // is reused for every hover card instead of creating one per hover.
+    let popover: NSPopover = {
+        let popover = NSPopover()
+        popover.animates = false
+        popover.behavior = TaskbarHoverPresenter.popoverBehavior
+        return popover
+    }()
     private var isDocumentDragActive = false
 
     func schedule(
@@ -2292,18 +2300,14 @@ final class TaskbarHoverPresenter {
                     }
                 }
             }
-            let popover = NSPopover()
-            popover.animates = false
-            popover.behavior = Self.popoverBehavior
-            popover.contentViewController = controller
-            self.popover = popover
-            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+            self.popover.contentViewController = controller
+            self.popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         }
     }
 
     func pointerExited(from anchor: TaskbarHoverButton) {
         guard requestedAnchor === anchor else { return }
-        guard popover != nil else {
+        guard popover.isShown else {
             hide(from: anchor)
             return
         }
@@ -2318,8 +2322,10 @@ final class TaskbarHoverPresenter {
         pendingHide = nil
         isDocumentDragActive = false
         requestedAnchor = nil
-        popover?.performClose(nil)
-        popover = nil
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+        popover.contentViewController = nil
     }
 
     private func scheduleInteractiveHide() {
@@ -2350,7 +2356,7 @@ final class TaskbarHoverPresenter {
     private var pointerIsInsideInteractionCorridor: Bool {
         guard let anchor = requestedAnchor,
             let anchorWindow = anchor.window,
-            let popoverWindow = popover?.contentViewController?.view.window
+            let popoverWindow = popover.contentViewController?.view.window
         else { return false }
         let anchorFrame = anchorWindow.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         return Self.interactionCorridor(

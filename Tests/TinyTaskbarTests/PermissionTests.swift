@@ -1532,6 +1532,54 @@ struct PermissionTests {
         #expect(!corridor.contains(NSPoint(x: 300, y: 33)))
     }
 
+    @Test("hover cards reuse one popover so each hover does not leak a glass background")
+    @MainActor
+    func hoverPresenterReusesPopover() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 200, height: 40),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let anchor = TaskbarHoverButton(title: "Window", target: nil, action: nil)
+        anchor.frame = NSRect(x: 0, y: 0, width: 120, height: 30)
+        window.contentView?.addSubview(anchor)
+        window.orderFrontRegardless()
+        guard
+            let cgEvent = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: .zero,
+                mouseButton: .left),
+            let event = NSEvent(cgEvent: cgEvent)
+        else {
+            Issue.record("could not construct hover fixture")
+            return
+        }
+        anchor.mouseEntered(with: event)
+
+        let presenter = TaskbarHoverPresenter()
+        let popover = presenter.popover
+        var shownControllers: [NSViewController] = []
+        for title in ["First", "Second"] {
+            presenter.schedule(
+                applicationName: "App", title: title, icon: nil, from: anchor)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !popover.isShown, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(presenter.popover === popover)
+            #expect(popover.isShown)
+            if let controller = popover.contentViewController {
+                shownControllers.append(controller)
+            }
+            presenter.hide()
+            #expect(!popover.isShown)
+            #expect(popover.contentViewController == nil)
+        }
+        #expect(shownControllers.count == 2)
+        #expect(shownControllers.first !== shownControllers.last)
+    }
+
     @Test("select tab command routes through the current group item")
     @MainActor
     func selectTabCommandUsesCurrentItem() {

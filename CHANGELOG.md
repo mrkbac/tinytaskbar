@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.3
+
+- Fix memory growth from hover previews: each preview leaked a macOS 26 glass
+  background, which could grow TinyTaskbar to about 1 GB after days of use.
+
 ## 1.4.2
 
 - Keep window buttons evenly sized during focus and title updates so neighboring

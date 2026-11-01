@@ -2233,8 +2233,8 @@ final class TaskbarHoverPresenter {
     private var pendingShow: Task<Void, Never>?
     private var pendingHide: Task<Void, Never>?
     private weak var requestedAnchor: TaskbarHoverButton?
-    // On macOS 26 each closed NSPopover was observed to leak its glass background (an
-    // NSGlassEffectView plus its GPU surface) after it closes, so one popover
+    // On macOS 26 each closed NSPopover was observed to leak its glass
+    // background (an NSGlassEffectView plus its GPU surface), so one popover
     // is reused for every hover card instead of creating one per hover.
     let popover: NSPopover = {
         let popover = NSPopover()
